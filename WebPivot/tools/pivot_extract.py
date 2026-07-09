@@ -12,6 +12,9 @@ Design goals:
     rendered (post-JS) DOM with --render, `bs4` is NOT required.
   * Favicon mmh3 (Shodan-style) hash is computed with a bundled pure-Python
     MurmurHash3, so it works with no pip installs.
+  * Optional same-site crawl (--crawl) follows navigation/tab/panel links and
+    merges their artifacts; per-request User-Agent rotation (--rotate-ua) and an
+    optional rotating proxy pool (--proxy / --proxy-range) keep the walk low-profile.
 
 Usage:
   python3 pivot_extract.py <url|file> [--render] [--leads] [--pretty] [-o out.json]
@@ -19,10 +22,20 @@ Usage:
   python3 pivot_extract.py page.html --leads          # just pivot suggestions
   cat page.html | python3 pivot_extract.py -           # read HTML from stdin
 
+  # Crawl the site's navigation/tabs/panels (same registrable domain) and merge artifacts:
+  python3 pivot_extract.py https://example.com --crawl 15 --crawl-depth 2 --leads
+
+  # Rotate the User-Agent per request, and route through a rotating proxy pool:
+  python3 pivot_extract.py https://example.com --crawl --rotate-ua \
+      --proxy-range 10.0.0.1-10.0.0.9:8080          # (or a comma list, or a file)
+  python3 pivot_extract.py https://example.com --proxy http://user:pass@host:3128
+
 Output: JSON to stdout (default) with `artifacts`, `pivots`, and `meta`.
+When crawling, `meta.crawled` lists the pages actually fetched.
 
 FOR AUTHORIZED INVESTIGATIONS ONLY. Fetches the target directly — use a
-research VPS / non-attributable egress when investigating hostile infra.
+research VPS / non-attributable egress (or --proxy / --proxy-range) when
+investigating hostile infra.
 """
 
 import sys
@@ -32,6 +45,9 @@ import json
 import base64
 import hashlib
 import argparse
+import collections
+import functools
+import itertools
 import concurrent.futures
 from urllib.parse import urljoin, urlparse, urlencode, quote
 
@@ -54,6 +70,76 @@ except Exception:
 DEFAULT_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
               "AppleWebKit/537.36 (KHTML, like Gecko) "
               "Chrome/122.0.0.0 Safari/537.36")
+
+# Rotated when crawling or with --rotate-ua, so a multi-page walk doesn't hammer the
+# target from one identical fingerprint. Realistic current desktop/mobile browsers.
+UA_POOL = [
+    DEFAULT_UA,
+    ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+     "(KHTML, like Gecko) Version/17.4 Safari/605.1.15"),
+    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0"),
+    ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+     "Chrome/123.0.0.0 Safari/537.36"),
+    ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 "
+     "(KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"),
+    ("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) "
+     "Chrome/123.0.0.0 Mobile Safari/537.36"),
+    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+     "Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"),
+]
+
+
+def _expand_ip_range(spec: str):
+    """Expand a final-octet IP range into a list of 'a.b.c.N[:port]' proxy strings.
+
+    Accepts both 'a.b.c.d-e[:port]' (short) and 'a.b.c.d-a.b.c.e[:port]' (full end IP,
+    same /24). Returns [] for anything that isn't this shape, so callers can fall back
+    to treating the token as a literal proxy string.
+    """
+    m = re.match(
+        r"^(?:(\w+)://)?(\d+\.\d+\.\d+)\.(\d+)-(?:(\d+\.\d+\.\d+)\.)?(\d+)(:\d+)?$",
+        spec.strip())
+    if not m:
+        return []
+    scheme, prefix, lo, prefix2, hi, port = (
+        m.group(1), m.group(2), int(m.group(3)), m.group(4), int(m.group(5)), m.group(6) or "")
+    if prefix2 and prefix2 != prefix:   # end IP must be in the same /24
+        return []
+    if lo > hi or hi > 255:
+        return []
+    scheme = (scheme + "://") if scheme else ""
+    return [f"{scheme}{prefix}.{o}{port}" for o in range(lo, hi + 1)]
+
+
+def parse_proxies(spec: str):
+    """Parse a --proxy-range SPEC into a list of proxy URLs.
+
+    SPEC may be: a path to a file (one proxy per line, '#' comments ok); a comma-separated
+    list; and/or tokens containing a final-octet IP range 'a.b.c.d-e:port'. Bare host:port
+    tokens get an 'http://' scheme so requests/urllib accept them. Returns [] on empty/garbage.
+    """
+    if not spec:
+        return []
+    tokens = []
+    if os.path.isfile(spec):
+        try:
+            with open(spec, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.split("#", 1)[0].strip()
+                    if line:
+                        tokens.append(line)
+        except Exception:
+            return []
+    else:
+        tokens = [t.strip() for t in spec.split(",") if t.strip()]
+    out = []
+    for tok in tokens:
+        expanded = _expand_ip_range(tok)
+        for p in (expanded or [tok]):
+            if "://" not in p:
+                p = "http://" + p
+            out.append(p)
+    return uniq(out)  # de-dup, preserving order
 
 
 # =================================================================== credentials
@@ -248,26 +334,42 @@ def shodan_favicon_hash(raw: bytes) -> int:
 
 
 # =================================================================== fetching
-def fetch(url: str, timeout: int = 20, ua: str = DEFAULT_UA):
-    """Return (final_url, status, headers_dict, body_bytes). Follows redirects."""
+def fetch(url: str, timeout: int = 20, ua: str = DEFAULT_UA, proxy: str = None):
+    """Return (final_url, status, headers_dict, body_bytes). Follows redirects.
+
+    When `proxy` is given (e.g. 'http://10.0.0.5:8080'), the request is routed through it
+    on both the requests and the urllib stdlib path. None → direct connection (unchanged).
+    """
     if HAVE_REQUESTS:
+        proxies = {"http": proxy, "https": proxy} if proxy else None
         r = requests.get(url, headers={"User-Agent": ua}, timeout=timeout,
-                         allow_redirects=True, verify=True)
+                         allow_redirects=True, verify=True, proxies=proxies)
         return r.url, r.status_code, {k.lower(): v for k, v in r.headers.items()}, r.content
     req = urllib.request.Request(url, headers={"User-Agent": ua})
+    opener = urllib.request.urlopen
+    if proxy:
+        _op = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+        opener = lambda r, timeout: _op.open(r, timeout=timeout)  # noqa: E731
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with opener(req, timeout=timeout) as resp:
             headers = {k.lower(): v for k, v in resp.headers.items()}
             return resp.geturl(), resp.status, headers, resp.read()
     except urllib.error.HTTPError as e:
         return url, e.code, {k.lower(): v for k, v in (e.headers or {}).items()}, e.read()
 
 
-def render_dom(url: str, timeout: int = 30, ua: str = DEFAULT_UA):
-    """Return post-JS rendered HTML using Playwright (chromium). Requires playwright."""
+def render_dom(url: str, timeout: int = 30, ua: str = DEFAULT_UA, proxy: str = None):
+    """Return post-JS rendered HTML using Playwright (chromium). Requires playwright.
+
+    `proxy` (if given) is passed to chromium so the rendered fetch egresses through it.
+    """
     from playwright.sync_api import sync_playwright  # optional
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        launch_kwargs = {"headless": True}
+        if proxy:
+            launch_kwargs["proxy"] = {"server": proxy}
+        browser = p.chromium.launch(**launch_kwargs)
         ctx = browser.new_context(user_agent=ua)
         page = ctx.new_page()
         page.goto(url, timeout=timeout * 1000, wait_until="networkidle")
@@ -467,6 +569,11 @@ PHONE_RE = re.compile(r"(?<![\w.])(\+?\d[\d\s().\-]{7,16}\d)(?![\w.])")
 SCRIPT_SRC_RE = re.compile(r"<script[^>]+src=[\"']([^\"']+)[\"']", re.I)
 INLINE_SCRIPT_RE = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.I | re.S)
 LINK_HREF_RE = re.compile(r"<(?:a|link)[^>]+href=[\"']([^\"']+)[\"']", re.I)
+ANCHOR_HREF_RE = re.compile(r"<a\b[^>]+href=[\"']([^\"']+)[\"']", re.I)  # crawl frontier: <a> only
+# Asset/resource extensions that are never navigation targets — kept out of the crawl.
+_ASSET_EXT_RE = re.compile(
+    r"\.(?:ico|css|js|mjs|png|jpe?g|gif|svg|webp|avif|woff2?|ttf|eot|map|pdf|zip|"
+    r"gz|mp4|webm|mp3|rss|xml|json)(?:$|\?)", re.I)
 FORM_RE = re.compile(r"<form[^>]*>", re.I)
 FORM_ACTION_RE = re.compile(r"action=[\"']([^\"']+)[\"']", re.I)
 INPUT_NAME_RE = re.compile(r"<input[^>]+name=[\"']([^\"']+)[\"']", re.I)
@@ -624,7 +731,7 @@ def tech_fingerprint(html: str, headers: dict, meta: dict):
     return uniq(fp)
 
 
-def get_favicon(base_url: str, html: str, ua: str):
+def get_favicon(base_url: str, html: str, ua: str, proxy: str = None):
     """Locate + fetch favicon, return hash dict or None."""
     href = None
     m = FAVICON_RE.search(html)
@@ -641,7 +748,7 @@ def get_favicon(base_url: str, html: str, ua: str):
     if not fav_url.startswith("http"):
         return None
     try:
-        _, status, _, raw = fetch(fav_url, ua=ua)
+        _, status, _, raw = fetch(fav_url, ua=ua, proxy=proxy)
         if status != 200 or not raw:
             return None
         return {
@@ -669,6 +776,13 @@ SAAS_PIVOTS = {
 
 
 # =================================================================== pivot builder
+def sort_pivots(pivots: list) -> list:
+    """Sort pivots high→medium→low confidence in place, returning the same list."""
+    order = {"high": 0, "medium": 1, "low": 2}
+    pivots.sort(key=lambda p: order.get(p.get("confidence"), 3))
+    return pivots
+
+
 def build_pivots(art: dict, base_host: str):
     """Turn artifacts into ranked, ready-to-run pivot leads."""
     pivots = []
@@ -754,14 +868,12 @@ def build_pivots(art: dict, base_host: str):
             {"service": "ViewDNS reverse-IP", "query": base_host},
         ], "Certificate transparency + passive DNS for related hosts.")
 
-    order = {"high": 0, "medium": 1, "low": 2}
-    pivots.sort(key=lambda p: order.get(p["confidence"], 3))
-    return pivots
+    return sort_pivots(pivots)
 
 
 # =================================================================== main analyze
 def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
-            extra_cookies=None):
+            extra_cookies=None, proxy: str = None):
     # Unwrap Wayback/archive wrappers so the *original* site is treated as the origin.
     effective_url = unwrap_wayback(base_url) if base_url else ""
     is_archived = bool(base_url) and effective_url != base_url
@@ -828,7 +940,7 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
     comments = [re.sub(r"\s+", " ", c).strip()[:200]
                 for c in COMMENT_RE.findall(html) if c.strip()][:25]
 
-    favicon = get_favicon(base_url, html, ua) if base_url else None
+    favicon = get_favicon(base_url, html, ua, proxy=proxy) if base_url else None
     if favicon:
         favicon["url"] = unwrap_wayback(favicon["url"])  # report the real favicon URL
 
@@ -1044,13 +1156,163 @@ def whois_enrich_result(result: dict, do_reverse: bool = False,
     return result
 
 
+# =================================================================== crawl helpers
+# Two-part public suffixes so _registrable() keeps 3 labels for e.g. bbc.co.uk.
+_MULTI_TLDS = {
+    "co.uk", "org.uk", "gov.uk", "ac.uk", "com.au", "net.au", "org.au", "co.nz",
+    "com.br", "com.cn", "com.hk", "com.sg", "com.tw", "co.jp", "co.kr", "co.in",
+    "com.vn", "com.mx", "co.za", "com.tr", "com.ua",
+}
+
+
+@functools.lru_cache(maxsize=2048)
+def _registrable(host: str) -> str:
+    """Best-effort registrable domain (eTLD+1) with a stdlib-only heuristic.
+
+    No tldextract dependency — uses a small known multi-part-TLD set, else the last
+    two labels. Good enough to keep the crawl scoped to one owner's domain.
+    """
+    host = strip_www(host or "")
+    parts = host.split(".")
+    if len(parts) <= 2:
+        return host
+    if ".".join(parts[-2:]) in _MULTI_TLDS:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+def same_site(host: str, seed_reg: str) -> bool:
+    """True if `host` shares the seed's registrable domain (same host or a subdomain)."""
+    if not host or not seed_reg:
+        return False
+    return _registrable(host) == seed_reg
+
+
+# Containers whose links are site navigation / tabs / panels — crawled first.
+_NAV_CONTAINER_RE = re.compile(r"<(nav|header|aside)\b[^>]*>(.*?)</\1>", re.I | re.S)
+_NAV_ATTR_RE = re.compile(
+    r"<[a-z][a-z0-9]*\b[^>]*(?:class|id|role|data-role)=[\"'][^\"']*"
+    r"(?:nav|menu|tab|panel|sidebar|drawer|topbar|header)[^\"']*[\"'][^>]*>",
+    re.I)
+
+
+def extract_nav_links(html: str, base_url: str, seed_reg: str):
+    """Same-site links to crawl, navigation/tab/panel links first.
+
+    Returns a de-duplicated, absolute-URL list restricted to the seed's registrable
+    domain. Priority frontier = hrefs inside <nav>/<header>/<aside> and elements whose
+    class/id/role names a menu/tab/panel/sidebar; the rest of the same-site links follow.
+    """
+    def _anchors(chunk):
+        return ANCHOR_HREF_RE.findall(chunk)
+
+    priority, rest = [], []
+    # 1) anchors inside explicit nav/header/aside containers
+    for _tag, inner in _NAV_CONTAINER_RE.findall(html):
+        priority.extend(_anchors(inner))
+    # 2) anchors in a window after a menu/tab/panel-classed element
+    for m in _NAV_ATTR_RE.finditer(html):
+        priority.extend(_anchors(html[m.start():m.start() + 3000]))
+    # 3) every other same-site anchor (asset/resource <link> tags are excluded by design)
+    rest.extend(ANCHOR_HREF_RE.findall(html))
+
+    def _norm(hrefs):
+        out = []
+        for href in hrefs:
+            if not href or href.startswith(("#", "mailto:", "tel:", "javascript:", "data:")):
+                continue
+            try:
+                absu = urljoin(base_url or "", unwrap_wayback(href))
+                pr = urlparse(absu)
+            except Exception:
+                continue
+            if pr.scheme not in ("http", "https"):
+                continue
+            if _ASSET_EXT_RE.search(pr.path):   # skip favicon/css/js/images/etc.
+                continue
+            if not same_site(strip_www(pr.netloc), seed_reg):
+                continue
+            out.append(absu.split("#", 1)[0])  # drop fragment
+        return out
+
+    # normalize once over priority-then-rest; uniq keeps first occurrence, so nav/tab/panel
+    # links stay ahead of the rest and each href is resolved/scoped a single time.
+    return uniq(_norm(priority + rest))
+
+
+def _hashable(x):
+    """Return x if hashable, else a stable string key (so dict list-items can be de-duped)."""
+    try:
+        hash(x)
+        return x
+    except TypeError:
+        return json.dumps(x, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _merge_lists(a, b):
+    """Union two lists preserving order, de-duping even unhashable (dict) elements."""
+    out, seen = list(a), {_hashable(x) for x in a}
+    for x in b:
+        h = _hashable(x)
+        if h not in seen:
+            seen.add(h)
+            out.append(x)
+    return out
+
+
+def merge_result(base: dict, extra: dict) -> dict:
+    """Fold a crawled page's artifacts + pivots into the seed result, in place.
+
+    List artifacts are unioned; dict artifacts are merged (seed value wins on key clash);
+    scalar seed fields (title, favicon, dom_skeleton) are preserved. Pivots are appended
+    only when their (kind, value) pair is new — so the crawl broadens coverage without
+    duplicating leads.
+    """
+    ba, ea = base.get("artifacts", {}), extra.get("artifacts", {})
+    for k, ev in ea.items():
+        if k not in ba or ba[k] in (None, "", [], {}):
+            ba[k] = ev
+        elif isinstance(ba[k], list) and isinstance(ev, list):
+            ba[k] = _merge_lists(ba[k], ev)
+        elif isinstance(ba[k], dict) and isinstance(ev, dict):
+            for ik, iv in ev.items():
+                if ik not in ba[k]:
+                    ba[k][ik] = iv
+                elif isinstance(ba[k][ik], list) and isinstance(iv, list):
+                    ba[k][ik] = _merge_lists(ba[k][ik], iv)
+        # scalars: keep the seed's value
+    base["artifacts"] = ba
+
+    seen = {(p.get("kind"), str(p.get("value"))) for p in base.get("pivots", [])}
+    for p in extra.get("pivots", []):
+        key = (p.get("kind"), str(p.get("value")))
+        if key not in seen:
+            seen.add(key)
+            base.setdefault("pivots", []).append(p)
+    return base
+
+
 def main():
     ap = argparse.ArgumentParser(description="WebPivot — extract OSINT pivot artifacts from a page.")
     ap.add_argument("source", help="URL, local HTML file, or '-' for stdin")
     ap.add_argument("--render", action="store_true", help="render post-JS DOM via Playwright")
     ap.add_argument("--leads", action="store_true", help="print ranked pivot leads (markdown) instead of JSON")
     ap.add_argument("--pretty", action="store_true", help="pretty-print JSON")
-    ap.add_argument("--ua", default=DEFAULT_UA, help="User-Agent string")
+    ap.add_argument("--ua", default=None,
+                    help="fixed User-Agent string (overrides and disables rotation)")
+    ap.add_argument("--rotate-ua", action="store_true",
+                    help="rotate the User-Agent per request from a built-in browser pool")
+    ap.add_argument("--proxy", default=None,
+                    help="route requests through this proxy, e.g. http://user:pass@host:port "
+                         "or socks5://host:port")
+    ap.add_argument("--proxy-range", default=None, metavar="SPEC",
+                    help="optional proxy pool to rotate through: a comma list, a file (one per "
+                         "line), and/or a final-octet IP range like 10.0.0.1-10.0.0.9:8080")
+    ap.add_argument("--crawl", nargs="?", type=int, const=10, default=None, metavar="MAXPAGES",
+                    help="also crawl the site's navigation/tabs/panels (same registrable domain) "
+                         "and merge their artifacts. Bare flag → up to 10 pages; give a number to change.")
+    ap.add_argument("--crawl-depth", type=int, default=1,
+                    help="how many link-hops deep to crawl from the seed page (default 1)")
     ap.add_argument("--timeout", type=int, default=20)
     ap.add_argument("--no-fallback", action="store_true",
                     help="do NOT fall back to Wayback + urlscan when the live fetch fails")
@@ -1072,12 +1334,34 @@ def main():
                          "(needs URLSCAN_API_KEY for the scan). Archives attached to result.archives.")
     args = ap.parse_args()
 
+    # --- resolve User-Agent + proxy rotation. Crawling auto-enables UA rotation so a
+    #     multi-page walk isn't one identical fingerprint; an explicit --ua pins one UA. ---
+    rotate_ua = args.rotate_ua or (args.crawl is not None and not args.ua)
+    proxy_pool = parse_proxies(args.proxy_range)
+    if args.proxy:
+        proxy_pool = [args.proxy] + proxy_pool
+    _ua_cycle = itertools.cycle(UA_POOL)
+    _px_cycle = itertools.cycle(proxy_pool) if proxy_pool else None
+
+    def next_ua():
+        if args.ua:
+            return args.ua
+        return next(_ua_cycle) if rotate_ua else DEFAULT_UA
+
+    def next_proxy():
+        return next(_px_cycle) if _px_cycle else None
+
+    if proxy_pool:
+        print(f"[+] proxy pool: {len(proxy_pool)} endpoint(s), rotating per request",
+              file=sys.stderr)
+
     src = args.source
     base_url, headers, cookies = "", {}, None
     html = ""
     live_error = None
     recovered_via = None
     intel = None
+    seed_ua, seed_proxy = DEFAULT_UA, None  # only used on the URL branch; reset there
 
     if src == "-":
         html = sys.stdin.read()
@@ -1085,17 +1369,21 @@ def main():
         with open(src, "r", encoding="utf-8", errors="ignore") as f:
             html = f.read()
     elif src.startswith(("http://", "https://")):
+        seed_ua, seed_proxy = next_ua(), next_proxy()
         host_for_intel = strip_www(urlparse(src).netloc)
         # --- try the live target first ---
         try:
             if args.render:
-                base_url, html, cookies = render_dom(src, timeout=args.timeout, ua=args.ua)
+                base_url, html, cookies = render_dom(src, timeout=args.timeout, ua=seed_ua,
+                                                     proxy=seed_proxy)
                 try:
-                    _, _, headers, _ = fetch(base_url, timeout=args.timeout, ua=args.ua)
+                    _, _, headers, _ = fetch(base_url, timeout=args.timeout, ua=seed_ua,
+                                             proxy=seed_proxy)
                 except Exception:
                     headers = {}
             else:
-                base_url, status, headers, body = fetch(src, timeout=args.timeout, ua=args.ua)
+                base_url, status, headers, body = fetch(src, timeout=args.timeout, ua=seed_ua,
+                                                        proxy=seed_proxy)
                 html = body.decode("utf-8", "ignore")
                 headers["_status"] = str(status)
                 if status >= 400 or len(html) < 200:
@@ -1107,22 +1395,24 @@ def main():
         if not html and not args.no_fallback:
             print(f"[!] live fetch failed ({live_error}); falling back to Wayback + urlscan",
                   file=sys.stderr)
-            snap_url, ts = wayback_closest(src, ua=args.ua)
+            snap_url, ts = wayback_closest(src, ua=seed_ua)
             if snap_url:
                 try:
-                    base_url, _, headers, body = fetch(snap_url, timeout=args.timeout, ua=args.ua)
+                    base_url, _, headers, body = fetch(snap_url, timeout=args.timeout, ua=seed_ua,
+                                                       proxy=seed_proxy)
                     html = body.decode("utf-8", "ignore")
                     recovered_via = f"wayback:{ts}"
                     print(f"[+] recovered archived copy: {snap_url}", file=sys.stderr)
                 except Exception:
                     pass
-            intel = urlscan_intel(host_for_intel, ua=args.ua)
+            intel = urlscan_intel(host_for_intel, ua=seed_ua)
             print(f"[+] urlscan: {intel.get('total', 0)} prior scans, "
                   f"{len(intel.get('related_domains', []))} related domains", file=sys.stderr)
     else:
         ap.error("source must be a URL, an existing file, or '-'")
 
-    result = analyze(src, html, base_url, headers, args.ua, extra_cookies=cookies)
+    result = analyze(src, html, base_url, headers, seed_ua, extra_cookies=cookies,
+                     proxy=seed_proxy)
     if live_error:
         result["meta"]["live_error"] = live_error
         result["meta"]["recovered_via"] = recovered_via
@@ -1142,6 +1432,50 @@ def main():
                 "note": "IP that served the target in a urlscan scan — reverse it.",
                 "queries": [{"service": "urlscan.io", "query": f"ip:{ip}"},
                             {"service": "Validin/DNSlytics reverse-IP", "query": ip}]})
+
+    # --- crawl the site's navigation / tabs / panels (opt-in via --crawl) ---
+    if args.crawl is not None and html and base_url and src.startswith(("http://", "https://")):
+        max_pages = max(1, args.crawl)
+        seed_reg = _registrable(result["meta"].get("host") or urlparse(base_url).netloc)
+        visited = {src.split("#", 1)[0], base_url.split("#", 1)[0]}
+        crawled = []
+        frontier = collections.deque((u, 1) for u in extract_nav_links(html, base_url, seed_reg))
+        print(f"[+] crawl: {len(frontier)} nav/tab/panel links on {seed_reg} "
+              f"(depth {args.crawl_depth}, up to {max_pages} pages)", file=sys.stderr)
+        while frontier and len(crawled) < max_pages:
+            url, depth = frontier.popleft()
+            nurl = url.split("#", 1)[0]
+            if nurl in visited:
+                continue
+            visited.add(nurl)
+            c_ua, c_proxy = next_ua(), next_proxy()  # rotate UA + proxy per crawled page
+            try:
+                if args.render:
+                    c_base, c_html, c_cookies = render_dom(url, timeout=args.timeout,
+                                                           ua=c_ua, proxy=c_proxy)
+                    c_headers = {}
+                else:
+                    c_base, c_status, c_headers, c_body = fetch(url, timeout=args.timeout,
+                                                               ua=c_ua, proxy=c_proxy)
+                    c_html = c_body.decode("utf-8", "ignore")
+                    c_cookies = None
+                    if c_status >= 400 or len(c_html) < 64:
+                        raise RuntimeError(f"HTTP {c_status}, {len(c_html)} bytes")
+            except Exception as e:
+                print(f"[!] crawl skip {url} ({e})", file=sys.stderr)
+                continue
+            sub = analyze(url, c_html, c_base or url, c_headers, c_ua,
+                          extra_cookies=c_cookies, proxy=c_proxy)
+            merge_result(result, sub)
+            crawled.append(url)
+            print(f"[+] crawled ({len(crawled)}/{max_pages}) {url}", file=sys.stderr)
+            if depth < args.crawl_depth:
+                for u in extract_nav_links(c_html, c_base or url, seed_reg):
+                    if u.split("#", 1)[0] not in visited:
+                        frontier.append((u, depth + 1))
+        result["meta"]["crawled"] = crawled
+        result["meta"]["crawl_pages"] = len(crawled)
+        sort_pivots(result["pivots"])  # re-rank after folding in crawled pages
 
     if not args.no_enrich:
         enrich_live(result)

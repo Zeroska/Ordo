@@ -106,6 +106,34 @@ python3 "$WP/tools/pivot_extract.py" saved_page.html --pretty
 curl -s https://x.example | python3 "$WP/tools/pivot_extract.py" -
 ```
 
+**Crawl the site, not just the landing page — `--crawl`.** By default the tool analyzes a
+single page. Add `--crawl [MAXPAGES]` to also follow the site's **navigation / tabs / panels**
+(links inside `<nav>`/`<header>`/`<aside>` and menu/tab/panel/sidebar elements), staying on the
+seed's **registrable domain**, and merge every page's artifacts into one result. `--crawl-depth`
+sets how many link-hops deep to walk. The pages actually fetched are listed in `meta.crawled`.
+```bash
+# walk up to 15 pages, 2 hops deep, and fold all their pivot artifacts together
+python3 "$WP/tools/pivot_extract.py" https://target.example --crawl 15 --crawl-depth 2 --leads
+```
+Crawl is same-site only (never leaves the registrable domain), bounded by the page cap, and a
+per-page fetch error is skipped, not fatal. It works with `--render` too (post-JS DOM per page).
+
+**Change the User-Agent + route through a proxy — stay low-profile while crawling.**
+- `--rotate-ua` rotates the User-Agent per request from a built-in browser pool (auto-enabled
+  during `--crawl` so a multi-page walk isn't one identical fingerprint). `--ua "<string>"` pins
+  one fixed UA and disables rotation.
+- `--proxy URL` routes requests through a single proxy (`http://user:pass@host:port`,
+  `socks5://host:port`). `--proxy-range SPEC` gives an **optional** pool that rotates per request —
+  SPEC is a comma list, a file (one proxy per line), and/or a final-octet IP range like
+  `10.0.0.1-10.0.0.9:8080`. Bare `host:port` tokens get an `http://` scheme. **No proxy flag →
+  direct connection, unchanged.** Proxy/UA rotation apply to the target-site fetches (seed, crawl,
+  favicon); third-party enrichment APIs (crt.sh/urlscan/FOFA/WhoisXML) stay on a direct path.
+```bash
+python3 "$WP/tools/pivot_extract.py" https://target.example --crawl --rotate-ua \
+    --proxy-range 10.0.0.1-10.0.0.9:8080          # rotating UA + rotating proxy pool
+python3 "$WP/tools/pivot_extract.py" https://target.example --proxy http://user:pass@host:3128
+```
+
 **Collect + archive in one pass — `--save-dom` and `--submit`.** Store the raw DOM you
 collected, and actively push the URL to the Wayback Machine *and* urlscan.io so there's a
 permanent third-party capture and a fresh scan to mine later:

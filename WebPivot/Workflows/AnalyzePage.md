@@ -15,6 +15,13 @@ Extract every pivot artifact from one page and produce ranked leads.
 2. **Acquire the page.** Always write the JSON into the case with `-o` (see Output contract).
    - Live static: `python3 "$WP/tools/pivot_extract.py" <URL> --pretty -o "$CASE/raw/<host>.json"`
    - JS-heavy SPA (renders post-JS DOM): add `--render` (needs `playwright install chromium`).
+   - **Whole site, not just the landing page**: add `--crawl [MAXPAGES] [--crawl-depth D]` to also
+     follow the site's nav/tabs/panels (same registrable domain) and merge every page's artifacts —
+     `meta.crawled` lists the pages fetched. IDs that only appear on an inner page (contact form,
+     about, checkout) get caught this way.
+   - **Stay low-profile**: `--rotate-ua` rotates the User-Agent per request (auto-on with `--crawl`);
+     `--proxy URL` or `--proxy-range SPEC` (comma list / file / `10.0.0.1-10.0.0.9:8080` IP range)
+     routes the target-site fetches through a rotating proxy pool. No proxy flag → direct, unchanged.
    - **2b Passive** (hostile target): pull the DOM from urlscan.io or a Wayback snapshot, save to `page.html`, then `python3 "$WP/tools/pivot_extract.py" page.html --pretty -o "$CASE/raw/<host>.json"`.
 
 3. **Read the artifacts.** The JSON `artifacts` block covers favicon hashes, trackers, crypto, emails, socials, third-party hosts, inline-script hashes, forms, comments, DOM-skeleton hash, tech fingerprint, cookies, headers.
