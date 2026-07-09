@@ -1,0 +1,28 @@
+# === secrets — NEVER ship these ===
+.env
+.env.*
+*.key
+**/SKILLCUSTOMIZATIONS/**/.env
+
+# === machine-local / identity (usernames, absolute paths, session logs) ===
+# NOTE: .gitignore has no inline comments — keep each pattern on its own line.
+.claude/settings.local.json
+# PAI session PRDs — local work state, not the skill:
+MEMORY/
+
+# === per-investigation data (target data + your analysis) — keep private ===
+# Comment these out if you deliberately want to share example cases.
+cases/
+knowledge/
+
+# === OS / Python cruft ===
+.DS_Store
+**/.DS_Store
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.playwright-cli/
+
+# === large scraped inputs ===
+malicious.html
