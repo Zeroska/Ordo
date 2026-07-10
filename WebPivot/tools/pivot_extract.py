@@ -15,6 +15,11 @@ Design goals:
   * Optional same-site crawl (--crawl) follows navigation/tab/panel links and
     merges their artifacts; per-request User-Agent rotation (--rotate-ua) and an
     optional rotating proxy pool (--proxy / --proxy-range) keep the walk low-profile.
+  * Follows redirects and surfaces the chain + any affiliate/referral/campaign codes
+    (affid/ref/partner/utm_*, base64-decoded) as first-class pivots — built for
+    tracker/shortlink analysis. A full browser header profile is sent so basic bot
+    filters don't reset the fetch; platform boilerplate (Wix/Shopify defaults) is
+    filtered so it doesn't create false same-operator clusters.
 
 Usage:
   python3 pivot_extract.py <url|file> [--render] [--leads] [--pretty] [-o out.json]
@@ -47,9 +52,11 @@ import hashlib
 import argparse
 import collections
 import functools
+import gzip
 import itertools
+import zlib
 import concurrent.futures
-from urllib.parse import urljoin, urlparse, urlencode, quote
+from urllib.parse import urljoin, urlparse, urlencode, quote, parse_qsl
 
 # ------------------------------------------------------------------ optional deps
 try:
@@ -87,6 +94,50 @@ UA_POOL = [
     ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
      "Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"),
 ]
+
+
+# A coherent desktop-Chrome header set sent alongside the UA. Bare User-Agent alone trips
+# Cloudflare/LiteSpeed bot heuristics (we saw resets / HTTP 520 / refused this session); a
+# full profile passes the cheap checks. Accept-Encoding is safe because the urllib path
+# decompresses by Content-Encoding below (requests decompresses on its own).
+BROWSER_HEADERS = {
+    "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+               "image/avif,image/webp,image/apng,*/*;q=0.8"),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "sec-ch-ua": '"Chromium";v="122", "Google Chrome";v="122", "Not:A-Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Connection": "keep-alive",
+}
+
+
+def _browser_headers(ua: str) -> dict:
+    """The browser header profile with the (possibly rotated) User-Agent applied."""
+    h = dict(BROWSER_HEADERS)
+    h["User-Agent"] = ua
+    return h
+
+
+def _decode_body(raw: bytes, content_encoding: str) -> bytes:
+    """Decompress a urllib response body per its Content-Encoding (gzip/deflate); else as-is."""
+    enc = (content_encoding or "").lower()
+    try:
+        if "gzip" in enc:
+            return gzip.decompress(raw)
+        if "deflate" in enc:
+            try:
+                return zlib.decompress(raw)
+            except zlib.error:
+                return zlib.decompress(raw, -zlib.MAX_WBITS)  # raw deflate
+    except Exception:
+        return raw
+    return raw
 
 
 def _expand_ip_range(spec: str):
@@ -334,29 +385,50 @@ def shodan_favicon_hash(raw: bytes) -> int:
 
 
 # =================================================================== fetching
-def fetch(url: str, timeout: int = 20, ua: str = DEFAULT_UA, proxy: str = None):
+class _RecordingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """urllib redirect handler that records each hop (from-url, status, to-url)."""
+    def __init__(self, sink):
+        self._sink = sink
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        self._sink.append({"from": req.full_url, "status": code, "to": newurl})
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def fetch(url: str, timeout: int = 20, ua: str = DEFAULT_UA, proxy: str = None,
+          redirects_out: list = None):
     """Return (final_url, status, headers_dict, body_bytes). Follows redirects.
 
     When `proxy` is given (e.g. 'http://10.0.0.5:8080'), the request is routed through it
     on both the requests and the urllib stdlib path. None → direct connection (unchanged).
+    Sends a full browser header profile so basic bot filters don't reset the connection.
+    If `redirects_out` (a list) is passed, each redirect hop is appended to it as
+    {from,status,to}; callers that don't need the chain simply omit it (unchanged behavior).
     """
     if HAVE_REQUESTS:
         proxies = {"http": proxy, "https": proxy} if proxy else None
-        r = requests.get(url, headers={"User-Agent": ua}, timeout=timeout,
+        r = requests.get(url, headers=_browser_headers(ua), timeout=timeout,
                          allow_redirects=True, verify=True, proxies=proxies)
+        if redirects_out is not None:
+            for h in r.history:
+                redirects_out.append({"from": h.url, "status": h.status_code,
+                                      "to": h.headers.get("Location", "")})
         return r.url, r.status_code, {k.lower(): v for k, v in r.headers.items()}, r.content
-    req = urllib.request.Request(url, headers={"User-Agent": ua})
-    opener = urllib.request.urlopen
+    req = urllib.request.Request(url, headers=_browser_headers(ua))
+    handlers = []
+    if redirects_out is not None:
+        handlers.append(_RecordingRedirectHandler(redirects_out))
     if proxy:
-        _op = urllib.request.build_opener(
-            urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-        opener = lambda r, timeout: _op.open(r, timeout=timeout)  # noqa: E731
+        handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    opener = urllib.request.build_opener(*handlers).open if handlers else urllib.request.urlopen
     try:
         with opener(req, timeout=timeout) as resp:
             headers = {k.lower(): v for k, v in resp.headers.items()}
-            return resp.geturl(), resp.status, headers, resp.read()
+            body = _decode_body(resp.read(), headers.get("content-encoding"))
+            return resp.geturl(), resp.status, headers, body
     except urllib.error.HTTPError as e:
-        return url, e.code, {k.lower(): v for k, v in (e.headers or {}).items()}, e.read()
+        eh = {k.lower(): v for k, v in (e.headers or {}).items()}
+        return url, e.code, eh, _decode_body(e.read(), eh.get("content-encoding"))
 
 
 def render_dom(url: str, timeout: int = 30, ua: str = DEFAULT_UA, proxy: str = None):
@@ -553,6 +625,24 @@ SOCIAL_HOSTS = {
     "m.me": "messenger", "zalo.me": "zalo", "zaloapp.com": "zalo",
 }
 
+# Platform boilerplate — default artifacts shipped by hosted site builders (Wix, Squarespace,
+# Shopify, Webflow). NOT operator-specific: a favicon or social handle every Wix site carries
+# pivots to nothing, so these are filtered out before pivots are built (they created false
+# same-operator links on masterdarrenfx.com this session).
+BOILERPLATE_FAVICON_MMH3 = {
+    342030173,   # Wix default favicon
+}
+BOILERPLATE_SOCIAL_HANDLES = {
+    "facebook.com/wix", "twitter.com/wix", "instagram.com/wix", "youtube.com/wix",
+    "facebook.com/squarespace", "twitter.com/squarespace", "instagram.com/squarespace",
+    "facebook.com/shopify", "twitter.com/shopify", "instagram.com/shopify",
+    "facebook.com/webflow", "twitter.com/webflow",
+}
+# Email / Sentry-DSN host suffixes that are platform system addresses, never the site owner's.
+BOILERPLATE_EMAIL_HOSTS = (
+    "wixpress.com", "sentry.io", "squarespace.com", "shopify.com", "webflow.com",
+)
+
 # Site-ownership verification tokens — strongly owner-tied, excellent pivots.
 VERIFICATION_META = {
     "google-site-verification": "google_search_console",
@@ -675,8 +765,13 @@ def extract_socials(hosts_hrefs):
     out = {}
     for href in hosts_hrefs:
         try:
-            host = strip_www(urlparse(unwrap_wayback(href)).netloc)
+            pr = urlparse(unwrap_wayback(href))
+            host = strip_www(pr.netloc)
         except Exception:
+            continue
+        # drop platform default handles (facebook.com/wix, …) — boilerplate, not the operator
+        handle = f"{host}{pr.path.rstrip('/')}".lower()
+        if handle in BOILERPLATE_SOCIAL_HANDLES:
             continue
         for shost, name in SOCIAL_HOSTS.items():
             if host == shost or host.endswith("." + shost):
@@ -773,6 +868,80 @@ SAAS_PIVOTS = {
     "apps_script": ("high", "Google Apps Script web-app the form posts to — operator-controlled. Same deployment = same operator."),
     "trustedform": (None, "TrustedForm (TCPA lead certification) — signals a lead-generation funnel; not an operator pivot."),
 }
+
+
+# =================================================================== affiliate codes
+# Query params that carry affiliate / referral / campaign attribution. A redirector's
+# destination usually stamps the promoter's code here (affid=…, 8c=…, ref=…) — that code
+# is the real pivot: source-search it to find where the affiliate promotes the link.
+AFFILIATE_PARAMS = {
+    "affid", "aff", "aff_id", "affiliate", "affiliateid", "ref", "refid", "ref_id",
+    "referral", "referralcode", "partner", "partnerid", "pid", "subid", "sub_id",
+    "clickid", "click_id", "btag", "a_aid", "a_bid", "promo", "promocode", "invite",
+    "invitecode", "agent", "agentid", "ib", "8c",
+}
+
+
+def _maybe_b64(v: str):
+    """If v is base64 that decodes to a short printable ASCII string, return it, else None."""
+    s = v.strip()
+    if len(s) < 4 or len(s) % 4 != 0 or not re.fullmatch(r"[A-Za-z0-9+/=]+", s):
+        return None
+    try:
+        txt = base64.b64decode(s, validate=True).decode("ascii")
+    except Exception:
+        return None
+    if txt and txt != s and len(txt) <= 64 and all(32 <= ord(c) < 127 for c in txt):
+        return txt
+    return None
+
+
+def extract_url_codes(urls):
+    """Affiliate/referral/campaign codes from the query strings of a set of URLs.
+
+    Returns [{param, value, decoded?}] — deduped. `utm_*` params are included as campaign
+    attribution. base64-looking values get a decoded field (e.g. affid=MTA2MDEzMQ== → 1060131).
+    """
+    out, seen = [], set()
+    for u in urls:
+        try:
+            pairs = parse_qsl(urlparse(u).query)
+        except Exception:
+            continue
+        for k, v in pairs:
+            kl = k.lower()
+            if not v or (kl not in AFFILIATE_PARAMS and not kl.startswith("utm_")):
+                continue
+            key = (kl, v)
+            if key in seen:
+                continue
+            seen.add(key)
+            rec = {"param": k, "value": v}
+            dec = _maybe_b64(v)
+            if dec:
+                rec["decoded"] = dec
+            out.append(rec)
+    return out
+
+
+def build_affiliate_pivots(codes):
+    """Turn extracted affiliate/referral codes into MEDIUM pivots with source-search queries."""
+    pivots = []
+    for c in codes:
+        disp = c["value"] + (f" (b64→ {c['decoded']})" if c.get("decoded") else "")
+        search_vals = uniq([c["value"]] + ([c["decoded"]] if c.get("decoded") else []))
+        queries = []
+        for sv in search_vals:
+            queries += [{"service": "PublicWWW", "query": f'"{sv}"'},
+                        {"service": "urlscan.io", "query": f'"{sv}"'},
+                        {"service": "Google/Bing", "query": f'"{sv}"'}]
+        pivots.append({
+            "kind": f"affiliate:{c['param']}", "value": disp, "confidence": "medium",
+            "note": ("Affiliate/referral/campaign code on the link. Source-search it to find "
+                     "where the promoter advertises this link (social/Telegram/other sites)."),
+            "queries": queries,
+        })
+    return pivots
 
 
 # =================================================================== pivot builder
@@ -882,11 +1051,20 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
     meta = extract_meta(html)
     verifications = {label: meta[k] for k, label in VERIFICATION_META.items() if k in meta}
     trackers = extract_trackers(html)
+    # drop platform-owned Sentry DSNs (e.g. *.wixpress.com) — boilerplate, not the operator
+    if "sentry_dsn" in trackers:
+        kept = [v for v in trackers["sentry_dsn"]
+                if not any(h in v.lower() for h in BOILERPLATE_EMAIL_HOSTS)]
+        if kept:
+            trackers["sentry_dsn"] = kept
+        else:
+            del trackers["sentry_dsn"]
     saas_ids = extract_saas(html)
     crypto = extract_crypto(html)
 
-    emails = uniq(EMAIL_RE.findall(html))
-    emails = [e for e in emails if not e.lower().endswith((".png", ".jpg", ".gif", ".svg", ".webp"))][:40]
+    emails = [e for e in uniq(EMAIL_RE.findall(html))
+              if (el := e.lower()) and not el.endswith((".png", ".jpg", ".gif", ".svg", ".webp"))
+              and not el.split("@")[-1].endswith(BOILERPLATE_EMAIL_HOSTS)][:40]
 
     script_srcs = uniq(SCRIPT_SRC_RE.findall(html))
     all_hrefs = uniq(LINK_HREF_RE.findall(html))
@@ -941,6 +1119,8 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
                 for c in COMMENT_RE.findall(html) if c.strip()][:25]
 
     favicon = get_favicon(base_url, html, ua, proxy=proxy) if base_url else None
+    if favicon and favicon["shodan_mmh3"] in BOILERPLATE_FAVICON_MMH3:
+        favicon = None  # platform-default favicon (e.g. Wix) — drop at source, like other boilerplate
     if favicon:
         favicon["url"] = unwrap_wayback(favicon["url"])  # report the real favicon URL
 
@@ -997,6 +1177,13 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
 def render_leads(result: dict) -> str:
     m = result["meta"]
     lines = [f"# Pivot leads — {m.get('host') or m['source']}", ""]
+    chain = m.get("redirect_chain")
+    if chain:
+        hops = " → ".join([chain[0]["from"]] + [h["to"] for h in chain])
+        lines.append(f"> ↪️ Redirect chain: {hops}")
+        if m.get("redirect_destination"):
+            lines.append(f"> Final destination host: **{m['redirect_destination']}**")
+        lines.append("")
     if m.get("live_error"):
         lines.append(f"> ⚠️ Live target unreachable ({m['live_error']}).")
         lines.append(f"> Recovered via: {m.get('recovered_via') or 'not archived'}.")
@@ -1148,11 +1335,22 @@ def whois_enrich_result(result: dict, do_reverse: bool = False,
 
     name = w.get("registrant_name") or w.get("registrant_org")
     if name and not whois_enrich.is_privacy(name):
-        result["pivots"].append({
+        piv = {
             "kind": "whois:registrant_name", "value": name, "confidence": "medium",
-            "note": "Registrant name/org — reverse WHOIS candidate.",
-            "queries": [{"service": "WhoisXML reverse-whois", "query": f'registrant name = "{name}"'}],
-        })
+            "note": ("Registrant name — reverse WHOIS finds the owner's other domains. Run "
+                     "HISTORIC too: a name can tie sites that share no technical artifact "
+                     "(this is what linked the Yu Fan Tan forex brands)."),
+            "queries": [
+                {"service": "WhoisXML reverse-whois", "query": f'registrant name = "{name}"'},
+                {"service": "ViewDNS reverse-whois", "query": name},
+            ],
+        }
+        if do_reverse:
+            for st in ("current", "historic"):
+                r = whois_enrich.reverse_whois(name, "name", search_type=st)
+                if r is not None:
+                    piv.setdefault("live_results", {})[f"reverse_whois_{st}"] = r
+        result["pivots"].append(piv)
     return result
 
 
@@ -1361,6 +1559,7 @@ def main():
     live_error = None
     recovered_via = None
     intel = None
+    redirects = []  # redirect hops from the seed fetch (URL branch only)
     seed_ua, seed_proxy = DEFAULT_UA, None  # only used on the URL branch; reset there
 
     if src == "-":
@@ -1383,7 +1582,7 @@ def main():
                     headers = {}
             else:
                 base_url, status, headers, body = fetch(src, timeout=args.timeout, ua=seed_ua,
-                                                        proxy=seed_proxy)
+                                                        proxy=seed_proxy, redirects_out=redirects)
                 html = body.decode("utf-8", "ignore")
                 headers["_status"] = str(status)
                 if status >= 400 or len(html) < 200:
@@ -1413,6 +1612,23 @@ def main():
 
     result = analyze(src, html, base_url, headers, seed_ua, extra_cookies=cookies,
                      proxy=seed_proxy)
+
+    # --- redirect chain + affiliate/referral codes (first-class pivots for tracker links) ---
+    if redirects:
+        result["meta"]["redirect_chain"] = redirects
+        dest = redirects[-1].get("to") or base_url
+        dest_host = strip_www(urlparse(dest).netloc)
+        if dest_host and dest_host != result["meta"].get("host"):
+            result["meta"]["redirect_destination"] = dest_host
+    url_pool = [src] + [h.get("to", "") for h in redirects]
+    if base_url:
+        url_pool.append(base_url)
+    codes = extract_url_codes(url_pool)
+    if codes:
+        result.setdefault("artifacts", {})["affiliate_codes"] = codes
+        result["pivots"].extend(build_affiliate_pivots(codes))
+        sort_pivots(result["pivots"])
+
     if live_error:
         result["meta"]["live_error"] = live_error
         result["meta"]["recovered_via"] = recovered_via
@@ -1514,15 +1730,18 @@ def main():
         print(f"    urlscan: {u.get('result') or u.get('error') or u.get('skipped')}", file=sys.stderr)
         result["archives"] = archives
 
-    if args.leads:
-        print(render_leads(result))
-        return
-    out = json.dumps(result, indent=2 if args.pretty else None, ensure_ascii=False)
+    # Persist the JSON whenever -o is given — independent of --leads. (--leads used to return
+    # before this, silently dropping the -o file.)
+    if args.out or not args.leads:
+        out = json.dumps(result, indent=2 if args.pretty else None, ensure_ascii=False)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
             f.write(out)
         print(f"wrote {args.out} ({len(result['pivots'])} pivots)", file=sys.stderr)
-    else:
+
+    if args.leads:
+        print(render_leads(result))
+    elif not args.out:
         print(out)
 
 

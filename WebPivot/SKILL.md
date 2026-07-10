@@ -134,6 +134,26 @@ python3 "$WP/tools/pivot_extract.py" https://target.example --crawl --rotate-ua 
 python3 "$WP/tools/pivot_extract.py" https://target.example --proxy http://user:pass@host:3128
 ```
 
+**Redirect & affiliate-link analysis (tracker/shortlinks).** The tool follows redirects, records
+the full **redirect chain** (`meta.redirect_chain`) and final destination host, and extracts any
+**affiliate / referral / campaign codes** from the URL query strings (`affid`, `ref`, `partner`,
+`8c`, `utm_*`, …) — base64 values are auto-decoded (e.g. `affid=MTA2MDEzMQ==` → `1060131`). Each
+code becomes a MEDIUM pivot with source-search queries: run the code in PublicWWW / urlscan /
+Google to find **where the promoter advertises the link** (social, Telegram, other sites) — usually
+the more interesting entity than the broker. Shown inline in `--leads`.
+
+**Registrant-name reverse WHOIS (run historic!).** With `--whois-reverse`, the tool now runs
+reverse-WHOIS by registrant **name** (not just email), in **both current and historic** modes, and
+attaches the sibling domains to the `whois:registrant_name` pivot's `live_results`. A shared
+registrant name can cluster sites that share *no* technical artifact — historic mode is what linked
+the two Yu Fan Tan forex brands when current-only returned a single domain.
+
+**Low-profile fetch + boilerplate filtering.** Requests carry a full browser header profile (not
+just User-Agent), so basic Cloudflare/LiteSpeed bot filters don't reset the fetch. Platform-default
+artifacts from hosted builders (Wix/Squarespace/Shopify favicon hashes, `facebook.com/wix`-style
+handles, `*.wixpress.com` emails and Sentry DSNs) are filtered out so they never create false
+same-operator clusters.
+
 **Collect + archive in one pass — `--save-dom` and `--submit`.** Store the raw DOM you
 collected, and actively push the URL to the Wayback Machine *and* urlscan.io so there's a
 permanent third-party capture and a fresh scan to mine later:
@@ -158,7 +178,7 @@ python3 "$WP/tools/wayback_ga.py" -f domains.txt --pretty > "$CASE/history.json"
 
 **What it extracts** (see `references/PivotArtifacts.md`): favicon mmh3/md5/sha256, analytics & ad IDs (GA4 `G-`, `GTM-`, AdSense `pub-`, FB Pixel, Yandex, Hotjar, Matomo, Sentry DSN, …), crypto wallets (BTC/ETH/XMR/TRON/LTC), emails, social handles, third-party hosts, inline-script SHA-256, form actions + input names (phishing-kit tell), HTML comments, DOM-skeleton hash (template reuse), tech fingerprints, cookie names, server headers, **SaaS / no-code operator tokens** (GoHighLevel `msgsndr` location ID, backend Google Sheet ID, Make/Zapier/Apps-Script automation webhooks, TrustedForm lead-cert) — attribution-grade for hosted-builder funnels, and only fully present in the `--render` DOM.
 
-**What it emits:** a `pivots` array, ranked high→low confidence, each with copy-paste queries for the right engine (with the correct hash algorithm per engine — Shodan/FOFA=mmh3, Censys=MD5, Netlas=SHA-256).
+**What it emits:** a `pivots` array, ranked high→low confidence, each with copy-paste queries for the right engine (with the correct hash algorithm per engine — Shodan/FOFA=mmh3, Censys=MD5, Netlas=SHA-256), plus redirect-chain / affiliate-code pivots for tracker links and reverse-WHOIS (email + name, current + historic) under `--whois-reverse`.
 
 **Case graph — `tools/graph_build.py`.** Merges many `pivot_extract` JSONs into one
 normalized, **clustered** graph model: typed nodes (domains + shared artifacts as hub
