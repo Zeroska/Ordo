@@ -575,29 +575,32 @@ def pdns_search(query: str, timeout: int = 25):
             except Exception:
                 continue
     records, ips, domains = [], set(), set()
+    q = query.strip().rstrip(".").lower()
+
+    def _looks_ip(v: str) -> bool:
+        return bool(_IPV4_RE.fullmatch(v)) or (":" in v and " " not in v)
+
     for rec in lines:
         if not isinstance(rec, dict):
             continue
         rrtype = str(rec.get("rrtype", "")).upper()
         rrname = str(rec.get("rrname", "")).rstrip(".").lower()
         rdata = str(rec.get("rdata", "")).rstrip(".").lower()
-        records.append({"rrname": rrname, "rrtype": rrtype, "rdata": rec.get("rdata"),
+        records.append({"rrname": rec.get("rrname"), "rrtype": rrtype, "rdata": rec.get("rdata"),
                         "time_first": rec.get("time_first"), "time_last": rec.get("time_last"),
                         "count": rec.get("count")})
-        if rrtype in ("A", "AAAA"):
-            # domain query -> rdata is a historical IP; IP query -> rrname is a domain
-            if _IPV4_RE.fullmatch(rdata) or ":" in rdata:
-                ips.add(rdata)
-            if rrname:
-                domains.add(rrname)
-        elif rrtype in ("NS", "CNAME", "MX", "PTR", "SOA"):
-            for d in (rrname, rdata):
-                if d and not _IPV4_RE.fullmatch(d):
-                    domains.add(d)
-    q = query.lower()
+        # COF field order varies by instance (CIRCL stores the IP in rrname, the domain in
+        # rdata). Route each side by what the VALUE looks like, not which field it sits in,
+        # so we harvest historical IPs + co-resolved domains regardless of direction.
+        for v in (rrname, rdata):
+            if not v or v == q or " " in v:        # skip empty, the query itself, SOA/TXT blobs
+                continue
+            if _looks_ip(v):
+                ips.add(v)
+            elif "." in v and not v.replace(".", "").isdigit():
+                domains.add(v)
     return {"query": query, "total": len(records), "records": records[:100],
-            "ips": sorted(i for i in ips if i)[:60],
-            "domains": sorted(d for d in domains if d and d != q)[:80]}
+            "ips": sorted(ips)[:60], "domains": sorted(domains)[:80]}
 
 
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
@@ -1715,6 +1718,10 @@ def enrich_live(result: dict, fofa_full: bool = False) -> dict:
                     lr["fofa_ip_reverse"] = fofa_search(f'ip="{fofa_ip}"',
                                                         fields="host,ip,domain,title,server",
                                                         full=fofa_full)
+                if have_pdns and fofa_ip:
+                    # PDNS reverse on the SAME origin candidate — co-hosted domains from
+                    # passive DNS independently corroborate the FOFA IP-reverse.
+                    lr["pdns_ip_reverse"] = pdns_search(fofa_ip)
                 passive_ips = set((lr.get("passivedns") or {}).get("ips", []) or [])
                 passive_ips |= set((lr.get("pdns") or {}).get("ips", []) or [])   # historical PDNS IPs
                 stale = sorted(passive_ips - set(live_ips))
