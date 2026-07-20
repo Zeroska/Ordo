@@ -148,27 +148,45 @@ def render_cia_report(result: dict,
     L.append("  |  ".join(subject))
     L.append("")
 
+    # ---- Noise suppression (Gap #3/#5): registrar-privacy emails, CDN edge IPs and
+    # boilerplate must NEVER earn a Key Judgment. Split signal vs suppressed up front. ----
+    signal = [(p, h) for (p, h) in pivot_hits
+              if not _is_noise_value(p.get("kind", ""), p.get("value"))]
+    suppressed = [p for (p, _h) in pivot_hits
+                  if _is_noise_value(p.get("kind", ""), p.get("value"))]
+    cdn_providers = set()
+    for p, _h in pivot_hits:
+        if p.get("kind") == "domain":
+            for c in ((p.get("live_results") or {}).get("dns") or {}).get("ip_classification") or []:
+                if c.get("cdn") is True and c.get("provider"):
+                    cdn_providers.add(c["provider"])
+
     # ---- BLUF ---------------------------------------------------------------
-    high = [p for p in pivots if (p.get("confidence") or "").lower() == "high"]
-    corr = [p for p, hits in pivot_hits if hits]
+    high = [p for (p, _h) in signal if (p.get("confidence") or "").lower() == "high"]
+    corr = [p for (p, hits) in signal if hits]
     L.append("## Bottom Line Up Front")
-    if pivots:
-        lead, lead_hits = next(((p, h) for p, h in pivot_hits
-                                if (p.get("confidence") or "").lower() == "high"), pivot_hits[0])
+    if signal:
+        lead, lead_hits = next(((p, h) for p, h in signal
+                                if (p.get("confidence") or "").lower() == "high"), signal[0])
         terms = estimative_terms(lead.get("confidence"), bool(lead_hits))
         L.append(
-            f"Collection against {host} yielded {len(pivots)} pivot artifact(s), of which "
-            f"{len(high)} carry high extraction confidence and {len(corr)} were independently "
-            f"corroborated by live sourcing. We assess with {terms['confidence']} that the "
-            f"strongest indicator — {lead.get('kind')} `{lead.get('value')}` — {terms['likelihood']} "
+            f"Collection against {host} yielded {len(signal)} pivot artifact(s) of analytic value"
+            + (f" ({len(suppressed)} suppressed as registrar/CDN boilerplate)" if suppressed else "")
+            + f", of which {len(high)} carry high extraction confidence and {len(corr)} were "
+            f"independently corroborated by live sourcing. We assess with {terms['confidence']} that "
+            f"the strongest indicator — {lead.get('kind')} `{lead.get('value')}` — {terms['likelihood']} "
             f"reflects a genuine, pivotable link to the operator's wider infrastructure."
         )
     else:
         L.append(
-            f"Collection against {host} returned no high-value pivot artifacts. We are unable "
-            f"to assess operator infrastructure from this collection alone; additional "
-            f"collection is required."
+            f"Collection against {host} returned no high-value pivot artifacts"
+            + (f" ({len(suppressed)} registrar/CDN boilerplate item(s) suppressed)" if suppressed else "")
+            + ". We are unable to assess operator infrastructure from this collection alone; "
+            "additional collection is required."
         )
+    if cdn_providers:
+        L.append(f"_The host is fronted by a shared CDN/cloud edge ({', '.join(sorted(cdn_providers))}); "
+                 f"its hosting IP carries low attribution value and is excluded from judgments._")
     if m.get("redirect_destination"):
         L.append(f"The subject redirects to **{m['redirect_destination']}**, which we assess "
                  f"is the operative destination and should anchor further collection.")
@@ -183,24 +201,24 @@ def render_cia_report(result: dict,
     L.append("_Estimative language and confidence per ICD 203. Likelihood describes whether the "
              "link is real; confidence describes the strength of the underlying sourcing._")
     L.append("")
-    if pivots:
-        for i, (p, hits) in enumerate(pivot_hits[:15], 1):
+    if signal:
+        for i, (p, hits) in enumerate(signal[:15], 1):
             terms = estimative_terms(p.get("confidence"), bool(hits))
-            kj = (f"- **KJ-{i}.** The {p.get('kind')} artifact `{p.get('value')}` "
-                  f"**{terms['likelihood']}** links the subject to related infrastructure "
-                  f"(*{terms['confidence']}*).")
-            L.append(kj)
+            L.append(f"- **KJ-{i}.** The {p.get('kind')} artifact `{p.get('value')}` "
+                     f"**{terms['likelihood']}** links the subject to related infrastructure "
+                     f"(*{terms['confidence']}*).")
             if p.get("note"):
                 L.append(f"    - Basis: {p['note']}")
-            if hits:
-                L.append(f"    - Corroboration: {'; '.join(hits)}.")
-            else:
-                L.append("    - Corroboration: none returned this collection; single-source.")
-        if len(pivots) > 15:
-            L.append(f"- _({len(pivots) - 15} additional lower-priority artifacts recorded in "
+            L.append(f"    - Corroboration: {'; '.join(hits)}." if hits
+                     else "    - Corroboration: none returned this collection; single-source.")
+        if len(signal) > 15:
+            L.append(f"- _({len(signal) - 15} additional lower-priority artifacts recorded in "
                      f"the evidence ledger.)_")
     else:
         L.append("- No judgments supported by current collection.")
+    if suppressed:
+        L.append(f"- _Suppressed as noise (not judged): {len(suppressed)} registrar-privacy / CDN / "
+                 f"boilerplate artifact(s) — e.g. {', '.join(str(p.get('value'))[:40] for p in suppressed[:3])}._")
     L.append("")
 
     # ---- Reported facts (collected, not judged) -----------------------------
@@ -256,7 +274,8 @@ def render_cia_report(result: dict,
         L.append(f"- Enrichment sources queried: {', '.join(m['enriched_with'])}")
     if m.get("archived_via_wayback"):
         L.append("- Recovered from Internet Archive (Wayback) — historical snapshot.")
-    L.append(f"- Independently corroborated artifacts: {len(corr)} of {len(pivots)}.")
+    L.append(f"- Independently corroborated artifacts: {len(corr)} of {len(signal)} "
+             f"(after suppressing {len(suppressed)} registrar/CDN/boilerplate item(s)).")
     L.append("- Confidence handling: single-source artifacts are reported as such; "
              "confidence is raised only where an independent source corroborates.")
     L.append("")
