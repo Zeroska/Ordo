@@ -770,10 +770,13 @@ def fetch(url: str, timeout: int = 20, ua: str = DEFAULT_UA, proxy: str = None,
         return url, e.code, eh, _decode_body(e.read(), eh.get("content-encoding"))
 
 
-def render_dom(url: str, timeout: int = 30, ua: str = DEFAULT_UA, proxy: str = None):
+def render_dom(url: str, timeout: int = 30, ua: str = DEFAULT_UA, proxy: str = None,
+               screenshot_path: str = None):
     """Return post-JS rendered HTML using Playwright (chromium). Requires playwright.
 
     `proxy` (if given) is passed to chromium so the rendered fetch egresses through it.
+    `screenshot_path` (if given) saves a full-page PNG of the rendered page — an
+    evidentiary capture of what the target actually served (phishing-kit evidence).
     """
     from playwright.sync_api import sync_playwright  # optional
     with sync_playwright() as p:
@@ -787,6 +790,12 @@ def render_dom(url: str, timeout: int = 30, ua: str = DEFAULT_UA, proxy: str = N
         html = page.content()
         final_url = page.url
         cookies = ctx.cookies()
+        if screenshot_path:
+            try:
+                os.makedirs(os.path.dirname(screenshot_path) or ".", exist_ok=True)
+                page.screenshot(path=screenshot_path, full_page=True)
+            except Exception as e:
+                print(f"[!] screenshot failed: {e}", file=sys.stderr)
         browser.close()
     return final_url, html, cookies
 
@@ -2019,6 +2028,12 @@ def main():
     ap.add_argument("--save-dom", nargs="?", const=True, default=None, metavar="PATH",
                     help="store the raw fetched/rendered DOM to disk. Bare flag → alongside "
                          "--out (<out>.html) or <host>.dom.html; or give an explicit PATH.")
+    ap.add_argument("--screenshot", nargs="?", const=True, default=None, metavar="PATH",
+                    help="save a full-page PNG of the rendered target (implies --render; "
+                         "evidentiary capture). Bare flag → <out>.png / <host>.png, or give a PATH.")
+    ap.add_argument("--misp", nargs="?", const=True, default=None, metavar="PATH",
+                    help="also write a MISP-event IOC bundle (JSON) of the extracted artifacts "
+                         "for sharing/import. Bare flag → <out>.misp.json or <host>.misp.json.")
     ap.add_argument("--submit", action="store_true",
                     help="actively archive the URL: submit to Wayback Save-Page-Now AND urlscan.io "
                          "(needs URLSCAN_API_KEY for the scan). Archives attached to result.archives.")
@@ -2039,6 +2054,8 @@ def main():
     ap.add_argument("--analyst", default=None,
                     help="analyst name/handle stamped on the intelligence assessment header")
     args = ap.parse_args()
+    if args.screenshot is not None and not args.render:
+        args.render = True   # a screenshot requires the rendered (Playwright) page
 
     # --- resolve User-Agent + proxy rotation. Crawling auto-enables UA rotation so a
     #     multi-page walk isn't one identical fingerprint; an explicit --ua pins one UA. ---
@@ -2066,6 +2083,7 @@ def main():
     html = ""
     live_error = None
     recovered_via = None
+    screenshot_file = None
     intel = None
     redirects = []  # redirect hops from the seed fetch (URL branch only)
     seed_ua, seed_proxy = DEFAULT_UA, None  # only used on the URL branch; reset there
@@ -2081,8 +2099,16 @@ def main():
         # --- try the live target first ---
         try:
             if args.render:
+                shot = None
+                if args.screenshot is not None:
+                    shot = (args.screenshot if isinstance(args.screenshot, str)
+                            else (re.sub(r"\.json$", "", args.out) + ".png" if args.out
+                                  else strip_www(urlparse(src).netloc) + ".png"))
                 base_url, html, cookies = render_dom(src, timeout=args.timeout, ua=seed_ua,
-                                                     proxy=seed_proxy)
+                                                     proxy=seed_proxy, screenshot_path=shot)
+                if shot and os.path.isfile(shot):
+                    screenshot_file = shot
+                    print(f"[+] saved screenshot -> {shot}", file=sys.stderr)
                 try:
                     _, _, headers, _ = fetch(base_url, timeout=args.timeout, ua=seed_ua,
                                              proxy=seed_proxy)
@@ -2135,6 +2161,8 @@ def main():
     if src.startswith(("http://", "https://")) and not result["meta"].get("host"):
         result["meta"]["host"] = strip_www(urlparse(src).netloc)
         result["meta"]["final_url"] = result["meta"].get("final_url") or src
+    if screenshot_file:
+        result.setdefault("archives", {})["screenshot"] = screenshot_file
 
     # --- redirect chain + affiliate/referral codes (first-class pivots for tracker links) ---
     if redirects:
@@ -2251,9 +2279,9 @@ def main():
         archives["urlscan"] = urlscan_submit(src, timeout=max(args.timeout, 30))
         u = archives["urlscan"]
         print(f"    urlscan: {u.get('result') or u.get('error') or u.get('skipped')}", file=sys.stderr)
-        result["archives"] = archives
+        result.setdefault("archives", {}).update(archives)   # keep any screenshot key
 
-    if args.report is not None or args.master is not None:
+    if args.report is not None or args.master is not None or args.misp is not None:
         import evidence_report
 
     # --- append this run's pivots to the master evidence ledger (for evidence folders) ---
@@ -2291,6 +2319,23 @@ def main():
         except Exception as e:
             print(f"[!] report generation failed: {e}", file=sys.stderr)
             print_report = False
+
+    # --- MISP IOC bundle (shareable) ---
+    if args.misp is not None:
+        misp_path = (args.misp if isinstance(args.misp, str)
+                     else (re.sub(r"\.json$", "", args.out) + ".misp.json" if args.out
+                           else (result["meta"].get("host") or "iocs") + ".misp.json"))
+        try:
+            event = evidence_report.render_misp_event(
+                result, event_info=(f"WebPivot IOCs — {args.case}" if args.case
+                                    else f"WebPivot IOCs — {result['meta'].get('host','')}"))
+            with open(misp_path, "w", encoding="utf-8") as f:
+                json.dump(event, f, indent=2, ensure_ascii=False)
+            result.setdefault("archives", {})["misp"] = misp_path
+            print(f"[+] wrote MISP IOC bundle ({len(event['Event']['Attribute'])} attributes) "
+                  f"-> {misp_path}", file=sys.stderr)
+        except Exception as e:
+            print(f"[!] MISP export failed: {e}", file=sys.stderr)
 
     # Persist the JSON whenever -o is given — independent of --leads. (--leads used to return
     # before this, silently dropping the -o file.)

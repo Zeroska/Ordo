@@ -718,6 +718,68 @@ def append_master(result: dict,
     }
 
 
+# =========================================================================== 3. MISP IOC bundle
+_MISP_IDS_TYPES = {"domain", "ip-dst", "url", "x509-fingerprint-sha256", "btc", "xmr", "email-src"}
+
+
+def render_misp_event(results, event_info: Optional[str] = None) -> dict:
+    """Build a shareable MISP-event IOC bundle from one or many pivot_extract results.
+
+    Maps artifacts to MISP attribute types (domain / ip-dst / x509-fingerprint-sha256 /
+    btc / email-src / text / link), deduped, with registrar-privacy/boilerplate noise
+    filtered out. Importable into MISP or convertible to STIX by MISP's own exporters."""
+    if isinstance(results, dict):
+        results = [results]
+    attrs, seen = [], set()
+
+    def add(t, v, cat, comment=""):
+        v = str(v).strip().rstrip(".")
+        if not v:
+            return
+        k = (t, v.lower())
+        if k in seen:
+            return
+        seen.add(k)
+        attrs.append({"type": t, "category": cat, "value": v,
+                      "to_ids": t in _MISP_IDS_TYPES, "comment": comment})
+
+    for r in results:
+        host = (r.get("meta") or {}).get("host") or ""
+        for p in r.get("pivots", []) or []:
+            kind, val = p.get("kind", ""), p.get("value")
+            if val is None or _is_noise_value(kind, val):
+                continue
+            if kind in ("domain", "urlscan_related_domain"):
+                add("domain", val, "Network activity", f"{kind} ({host})")
+            elif kind in ("urlscan_ip", "ip"):
+                add("ip-dst", val, "Network activity", f"{kind} ({host})")
+            elif kind == "tls_cert:fingerprint_sha256":
+                add("x509-fingerprint-sha256", val, "Network activity", f"TLS cert ({host})")
+            elif kind == "tls_cert:co_san":
+                for apex in str(val).split(","):
+                    add("domain", apex.strip(), "Network activity", f"co-SAN with {host}")
+            elif kind == "favicon_hash":
+                add("other", f"favicon-mmh3:{val}", "Payload delivery", f"favicon mmh3 ({host})")
+            elif kind.startswith(("tracker:", "verification:", "saas:")):
+                add("text", str(val), "External analysis", f"{kind} ({host})")
+            elif kind.startswith("crypto:"):
+                coin = kind.split(":", 1)[1]
+                add({"btc": "btc", "xmr": "xmr"}.get(coin, "other"), val, "Financial fraud",
+                    f"{kind} ({host})")
+            elif kind == "email":
+                add("email-src", val, "Payload delivery", f"contact/registrant ({host})")
+            elif kind.startswith("social:"):
+                add("link", val, "External analysis", f"{kind} ({host})")
+
+    hosts = sorted({(r.get("meta") or {}).get("host") for r in results
+                    if (r.get("meta") or {}).get("host")})
+    info = event_info or ("WebPivot IOCs — " + ", ".join(hosts[:5])
+                          + (" …" if len(hosts) > 5 else ""))
+    return {"Event": {"info": info, "date": _utc_now()[:10], "threat_level_id": "2",
+                      "analysis": "2", "distribution": "0",
+                      "Tag": [{"name": "source:WebPivot"}], "Attribute": attrs}}
+
+
 # =========================================================================== CLI
 def main():
     import argparse
@@ -730,6 +792,8 @@ def main():
                     help="one host JSON (single-host report) or many/globbed JSONs (cluster report)")
     ap.add_argument("--cluster", action="store_true",
                     help="force the cluster report even for one file")
+    ap.add_argument("--misp", metavar="PATH",
+                    help="write a MISP-event IOC bundle (JSON) instead of a Markdown report")
     ap.add_argument("--case", default=None)
     ap.add_argument("--analyst", default=None)
     ap.add_argument("--classification", default="UNCLASSIFIED//FOR OFFICIAL USE ONLY")
@@ -747,6 +811,14 @@ def main():
             print(f"[!] skip {p}: {e}", file=sys.stderr)
     if not results:
         sys.exit("no readable JSON inputs")
+
+    if a.misp:
+        event = render_misp_event(results, event_info=(f"WebPivot IOCs — {a.case}" if a.case else None))
+        with open(a.misp, "w", encoding="utf-8") as f:
+            json.dump(event, f, indent=2, ensure_ascii=False)
+        print(f"[+] wrote MISP IOC bundle ({len(event['Event']['Attribute'])} attributes) -> {a.misp}",
+              file=sys.stderr)
+        return
 
     if a.cluster or len(results) > 1:
         md = render_cluster_report(results, case=a.case, classification=a.classification,
