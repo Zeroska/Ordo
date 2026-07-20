@@ -218,7 +218,10 @@ tenants); only an **origin-candidate** IP gets reversed. Classification is attac
 domain pivot's `live_results.dns.ip_classification`. If the range cache is missing the step
 degrades gracefully (old behaviour). Refresh ranges with `python3 tools/cdn_ranges.py --update`.
 
-**What it extracts** (see `references/PivotArtifacts.md`): favicon mmh3/md5/sha256, analytics & ad IDs (GA4 `G-`, `GTM-`, AdSense `pub-`, FB Pixel, Yandex, Hotjar, Matomo, Sentry DSN, …), crypto wallets (BTC/ETH/XMR/TRON/LTC), emails, social handles, third-party hosts, inline-script SHA-256, form actions + input names (phishing-kit tell), HTML comments, DOM-skeleton hash (template reuse), tech fingerprints, cookie names, server headers, **SaaS / no-code operator tokens** (GoHighLevel `msgsndr` location ID, backend Google Sheet ID, Make/Zapier/Apps-Script automation webhooks, TrustedForm lead-cert) — attribution-grade for hosted-builder funnels, and only fully present in the `--render` DOM.
+**What it extracts** (see `references/PivotArtifacts.md`): favicon mmh3/md5/sha256, analytics & ad IDs (GA4 `G-`, `GTM-`, AdSense `pub-`, FB Pixel, Yandex, Hotjar, Matomo, Sentry DSN, …), crypto wallets (BTC/ETH/XMR/TRON/LTC), **app-download artifacts** (direct `.apk`/`.aab`/`.ipa`
+URLs + the backend host serving them, Android package ids, iOS app ids, smart-app-banner meta,
+`intent://` deep links, and the APK **signing-cert SHA-256** + package from `/.well-known/assetlinks.json`),
+emails, social handles, third-party hosts, inline-script SHA-256, form actions + input names (phishing-kit tell), HTML comments, DOM-skeleton hash (template reuse), tech fingerprints, cookie names, server headers, **SaaS / no-code operator tokens** (GoHighLevel `msgsndr` location ID, backend Google Sheet ID, Make/Zapier/Apps-Script automation webhooks, TrustedForm lead-cert) — attribution-grade for hosted-builder funnels, and only fully present in the `--render` DOM.
 
 **What it emits:** a `pivots` array, ranked high→low confidence, each with copy-paste queries for the right engine (with the correct hash algorithm per engine — Shodan/FOFA=mmh3, Censys=MD5, Netlas=SHA-256), plus redirect-chain / affiliate-code pivots for tracker links, live-TLS-cert pivots (`tls_cert:co_san` cross-apex + `tls_cert:fingerprint_sha256`), and reverse-WHOIS (email + name, current + historic) under `--whois-reverse`.
 

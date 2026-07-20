@@ -1131,6 +1131,78 @@ def extract_crypto(text: str):
     return found
 
 
+# --- Android / iOS app-download artifacts -------------------------------------------
+# Scam "trading/investment app" funnels push a SIDELOADED APK (the sideload itself is a
+# tell) or link a store listing. The .apk URL, the host serving it, and the package name
+# are all high-value pivots (backend infra + reuse across clones).
+_APK_EXT_RE = re.compile(
+    r"""(?:href|src|data-[\w-]+|content|url)\s*[=:]\s*["'(]?\s*"""
+    r"""((?:https?:)?[^"'()\s<>]+?\.(?:apk|aab|xapk|ipa|plist))(?:\?[^"'()\s<>]*)?""", re.I)
+_APK_BARE_RE = re.compile(r"""https?://[^\s"'()<>]+?\.(?:apk|aab|xapk)(?:\?[^\s"'()<>]*)?""", re.I)
+_PLAY_RE = re.compile(r"""play\.google\.com/store/apps/details\?[^"'\s<>]*?id=([A-Za-z0-9._]+)""", re.I)
+_APPLE_RE = re.compile(r"""apps\.apple\.com/[^"'\s<>]*?/id(\d{6,})""", re.I)
+_SMART_PLAY_RE = re.compile(r"""name=["']google-play-app["'][^>]*content=["'][^"']*app-id=([A-Za-z0-9._]+)""", re.I)
+_SMART_APPLE_RE = re.compile(r"""name=["']apple-itunes-app["'][^>]*content=["'][^"']*app-id=(\d+)""", re.I)
+_INTENT_RE = re.compile(r"""(intent://[^"'\s<>]+)""", re.I)
+
+
+def extract_app_downloads(html: str, base_url: str = ""):
+    """Find app-download artifacts: direct APK/AAB/IPA URLs, Play/App-Store package ids,
+    smart-app-banner meta, and intent:// deep links. HTML-only (no fetch)."""
+    out = {}
+    apk = []
+    for m in _APK_EXT_RE.finditer(html):
+        apk.append(m.group(1))
+    apk += _APK_BARE_RE.findall(html)
+    resolved = []
+    for u in apk:
+        try:
+            resolved.append(unwrap_wayback(urljoin(base_url or "", u)))
+        except Exception:
+            resolved.append(u)
+    apk = uniq([u for u in resolved if re.search(r"\.(apk|aab|xapk)(\?|$)", u, re.I)])
+    ipa = uniq([u for u in resolved if re.search(r"\.(ipa|plist)(\?|$)", u, re.I)])
+    if apk:
+        out["apk_urls"] = apk[:20]
+    if ipa:
+        out["ios_pkg_urls"] = ipa[:10]
+    pkgs = uniq(_PLAY_RE.findall(html) + _SMART_PLAY_RE.findall(html))
+    if pkgs:
+        out["android_packages"] = pkgs[:15]
+    appids = uniq(_APPLE_RE.findall(html) + _SMART_APPLE_RE.findall(html))
+    if appids:
+        out["ios_app_ids"] = appids[:15]
+    intents = uniq(_INTENT_RE.findall(html))
+    if intents:
+        out["deep_links"] = intents[:15]
+    return out
+
+
+def fetch_assetlinks(host: str, timeout: int = 10, ua: str = DEFAULT_UA, proxy: str = None):
+    """Fetch /.well-known/assetlinks.json (Android App Links). Returns the declared
+    package name(s) + the APK SIGNING-CERT sha256 fingerprint(s) — a developer-level pivot
+    that clusters every APK signed by the same key. None if absent/unreachable."""
+    url = f"https://{host}/.well-known/assetlinks.json"
+    try:
+        _, status, _, body = fetch(url, timeout=timeout, ua=ua, proxy=proxy)
+        if status >= 400 or not body:
+            return None
+        data = json.loads(body.decode("utf-8", "ignore"))
+    except Exception:
+        return None
+    pkgs, fps = set(), set()
+    for entry in data if isinstance(data, list) else []:
+        tgt = (entry or {}).get("target", {})
+        if tgt.get("namespace") == "android_app":
+            if tgt.get("package_name"):
+                pkgs.add(tgt["package_name"])
+            for fp in tgt.get("sha256_cert_fingerprints", []) or []:
+                fps.add(str(fp).upper().replace(" ", ""))
+    if not (pkgs or fps):
+        return None
+    return {"packages": sorted(pkgs), "sha256_cert_fingerprints": sorted(fps)}
+
+
 def extract_socials(hosts_hrefs):
     out = {}
     for href in hosts_hrefs:
@@ -1368,6 +1440,44 @@ def build_pivots(art: dict, base_host: str):
             add("tls_cert:co_san", ", ".join(co_apexes[:20]), "high", queries,
                 "Distinct registrable domains sharing one TLS certificate = same operator.")
 
+    app = art.get("app_downloads") or {}
+    for apk in app.get("apk_urls", []):
+        apk_host = strip_www(urlparse(apk).netloc)
+        add("app:apk", apk, "high", [
+            {"service": "download+analyze", "query": f"pull {apk} → sha256 → VirusTotal / Koodous / MobSF"},
+            {"service": "urlscan.io", "query": f'"{apk}"'},
+            {"service": "PublicWWW", "query": f'"{apk}"'},
+            {"service": "crt.sh (backend host)", "query": f"%.{apk_host}"},
+            {"service": "reverse-IP (backend host)", "query": apk_host},
+        ], f"Sideloaded APK download — the host serving it ({apk_host}) is backend infra; "
+           f"hash the APK and pivot its signing cert / package.")
+    for pkg in app.get("android_packages", []):
+        add("app:android_package", pkg, "high", [
+            {"service": "PublicWWW", "query": f'"{pkg}"'},
+            {"service": "urlscan.io", "query": f'"{pkg}"'},
+            {"service": "Google/APKPure/APKCombo", "query": pkg},
+            {"service": "VirusTotal / Koodous", "query": pkg},
+        ], "Android package id — reused across scam-app clones = same operator.")
+    for appid in app.get("ios_app_ids", []):
+        add("app:ios_app_id", appid, "medium", [
+            {"service": "App Store", "query": f"https://apps.apple.com/app/id{appid}"},
+            {"service": "search engine", "query": f'"id{appid}"'},
+        ], "iOS app id — pivots the developer account across listings.")
+    al = app.get("assetlinks") or {}
+    for fp in al.get("sha256_cert_fingerprints", []):
+        add("app:signing_sha256", fp, "high", [
+            {"service": "Koodous / AndroZoo", "query": fp},
+            {"service": "search other assetlinks.json", "query": f'"{fp}"'},
+            {"service": "PublicWWW", "query": f'"{fp}"'},
+        ], "APK signing-cert SHA-256 (from assetlinks.json) — clusters every app signed by "
+           "the same developer key, across unrelated domains.")
+    for pkg in al.get("packages", []):
+        if pkg not in app.get("android_packages", []):
+            add("app:android_package", pkg, "high", [
+                {"service": "PublicWWW", "query": f'"{pkg}"'},
+                {"service": "Google/APKPure", "query": pkg},
+            ], "Android package id declared in assetlinks.json.")
+
     for label, token in art.get("verifications", {}).items():
         add(f"verification:{label}", token, "high", [
             {"service": "PublicWWW", "query": f'"{token}"'},
@@ -1536,6 +1646,17 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
             else:
                 tls_cert = fetch_tls_cert(parsed.hostname, parsed.port or 443, timeout=8)
 
+    # --- app-download artifacts (scam trading-app / APK funnels) ---
+    app_downloads = extract_app_downloads(html, base_url)
+    # Android App Links: /.well-known/assetlinks.json → package + APK signing-cert sha256
+    # (developer-level pivot). Same live-https / non-archived / non-proxied gate as TLS.
+    if (probe_tls and effective_url and not is_archived and not proxy):
+        parsed = urlparse(effective_url)
+        if parsed.scheme == "https" and parsed.hostname:
+            al = fetch_assetlinks(parsed.hostname, ua=ua, proxy=proxy)
+            if al:
+                app_downloads["assetlinks"] = al
+
     cookie_names = []
     if "set-cookie" in headers:
         cookie_names = uniq([c.split("=")[0].strip()
@@ -1549,6 +1670,7 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
         "verifications": verifications,
         "favicon": favicon,
         "tls_cert": tls_cert,
+        "app_downloads": app_downloads,
         "trackers": trackers,
         "saas_ids": saas_ids,
         "crypto": crypto,

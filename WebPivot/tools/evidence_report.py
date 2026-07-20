@@ -768,6 +768,12 @@ def render_misp_event(results, event_info: Optional[str] = None) -> dict:
                     f"{kind} ({host})")
             elif kind == "email":
                 add("email-src", val, "Payload delivery", f"contact/registrant ({host})")
+            elif kind == "app:apk":
+                add("url", val, "Payload delivery", f"APK download ({host})")
+            elif kind == "app:signing_sha256":
+                add("x509-fingerprint-sha256", val, "Payload delivery", f"APK signing cert ({host})")
+            elif kind in ("app:android_package", "app:ios_app_id"):
+                add("text", val, "Payload delivery", f"{kind} ({host})")
             elif kind.startswith("social:"):
                 add("link", val, "External analysis", f"{kind} ({host})")
 
