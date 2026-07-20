@@ -218,6 +218,24 @@ python3 "$WP/tools/graph_build.py" "$CASE"/raw/*.json --operator "name" --operat
 ```
 See `Workflows/NetworkGraph.md` for the full extract → build → render pipeline and how to read it.
 
+**Finished-intelligence reporting (ICD-203 / CIA tradecraft) — `tools/evidence_report.py`.**
+Turn raw pivots into a **readable analyst assessment** instead of dumping JSON. Two levels:
+- **Per host** — `pivot_extract.py <host> --report [PATH] --case <name> --analyst <you>` renders a
+  single-target assessment: classification banner, **BLUF**, **Key Judgments** with ICD-203
+  estimative language (*almost certainly / likely / roughly even chance*) and calibrated
+  **analytic confidence** (high/moderate/low), a fact-vs-assessment split, and an intelligence-gaps
+  section. `--master PATH.csv|.xlsx` also appends every pivot to a **court-ready evidence ledger**
+  (dedupes on a stable `evidence_id`).
+- **Whole case (cluster)** — `python3 tools/evidence_report.py cases/<case>/raw/*.json --case <name>
+  --analyst <you> [-o cases/<case>/assessment.md]` rolls ALL hosts into **one** ICD-203 assessment:
+  BLUF verdict, cluster **Key Judgments** (hosts sharing ≥2 independent identity artifacts →
+  *almost certainly one operator, high confidence*), a **Confirmed Sub-Clusters** table, a
+  **Discovered Infrastructure** section (hosts found via origin-IP reverse, not in the input set),
+  a per-host facts table, and a **Suppressed-as-Noise** transparency block (registrar-privacy
+  emails, CDN edge IPs, and privacy-proxy registrant placeholders are filtered out FIRST so
+  boilerplate never earns a judgment). `intel.py open` writes this to `cases/<case>/assessment.md`
+  automatically (use `--no-report` to skip; `--analyst` / `--classification` to stamp it).
+
 ## Workflow Routing
 
 | Request | Workflow |
@@ -262,6 +280,14 @@ page analyzed, produce all three, in order:
    ```bash
    python3 tools/kb/query.py --kb knowledge --shared --min 2
    ```
+4. **Reported** as a human-readable **ICD-203 assessment** — the analyst deliverable, not raw JSON.
+   `intel.py open` writes `cases/<case>/assessment.md` for you; otherwise render it explicitly:
+   ```bash
+   python3 tools/evidence_report.py cases/<case>/raw/*.json --case <case> \
+       --analyst <you> -o cases/<case>/assessment.md
+   ```
+   Present the BLUF + Key Judgments to the user (table / verdict / estimative wording) — do NOT
+   end a run by pasting raw pivot JSON. For a single page, `pivot_extract.py … --report`.
 
 Fixed filename rule: **one file per host**, named exactly `<host>.json` (the bare hostname,
 no scheme, no trailing slash) so re-runs overwrite instead of duplicating. Same host analyzed

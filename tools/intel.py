@@ -88,13 +88,17 @@ def _run(cmd, **kw):
     return subprocess.run(cmd, **kw)
 
 
-def _extract_one(host, case_dir, timeout, whois_reverse):
+def _extract_one(host, case_dir, timeout, whois_reverse, fofa_full=False, render=False):
     """Extract one host into raw/<host>.json. Returns (host, ok, note)."""
     out_file = os.path.join(case_dir, "raw", f"{host}.json")
     cmd = [sys.executable, os.path.join(WP, "pivot_extract.py"),
            f"https://{host}", "--pretty", "--timeout", str(timeout), "-o", out_file]
     if whois_reverse:
         cmd.append("--whois-reverse")
+    if fofa_full:
+        cmd.append("--fofa-full")   # FOFA reverses over all historical data (full=true)
+    if render:
+        cmd.append("--render")      # post-JS DOM — unlocks SaaS/analytics tokens
 
     def attempt():
         r = _run(cmd, capture_output=True, text=True)
@@ -130,7 +134,8 @@ def cmd_open(a):
     # 1) extract (parallel) --------------------------------------------------
     ok, failed = [], []
     with cf.ThreadPoolExecutor(max_workers=max(1, a.jobs)) as ex:
-        futs = {ex.submit(_extract_one, h, case_dir, a.timeout, a.whois_reverse): h
+        futs = {ex.submit(_extract_one, h, case_dir, a.timeout, a.whois_reverse,
+                          a.fofa_full, a.render_extract): h
                 for h in hosts}
         for fut in cf.as_completed(futs):
             host, good, note = fut.result()
@@ -177,7 +182,29 @@ def cmd_open(a):
             else:
                 print(f"   note: render_network.py not found at {rn}; skipped --render.")
 
-    # 5) completeness summary (stable output is auditable) ------------------
+    # 5) cluster intelligence assessment (ICD-203) -> cases/<case>/assessment.md
+    if not a.no_report:
+        assess_path = os.path.join(case_dir, "assessment.md")
+        print(f"== rendering ICD-203 cluster assessment -> {os.path.relpath(assess_path, ROOT)} ==")
+        try:
+            sys.path.insert(0, WP)
+            import evidence_report
+            import json as _json
+            results = []
+            for rf in raw_files:
+                try:
+                    results.append(_json.load(open(rf, encoding="utf-8")))
+                except Exception:
+                    pass
+            md = evidence_report.render_cluster_report(
+                results, case=a.case, analyst=a.analyst,
+                classification=a.classification)
+            with open(assess_path, "w", encoding="utf-8") as fh:
+                fh.write(md)
+        except Exception as e:
+            print(f"   note: assessment render failed ({e}); skipped.")
+
+    # 6) completeness summary (stable output is auditable) ------------------
     print("\n== summary ==")
     print(f"   extracted: {len(ok)}/{len(hosts)}   raw files: {len(raw_files)}")
     if failed:
@@ -211,12 +238,21 @@ def main():
     o.add_argument("domains", help="file with one domain/URL per line")
     o.add_argument("--jobs", type=int, default=4)
     o.add_argument("--whois-reverse", action="store_true")
+    o.add_argument("--fofa-full", action="store_true",
+                   help="FOFA reverses over ALL historical data (full=true), not just ~1yr")
+    o.add_argument("--render-extract", action="store_true",
+                   help="render post-JS DOM per page (unlocks SaaS/analytics tokens; needs playwright)")
     o.add_argument("--render", action="store_true")
     o.add_argument("--no-graph", action="store_true")
     o.add_argument("--operator", default=None)
     o.add_argument("--operator-links", default=None)
     o.add_argument("--min", type=int, default=2)
     o.add_argument("--timeout", type=int, default=20)
+    o.add_argument("--no-report", action="store_true",
+                   help="skip the ICD-203 cluster assessment (default: write assessment.md)")
+    o.add_argument("--analyst", default=None, help="analyst handle stamped on the assessment")
+    o.add_argument("--classification", default="UNCLASSIFIED//FOR OFFICIAL USE ONLY",
+                   help="classification banner for the assessment")
     o.set_defaults(func=cmd_open)
 
     s = sub.add_parser("status", help="audit an existing case's persisted outputs")
