@@ -526,6 +526,80 @@ def passivedns_search(domain: str, timeout: int = 25):
             "hosts": hosts[:80], "ips": sorted(ips)[:40]}
 
 
+def pdns_search(query: str, timeout: int = 25):
+    """Passive-DNS lookup via a CIRCL-style COF endpoint (HTTP Basic auth).
+
+    The `PDNS_USERNAME` + `PDNS_PASSWORD` credential pair is the CIRCL / Passive-DNS
+    Common Output Format (COF) convention; CIRCL and most self-hosted / commercial COF
+    instances answer at `<base>/<query>` with HTTP Basic auth and reply in newline-
+    delimited JSON (one record per line). Base URL comes from `PDNS_URL` (default CIRCL).
+
+    `query` is a domain OR an IP. Returns
+      {'query','total','records':[{rrname,rrtype,rdata,time_first,time_last,count}],
+       'ips':[...], 'domains':[...]}   (historical IPs a name used + names seen on an IP)
+    or {'error':...}, or None if no PDNS credentials are configured.
+    """
+    user = _secret("PDNS_USERNAME")
+    pw = _secret("PDNS_PASSWORD")
+    if not (user and pw):
+        return None
+    base = (_secret("PDNS_URL") or "https://www.circl.lu/pdns/query").rstrip("/")
+    url = f"{base}/{quote(query)}"
+    auth = base64.b64encode(f"{user}:{pw}".encode()).decode()
+    req = urllib.request.Request(url, headers={
+        "User-Agent": DEFAULT_UA, "Accept": "application/json",
+        "Authorization": "Basic " + auth})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = r.read().decode("utf-8", "ignore").strip()
+    except urllib.error.HTTPError as e:
+        return {"query": query, "error": f"HTTP {e.code} {e.reason}"}
+    except Exception as e:
+        return {"query": query, "error": str(e)}
+    if not body:
+        return {"query": query, "total": 0, "records": [], "ips": [], "domains": []}
+    # COF is usually newline-delimited JSON; tolerate a single JSON array too.
+    lines = []
+    if body[0] == "[":
+        try:
+            lines = json.loads(body)
+        except Exception:
+            lines = []
+    else:
+        for ln in body.splitlines():
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                lines.append(json.loads(ln))
+            except Exception:
+                continue
+    records, ips, domains = [], set(), set()
+    for rec in lines:
+        if not isinstance(rec, dict):
+            continue
+        rrtype = str(rec.get("rrtype", "")).upper()
+        rrname = str(rec.get("rrname", "")).rstrip(".").lower()
+        rdata = str(rec.get("rdata", "")).rstrip(".").lower()
+        records.append({"rrname": rrname, "rrtype": rrtype, "rdata": rec.get("rdata"),
+                        "time_first": rec.get("time_first"), "time_last": rec.get("time_last"),
+                        "count": rec.get("count")})
+        if rrtype in ("A", "AAAA"):
+            # domain query -> rdata is a historical IP; IP query -> rrname is a domain
+            if _IPV4_RE.fullmatch(rdata) or ":" in rdata:
+                ips.add(rdata)
+            if rrname:
+                domains.add(rrname)
+        elif rrtype in ("NS", "CNAME", "MX", "PTR", "SOA"):
+            for d in (rrname, rdata):
+                if d and not _IPV4_RE.fullmatch(d):
+                    domains.add(d)
+    q = query.lower()
+    return {"query": query, "total": len(records), "records": records[:100],
+            "ips": sorted(i for i in ips if i)[:60],
+            "domains": sorted(d for d in domains if d and d != q)[:80]}
+
+
 _IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 
@@ -1321,6 +1395,7 @@ def build_pivots(art: dict, base_host: str):
         add("domain", base_host, "high", [
             {"service": "crt.sh", "query": f"%.{base_host}"},
             {"service": "urlscan.io", "query": f"domain:{base_host}"},
+            {"service": "CIRCL PDNS", "query": base_host},
             {"service": "Wayback CDX", "query": f"http://web.archive.org/cdx/search/cdx?url={base_host}*&output=json&collapse=urlkey"},
             {"service": "ViewDNS reverse-IP", "query": base_host},
         ], "Certificate transparency + passive DNS for related hosts.")
@@ -1593,9 +1668,12 @@ def enrich_live(result: dict, fofa_full: bool = False) -> dict:
     """
     have_fofa = bool(_secret("FOFA_KEY", "FOFA_API_KEY"))
     have_urlscan = bool(_secret("URLSCAN_API_KEY"))
+    have_pdns = bool(_secret("PDNS_USERNAME") and _secret("PDNS_PASSWORD"))
     sources = ["crtsh", "passivedns", "urlscan"]  # keyless domain enrichment
     if have_fofa:
         sources.append("fofa-full" if fofa_full else "fofa")
+    if have_pdns:
+        sources.append("pdns")
     result.setdefault("meta", {})["enriched_with"] = sources
     for piv in result.get("pivots", []):
         kind, val = piv.get("kind", ""), piv.get("value")
@@ -1608,7 +1686,9 @@ def enrich_live(result: dict, fofa_full: bool = False) -> dict:
                     "crtsh": lambda: crtsh_search(val),
                     "passivedns": lambda: passivedns_search(val),
                     "urlscan": lambda: urlscan_search(f"domain:{val}")}
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+            if have_pdns:
+                jobs["pdns"] = lambda: pdns_search(val)   # CIRCL-COF passive DNS (historical IPs + co-hosted names)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
                 futures = {k: ex.submit(fn) for k, fn in jobs.items()}
                 lr = {k: fu.result() for k, fu in futures.items()}
             # Anchor pivots to the LIVE IP: reverse-search FOFA on what DNS resolves to
@@ -1635,7 +1715,8 @@ def enrich_live(result: dict, fofa_full: bool = False) -> dict:
                     lr["fofa_ip_reverse"] = fofa_search(f'ip="{fofa_ip}"',
                                                         fields="host,ip,domain,title,server",
                                                         full=fofa_full)
-                passive_ips = set(lr.get("passivedns", {}).get("ips", []) or [])
+                passive_ips = set((lr.get("passivedns") or {}).get("ips", []) or [])
+                passive_ips |= set((lr.get("pdns") or {}).get("ips", []) or [])   # historical PDNS IPs
                 stale = sorted(passive_ips - set(live_ips))
                 if stale:
                     lr["dns"]["stale_passive_ips"] = stale

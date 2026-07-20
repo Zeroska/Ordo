@@ -12,7 +12,8 @@ If this directory exists, load and apply any PREFERENCES.md, API keys, or resour
 
 **API keys (optional — enables live pivoting).** `pivot_extract.py` reads keys from the
 environment first, then from a `chmod 600` `.env` in the customization dir (env wins).
-Recognized: `URLSCAN_API_KEY`, `FOFA_KEY` (or `FOFA_API_KEY`), `FOFA_EMAIL`, `WHOISXML_API_KEY`.
+Recognized: `URLSCAN_API_KEY`, `FOFA_KEY` (or `FOFA_API_KEY`), `FOFA_EMAIL`, `WHOISXML_API_KEY`,
+`PDNS_USERNAME` + `PDNS_PASSWORD` (passive DNS, optional `PDNS_URL`).
 With keys set, the tool runs the HIGH-confidence pivots live — FOFA reverses the favicon
 `icon_hash` and tracker/verification bodies, authenticated urlscan content-searches the same
 values, and WhoisXML adds current + historical registrant data plus reverse-WHOIS pivots — all
@@ -23,6 +24,13 @@ run every FOFA reverse (favicon `icon_hash`, tracker/verification bodies, live-I
 over **all historical data** (`full=true`) — this catches assets that were live in the past
 and later scrubbed. Requires a FOFA tier that permits full/historical search; lower tiers
 ignore or reject `full=true`.
+**Passive DNS (CIRCL-style COF) — `PDNS_USERNAME` + `PDNS_PASSWORD`.** When set, live
+enrichment adds a passive-DNS lookup on the base host: historical IPs the domain has used
+(folded into the stale-vs-live-IP check) and other domains seen co-hosted on the same IPs —
+attached to the domain pivot as `live_results.pdns` and counted toward corroboration. Uses HTTP
+Basic auth against `PDNS_URL` (default CIRCL `https://www.circl.lu/pdns/query`); point `PDNS_URL`
+at any COF-compatible instance. No creds → the lookup is simply skipped (keyless mode unchanged).
+
 **No keys → keyless mode, unchanged.** Prefer macOS Keychain over a plaintext `.env`;
 see `SKILLCUSTOMIZATIONS/WebPivot/PREFERENCES.md` for setup.
 

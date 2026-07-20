@@ -90,7 +90,7 @@ def _live_hits(pivot: dict) -> list:
         out.append("live DNS: " + ", ".join(dns["ips"]))
     for key, label in (("fofa", "FOFA"), ("urlscan", "urlscan"),
                        ("crtsh", "crt.sh"), ("passivedns", "passive DNS"),
-                       ("fofa_ip_reverse", "FOFA reverse-IP")):
+                       ("pdns", "PDNS"), ("fofa_ip_reverse", "FOFA reverse-IP")):
         blk = lr.get(key) or {}
         total = blk.get("total")
         if total:
@@ -396,7 +396,7 @@ def render_cluster_report(results: list,
                     if c.get("cdn") is True:
                         suppressed_ips[c["ip"]] = c.get("provider") or "cdn"
                 # discovered infra from origin-IP reverse (only ran on origin candidates)
-                for lr_key in ("fofa_ip_reverse", "fofa", "urlscan"):
+                for lr_key in ("fofa_ip_reverse", "fofa", "urlscan", "pdns"):
                     blk = (p.get("live_results") or {}).get(lr_key) or {}
                     for h in (blk.get("results") or blk.get("domains") or []):
                         hh = _norm(h.get("domain") or h.get("host") if isinstance(h, dict) else h)
