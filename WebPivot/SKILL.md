@@ -187,24 +187,6 @@ content like inline form scripts only appears there). `--submit` attaches `archi
 and `archives.urlscan.result` to the JSON. A Wayback read-timeout does **not** mean the capture
 failed — Save-Page-Now usually completes server-side.
 
-**Evidentiary screenshot — `--screenshot [PATH]`.** With rendering on, saves a full-page PNG
-of what the target actually served (phishing-kit evidence); implies `--render`, path recorded in
-`result.archives.screenshot`. Needs the playwright venv (see `--render`).
-
-**IOC bundle for sharing — `--misp [PATH]`.** Writes a MISP-event JSON of the extracted
-artifacts (domains, IPs, TLS cert fingerprints, wallets, tokens) — importable into MISP or
-convertible to STIX. Registrar-privacy/boilerplate is filtered out. Also case-wide:
-`python3 tools/evidence_report.py cases/<case>/raw/*.json --case <c> --misp cases/<c>/iocs.misp.json`.
-
-**Continuous CT brand monitoring — `tools/ct_monitor.py`.** A zero-dependency, poll-based
-stand-in for certstream: polls Certificate Transparency (crt.sh, Certspotter fallback), remembers
-seen certs in a state file, and on each run reports only NEWLY-ISSUED certs for a brand — run on a
-loop/cron; fresh SANs print as ready-to-pivot seeds. Domain monitoring is reliable; `%keyword%` is
-best-effort (crt.sh throttles broad LIKE). First run baselines silently.
-```bash
-python3 tools/ct_monitor.py watch ultimamarkets.com vtm.trading --state "$CASE/ct_state.json"
-```
-
 **Historical analytics (Bellingcat method) — `tools/wayback_ga.py`.** Walks a domain's
 *entire Wayback history* and extracts every GA/GTM/AdSense/verification ID ever present —
 catching shared IDs that a network later scrubbed. Passive (only touches web.archive.org).
@@ -250,23 +232,10 @@ python3 "$WP/tools/graph_build.py" "$CASE"/raw/*.json --operator "name" --operat
 ```
 See `Workflows/NetworkGraph.md` for the full extract → build → render pipeline and how to read it.
 
-**Finished-intelligence reporting (ICD-203 / CIA tradecraft) — `tools/evidence_report.py`.**
-Turn raw pivots into a **readable analyst assessment** instead of dumping JSON. Two levels:
-- **Per host** — `pivot_extract.py <host> --report [PATH] --case <name> --analyst <you>` renders a
-  single-target assessment: classification banner, **BLUF**, **Key Judgments** with ICD-203
-  estimative language (*almost certainly / likely / roughly even chance*) and calibrated
-  **analytic confidence** (high/moderate/low), a fact-vs-assessment split, and an intelligence-gaps
-  section. `--master PATH.csv|.xlsx` also appends every pivot to a **court-ready evidence ledger**
-  (dedupes on a stable `evidence_id`).
-- **Whole case (cluster)** — `python3 tools/evidence_report.py cases/<case>/raw/*.json --case <name>
-  --analyst <you> [-o cases/<case>/assessment.md]` rolls ALL hosts into **one** ICD-203 assessment:
-  BLUF verdict, cluster **Key Judgments** (hosts sharing ≥2 independent identity artifacts →
-  *almost certainly one operator, high confidence*), a **Confirmed Sub-Clusters** table, a
-  **Discovered Infrastructure** section (hosts found via origin-IP reverse, not in the input set),
-  a per-host facts table, and a **Suppressed-as-Noise** transparency block (registrar-privacy
-  emails, CDN edge IPs, and privacy-proxy registrant placeholders are filtered out FIRST so
-  boilerplate never earns a judgment). `intel.py open` writes this to `cases/<case>/assessment.md`
-  automatically (use `--no-report` to skip; `--analyst` / `--classification` to stamp it).
+**Reporting is the deliverable — `Workflows/Reporting.md`.** Every run ends with a readable
+**ICD-203 assessment** (`--report` per host; `evidence_report.py` for a whole-campaign rollup),
+not raw JSON — plus evidence ledger (`--master`), IOC bundle (`--misp`), evidence screenshot
+(`--screenshot`), and CT brand monitoring (`tools/ct_monitor.py`). Flags + examples there.
 
 ## Workflow Routing
 
@@ -277,6 +246,7 @@ Turn raw pivots into a **readable analyst assessment** instead of dumping JSON. 
 | Cluster many pages into campaigns / find sibling sites | `Workflows/CampaignClustering.md` |
 | Find sites via shared/scrubbed analytics IDs over time (Bellingcat) | `Workflows/HistoricalAnalytics.md` |
 | Build a clustered, interactive link graph to tell the story | `Workflows/NetworkGraph.md` |
+| Write the report / evidence ledger / IOC bundle, or monitor a brand's new certs | `Workflows/Reporting.md` |
 
 ## Trigger Patterns
 
@@ -320,6 +290,7 @@ page analyzed, produce all three, in order:
    ```
    Present the BLUF + Key Judgments to the user (table / verdict / estimative wording) — do NOT
    end a run by pasting raw pivot JSON. For a single page, `pivot_extract.py … --report`.
+   Ledger / IOC-bundle / monitoring options: `Workflows/Reporting.md`.
 
 Fixed filename rule: **one file per host**, named exactly `<host>.json` (the bare hostname,
 no scheme, no trailing slash) so re-runs overwrite instead of duplicating. Same host analyzed
