@@ -100,7 +100,7 @@ in a state file, and on each run reports only **newly-issued** certs for a brand
 print as ready-to-pivot seeds.
 ```bash
 # first run baselines silently; run on a loop/cron thereafter
-python3 tools/ct_monitor.py watch ultimamarkets.com vtm.trading --state "$CASE/ct_state.json"
+python3 tools/ct_monitor.py watch brand-a.example brand-b.example --state "$CASE/ct_state.json"
 python3 tools/ct_monitor.py watch -f brands.txt --state "$CASE/ct_state.json" --json
 ```
 Domain monitoring is reliable (include-subdomains); a bare `%keyword%` is best-effort (crt.sh

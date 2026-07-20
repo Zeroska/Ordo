@@ -14,7 +14,7 @@ fig, ax = plt.subplots(figsize=(9,5))
 ax.barh(labels, values, color=PALETTE["primary"])
 ax.grid(axis="x"); ax.grid(axis="y", visible=False)
 title_block(ax, "Fake banking APK families observed", "Last 90 days")
-caption(fig, source="CyPeace CTI", grading="B2", date="2026-07-08")
+caption(fig, source="CTI team", grading="B2", date="2026-07-08")
 save_dual(fig, "outputs/apk_families")
 ```
 

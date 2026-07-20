@@ -13,7 +13,7 @@ Requires matplotlib:  pip install matplotlib
     from theme import apply_theme, PALETTE, save_dual, caption
     apply_theme(lang="en")
     ...
-    caption(fig, source="CyPeace CTI", grading="B2", date="2026-07-08")
+    caption(fig, source="CTI team", grading="B2", date="2026-07-08")
     save_dual(fig, "/path/out")   # out_hires.png (300dpi), out.svg, out_thumb.png
 """
 

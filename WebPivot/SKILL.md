@@ -158,8 +158,8 @@ the more interesting entity than the broker. Shown inline in `--leads`.
 **Registrant-name reverse WHOIS (run historic!).** With `--whois-reverse`, the tool now runs
 reverse-WHOIS by registrant **name** (not just email), in **both current and historic** modes, and
 attaches the sibling domains to the `whois:registrant_name` pivot's `live_results`. A shared
-registrant name can cluster sites that share *no* technical artifact — historic mode is what linked
-the two Yu Fan Tan forex brands when current-only returned a single domain.
+registrant name can cluster sites that share *no* technical artifact — historic mode has linked
+sibling brands that a current-only lookup returned as a single unrelated domain.
 
 **Low-profile fetch + boilerplate filtering.** Requests carry a full browser header profile (not
 just User-Agent), so basic Cloudflare/LiteSpeed bot filters don't reset the fetch. Platform-default

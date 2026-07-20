@@ -9,7 +9,7 @@ each run report only the NEWLY-ISSUED certs for a brand keyword or domain. Run i
 loop or cron for continuous brand monitoring — the fresh SANs become new WebPivot seeds.
 
     # establish a baseline (first run never alerts), then poll on a schedule
-    python3 tools/ct_monitor.py watch ultimamarkets --state cases/um/ct_state.json
+    python3 tools/ct_monitor.py watch example-brand --state cases/<case>/ct_state.json
     python3 tools/ct_monitor.py watch -f brands.txt --state ct_state.json --json
     # a keyword matches substrings (crt.sh %kw%); a dotted value is treated as a domain
     watch -c '*/15 * * * *'  via cron, or:  while :; do python3 ct_monitor.py watch … ; sleep 900; done

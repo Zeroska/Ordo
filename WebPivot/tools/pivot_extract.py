@@ -1991,7 +1991,7 @@ def whois_enrich_result(result: dict, do_reverse: bool = False,
             "kind": "whois:registrant_name", "value": name, "confidence": "medium",
             "note": ("Registrant name — reverse WHOIS finds the owner's other domains. Run "
                      "HISTORIC too: a name can tie sites that share no technical artifact "
-                     "(this is what linked the Yu Fan Tan forex brands)."),
+                     "(historic-mode reverse-WHOIS by name links brands a current-only lookup misses)."),
             "queries": [
                 {"service": "WhoisXML reverse-whois", "query": f'registrant name = "{name}"'},
                 {"service": "ViewDNS reverse-whois", "query": name},

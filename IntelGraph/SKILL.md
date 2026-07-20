@@ -108,7 +108,7 @@ apply_theme(lang="en")
 fig, ax = plt.subplots(figsize=(9, 5))
 ax.barh(labels, values, color=PALETTE["primary"])
 ax.set_title("Fake banking APK families observed", loc="left", fontweight="bold")
-caption(fig, source="CyPeace CTI", grading="B2", date="2026-07-05")
+caption(fig, source="CTI team", grading="B2", date="2026-07-05")
 save_dual(fig, "outputs/apk_families")  # writes _hires.png (300dpi), .svg, _thumb.png
 ```
 
@@ -127,9 +127,9 @@ tasks = [
   {"section":"Infrastructure","name":"Domain registration","start":"2026-05-01","end":"2026-05-07"},
   {"section":"Response","name":"Detection & report","start":"2026-05-16","end":"2026-05-18","crit":True},
 ]
-gantt(tasks, title="Campaign timeline — fake MBBank APK",
+gantt(tasks, title="Campaign timeline — fake banking APK",
       stem="outputs/campaign_gantt",
-      lang="en", source="CyPeace CTI", grading="B2", date="2026-07-05")
+      lang="en", source="CTI team", grading="B2", date="2026-07-05")
 ```
 `crit=True` highlights a task (brick); `done=True` greys it. `timeline([(date,label),...], ...)` renders an alternating event timeline. Both emit the hi-res + SVG + thumb triple.
 
@@ -160,7 +160,7 @@ See `references/graphviz_recipes.md` for the DOT template with node shapes per e
 When `--lang vi` / `lang="vi"`:
 - matplotlib: `apply_theme(lang="vi")` keeps DejaVu Sans and switches built-in furniture (axis defaults, caption words like "Nguồn", "Độ tin cậy", "Cập nhật").
 - Look up chart titles / recurring analytic terms in `references/i18n.md` (kill-chain phases, Diamond Model vertices, Admiralty labels, common CTI nouns).
-- Translate the substantive labels the user gives you; keep proper nouns (MBBank, FOFA, ASN numbers) as-is.
+- Translate the substantive labels the user gives you; keep proper nouns (brand names, FOFA, ASN numbers) as-is.
 - If the user provides English data but wants a Vietnamese figure, translate labels but leave IOCs, hashes, domains untouched.
 
 ## Quality checklist before presenting

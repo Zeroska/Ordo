@@ -23,7 +23,7 @@ digraph infra {
   d1     [label="evil.example",  shape=ellipse,  fillcolor="#3b5566"];
   d2     [label="evil2.example", shape=ellipse,  fillcolor="#3b5566"];
   ip1    [label="185.10.20.30",  shape=hexagon,  fillcolor="#22333f"];
-  victim [label="MBBank users",  shape=folder,   fillcolor="#b0790f"];
+  victim [label="Bank customers", shape=folder,   fillcolor="#b0790f"];
   w1     [label="bc1q…",         shape=cylinder, fillcolor="#5a6b3b"];
 
   actor -> d1 [label="registers"];

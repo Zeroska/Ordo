@@ -86,5 +86,5 @@ if __name__ == "__main__":
            {"section": "Response", "name": "Detect & report", "start": "2026-05-16",
             "end": "2026-05-18", "crit": True}],
           title="Campaign timeline", stem="/tmp/_gantt_demo",
-          source="CyPeace CTI", grading="B2", date="2026-07-08")
+          source="CTI team", grading="B2", date="2026-07-08")
     print("demo written to /tmp/_gantt_demo*")
