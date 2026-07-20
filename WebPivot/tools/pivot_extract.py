@@ -55,6 +55,10 @@ import functools
 import gzip
 import itertools
 import zlib
+import socket
+import ssl
+import shutil
+import subprocess
 import concurrent.futures
 from urllib.parse import urljoin, urlparse, urlencode, quote, parse_qsl
 
@@ -76,33 +80,33 @@ except Exception:
 
 DEFAULT_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
               "AppleWebKit/537.36 (KHTML, like Gecko) "
-              "Chrome/122.0.0.0 Safari/537.36")
+              "Chrome/140.0.0.0 Safari/537.36")
 
 # Rotated when crawling or with --rotate-ua, so a multi-page walk doesn't hammer the
-# target from one identical fingerprint. Realistic current desktop/mobile browsers.
+# target from one identical fingerprint. Current (2026) real desktop/mobile browsers —
+# keep these fresh; a UA advertising a browser two years stale is itself a bot tell.
 UA_POOL = [
     DEFAULT_UA,
     ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
-     "(KHTML, like Gecko) Version/17.4 Safari/605.1.15"),
-    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0"),
+     "(KHTML, like Gecko) Version/18.3 Safari/605.1.15"),
+    ("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:134.0) Gecko/20100101 Firefox/134.0"),
     ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-     "Chrome/123.0.0.0 Safari/537.36"),
-    ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 "
-     "(KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"),
-    ("Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) "
-     "Chrome/123.0.0.0 Mobile Safari/537.36"),
+     "Chrome/140.0.0.0 Safari/537.36"),
+    ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_3 like Mac OS X) AppleWebKit/605.1.15 "
+     "(KHTML, like Gecko) Version/18.3 Mobile/15E148 Safari/604.1"),
+    ("Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) "
+     "Chrome/140.0.0.0 Mobile Safari/537.36"),
     ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
-     "Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"),
+     "Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0"),
 ]
 
 
-# A coherent desktop-Chrome header set sent alongside the UA. Bare User-Agent alone trips
+# Headers common to every real browser regardless of engine. Bare User-Agent alone trips
 # Cloudflare/LiteSpeed bot heuristics (we saw resets / HTTP 520 / refused this session); a
-# full profile passes the cheap checks. Accept-Encoding is safe because the urllib path
-# decompresses by Content-Encoding below (requests decompresses on its own).
+# full profile passes the cheap checks. Accept-Encoding stays gzip/deflate on purpose — the
+# urllib path only decompresses those (see _decode_body); advertising br/zstd would let a
+# server hand back a body we can't decode.
 BROWSER_HEADERS = {
-    "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
-               "image/avif,image/webp,image/apng,*/*;q=0.8"),
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate",
     "Upgrade-Insecure-Requests": "1",
@@ -110,17 +114,71 @@ BROWSER_HEADERS = {
     "Sec-Fetch-Mode": "navigate",
     "Sec-Fetch-Site": "none",
     "Sec-Fetch-User": "?1",
-    "sec-ch-ua": '"Chromium";v="122", "Google Chrome";v="122", "Not:A-Brand";v="99"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
     "Connection": "keep-alive",
 }
 
 
+def _ua_profile(ua: str) -> dict:
+    """Infer (engine, platform, is_mobile, major_version) from a UA string so the rest of
+    the header set can be made coherent with it. Rotating the UA without rotating the
+    Client-Hint / Accept headers is the single biggest tell — a 'Safari' request that still
+    sends sec-ch-ua: Chrome-on-Windows is obviously synthetic."""
+    is_mobile = "Mobile" in ua or "iPhone" in ua or "Android" in ua
+    if "iPhone" in ua or "iPad" in ua:
+        platform = '"iOS"'
+    elif "Android" in ua:
+        platform = '"Android"'
+    elif "Macintosh" in ua or "Mac OS X" in ua:
+        platform = '"macOS"'
+    elif "Windows" in ua:
+        platform = '"Windows"'
+    else:
+        platform = '"Linux"'
+    if "Firefox/" in ua:
+        engine = "firefox"
+    elif "Edg/" in ua:
+        engine = "edge"
+    elif "Chrome/" in ua:
+        engine = "chrome"
+    elif "Safari/" in ua and "Version/" in ua:
+        engine = "safari"
+    else:
+        engine = "chrome"
+    m = re.search(r"(?:Edg|Chrome|Firefox|Version)/(\d+)", ua)
+    major = m.group(1) if m else ""
+    return {"engine": engine, "platform": platform,
+            "is_mobile": is_mobile, "major": major}
+
+
 def _browser_headers(ua: str) -> dict:
-    """The browser header profile with the (possibly rotated) User-Agent applied."""
+    """Build a request header set coherent with the given UA: Chromium engines get matching
+    Client Hints (sec-ch-ua brand list + platform + mobile flag) at the UA's own version;
+    Firefox and Safari send NO sec-ch-ua (real ones don't) and their own Accept string."""
+    p = _ua_profile(ua)
     h = dict(BROWSER_HEADERS)
     h["User-Agent"] = ua
+    if p["engine"] in ("chrome", "edge"):
+        h["Accept"] = ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+                       "image/avif,image/webp,image/apng,*/*;q=0.8,"
+                       "application/signed-exchange;v=b3;q=0.7")
+        v = p["major"] or "140"
+        if p["engine"] == "edge":
+            brands = (f'"Chromium";v="{v}", "Microsoft Edge";v="{v}", '
+                      f'"Not=A?Brand";v="24"')
+        else:
+            brands = (f'"Chromium";v="{v}", "Google Chrome";v="{v}", '
+                      f'"Not=A?Brand";v="24"')
+        h["sec-ch-ua"] = brands
+        h["sec-ch-ua-mobile"] = "?1" if p["is_mobile"] else "?0"
+        h["sec-ch-ua-platform"] = p["platform"]
+    elif p["engine"] == "firefox":
+        # Firefox sends no Client Hints and no Sec-Fetch-User.
+        h["Accept"] = ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+                       "image/avif,image/webp,*/*;q=0.8")
+        h.pop("Sec-Fetch-User", None)
+    else:  # safari
+        # Safari sends no Client Hints either; distinct Accept ordering.
+        h["Accept"] = ("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
     return h
 
 
@@ -234,11 +292,17 @@ def _secret(*names):
 
 
 def fofa_search(query: str, size: int = 100,
-                fields: str = "host,ip,domain,title", timeout: int = 30):
+                fields: str = "host,ip,domain,title", timeout: int = 30,
+                full: bool = False):
     """Query the FOFA API for a raw query string (e.g. 'icon_hash="123"').
 
     Returns {'query','total','results':[{host,ip,domain,title}]} or {'error':...},
     or None if no FOFA key is configured. Needs FOFA_KEY (classic API also FOFA_EMAIL).
+
+    full=True sets FOFA's `full=true` so the search spans ALL historical data
+    instead of the default ~1-year window — catches assets (favicon hash, tracker
+    body) that were live in the past and later scrubbed. Requires a FOFA tier that
+    permits full/historical search; on lower tiers FOFA ignores or rejects it.
     """
     key = _secret("FOFA_KEY", "FOFA_API_KEY")
     if not key:
@@ -246,6 +310,8 @@ def fofa_search(query: str, size: int = 100,
     params = {"key": key,
               "qbase64": base64.b64encode(query.encode()).decode(),
               "size": str(size), "fields": fields}
+    if full:
+        params["full"] = "true"
     email = _secret("FOFA_EMAIL")
     if email:
         params["email"] = email
@@ -287,6 +353,124 @@ def urlscan_search(query: str, limit: int = 100, timeout: int = 30):
         if d and d not in doms:
             doms.append(d)
     return {"query": query, "total": data.get("total", len(doms)), "domains": doms[:60]}
+
+
+# --- SAN extension OID (2.5.29.17) as DER: OBJECT IDENTIFIER, len 3, 55 1D 11 ------
+_SAN_OID = b"\x06\x03\x55\x1d\x11"
+
+
+def _der_read_len(der: bytes, i: int):
+    """Read an ASN.1/DER length at offset i. Returns (length, next_offset)."""
+    n = der[i]
+    if n < 0x80:
+        return n, i + 1
+    cnt = n & 0x7F
+    return int.from_bytes(der[i + 1:i + 1 + cnt], "big"), i + 1 + cnt
+
+
+def _der_sans(der: bytes):
+    """Extract dNSName SANs from a DER certificate with a stdlib-only scan.
+
+    Locates the SAN extension (OID 2.5.29.17), unwraps its OCTET STRING → SEQUENCE
+    of GeneralName, and collects context-tag [2] (0x82) dNSName entries. Best-effort:
+    returns [] if the structure isn't found (never raises). Used only when the
+    validating handshake failed and getpeercert() gave us nothing.
+    """
+    names = []
+    try:
+        pos = der.find(_SAN_OID)
+        if pos < 0:
+            return []
+        i = pos + len(_SAN_OID)
+        n = len(der)
+        # the extension value is an OCTET STRING (0x04); a critical flag (BOOLEAN) may precede it
+        if i < n and der[i] == 0x01:          # BOOLEAN critical — skip it
+            _, i = _der_read_len(der, i + 1)
+            i += 1
+        if i >= n or der[i] != 0x04:
+            return []
+        _, i = _der_read_len(der, i + 1)
+        if i >= n or der[i] != 0x30:          # SEQUENCE of GeneralName
+            return []
+        seq_len, i = _der_read_len(der, i + 1)
+        end = min(i + seq_len, n)
+        while i < end:
+            tag = der[i]
+            ln, j = _der_read_len(der, i + 1)
+            if j + ln > n:                    # truncated/malformed — stop, keep what we have
+                break
+            val = der[j:j + ln]
+            if tag == 0x82:                   # [2] dNSName (IA5String, implicit)
+                try:
+                    names.append(val.decode("ascii").strip().lstrip("*.").lower())
+                except UnicodeDecodeError:
+                    pass
+            i = j + ln
+    except Exception:
+        pass                                  # best-effort scanner — never raise
+    return uniq([n for n in names if n])
+
+
+def fetch_tls_cert(host: str, port: int = 443, timeout: int = 15):
+    """Read the LIVE TLS certificate served by host:port and pull pivot fields.
+
+    Returns {host, port, fingerprint_sha256, sans:[...], issuer, subject,
+    serial, not_before, not_after, validated} — or {host, error} on a socket
+    failure. Two passes so hostile certs still yield data:
+      1. validating context → rich getpeercert() dict (the common valid-LE case),
+      2. on SSLCertVerificationError, an unverified context that still returns the
+         DER, so we keep fingerprint_sha256 + DER-scanned SANs even for a
+         mismatched / expired / self-signed cert (all interesting signals).
+    fingerprint_sha256 is the SHA-256 of the DER — the standard cert fingerprint
+    Censys/Validin index on. Pure stdlib (ssl + socket + hashlib).
+    """
+    def _dict_fields(cert: dict):
+        out = {}
+        sans = [v for (t, v) in cert.get("subjectAltName", ()) if t.lower() == "dns"]
+        out["sans"] = uniq([s.strip().lstrip("*.").lower() for s in sans if s])
+        def _flat(seq):  # ((('commonName','x'),),) → {'commonName':'x'}
+            d = {}
+            for rdn in seq or ():
+                for k, v in rdn:
+                    d[k] = v
+            return d
+        iss, subj = _flat(cert.get("issuer")), _flat(cert.get("subject"))
+        out["issuer"] = iss.get("organizationName") or iss.get("commonName")
+        out["subject"] = subj.get("commonName")
+        out["serial"] = cert.get("serialNumber")
+        out["not_before"] = cert.get("notBefore")
+        out["not_after"] = cert.get("notAfter")
+        return out
+
+    # pass 1 — validating: yields the parsed dict when the cert chains + matches
+    try:
+        ctx = ssl.create_default_context()
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ss:
+                cert = ss.getpeercert()
+                der = ss.getpeercert(binary_form=True)
+        res = {"host": host, "port": port, "validated": True,
+               "fingerprint_sha256": hashlib.sha256(der).hexdigest()}
+        res.update(_dict_fields(cert or {}))
+        return res
+    except ssl.SSLCertVerificationError as e:
+        verr = str(e)
+    except Exception as e:                    # socket/SSL/parse — never propagate
+        return {"host": host, "port": port, "error": str(e)}
+
+    # pass 2 — unverified: cert is present but didn't validate; keep DER-derived facts
+    try:
+        ctx = ssl._create_unverified_context()
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ss:
+                der = ss.getpeercert(binary_form=True)
+        return {"host": host, "port": port, "validated": False,
+                "validation_error": verr,
+                "fingerprint_sha256": hashlib.sha256(der).hexdigest(),
+                "sans": _der_sans(der)}
+    except Exception as e:                    # never propagate to the caller
+        return {"host": host, "port": port, "error": str(e),
+                "validated": False, "validation_error": verr}
 
 
 def crtsh_search(domain: str, timeout: int = 25):
@@ -340,6 +524,84 @@ def passivedns_search(domain: str, timeout: int = 25):
                 ips.add(ip)
     return {"query": domain, "total": len(hosts),
             "hosts": hosts[:80], "ips": sorted(ips)[:40]}
+
+
+_IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+
+
+def resolve_live_dns(host: str, timeout: int = 6) -> dict:
+    """Resolve a host's CURRENT authoritative A records, live, right now.
+
+    This is the ground-truth anchor for every IP pivot: passive sources (FOFA,
+    HackerTarget, urlscan) report the IP a host was *last seen* on, which lags live
+    DNS and misleads badly for infra that IP-hops or migrates hosts. Resolve live
+    first, then reverse-search FOFA on the live IP — never the other way round.
+
+    Tries, in order: `nslookup` (real DNS query, as requested), then socket
+    (getaddrinfo, uses the OS resolver), then `ping` (last resort — proves nothing
+    beyond the A record but works when the others are missing). Returns
+    {'host','ips':[...],'method':...} or {'host','ips':[],'error':...}.
+    """
+    host = strip_www(host or "").strip()
+    if not host:
+        return {"host": host, "ips": [], "error": "no host"}
+
+    def _via_nslookup():
+        exe = shutil.which("nslookup")
+        if not exe:
+            return None
+        try:
+            out = subprocess.run([exe, "-type=A", host], capture_output=True,
+                                 text=True, timeout=timeout).stdout
+        except Exception:
+            return None
+        # The resolver-server preamble ("Server:/Address:" up to the first "Name:")
+        # names the DNS server, not the host — collect those IPs and exclude them so
+        # a reply without the blank-line separator can't leak the resolver's own
+        # address as a bogus A record (which would then get FOFA-reversed as noise).
+        resolver = set()
+        for ln in out.splitlines():
+            low = ln.lower().lstrip()
+            if low.startswith("name:"):
+                break
+            if low.startswith(("server:", "address:")):
+                resolver.update(_IPV4_RE.findall(ln))
+        body = out.split("\n\n", 1)[-1]
+        ips = [ip for ip in _IPV4_RE.findall(body)
+               if not ip.startswith("0.") and ip not in resolver]
+        return uniq(ips)
+
+    def _via_socket():
+        try:
+            infos = socket.getaddrinfo(host, None, socket.AF_INET)
+        except Exception:
+            return None
+        return uniq([i[4][0] for i in infos])
+
+    def _via_ping():
+        exe = shutil.which("ping")
+        if not exe:
+            return None
+        # -c on macOS/Linux; one echo is enough to force resolution.
+        try:
+            out = subprocess.run([exe, "-c", "1", "-W", str(timeout * 1000), host],
+                                 capture_output=True, text=True, timeout=timeout + 2).stdout
+        except Exception:
+            try:  # some ping builds want -w seconds, not -W ms
+                out = subprocess.run([exe, "-c", "1", host], capture_output=True,
+                                     text=True, timeout=timeout + 2).stdout
+            except Exception:
+                return None
+        m = re.search(r"\(((?:\d{1,3}\.){3}\d{1,3})\)", out)
+        return [m.group(1)] if m else None
+
+    for method, fn in (("nslookup", _via_nslookup),
+                       ("socket", _via_socket),
+                       ("ping", _via_ping)):
+        ips = fn()
+        if ips:
+            return {"host": host, "ips": ips, "method": method}
+    return {"host": host, "ips": [], "error": "unresolved"}
 
 
 # =================================================================== murmurhash3
@@ -972,6 +1234,32 @@ def build_pivots(art: dict, base_host: str):
             {"service": "Netlas", "query": f'http.favicon.hash_sha256:{fav["sha256"]}'},
         ], "Same favicon across unrelated domains = shared operator/kit.")
 
+    cert = art.get("tls_cert")
+    if cert and not cert.get("error") and not cert.get("skipped"):
+        fp = cert.get("fingerprint_sha256")
+        if fp:
+            add("tls_cert:fingerprint_sha256", fp, "high", [
+                {"service": "Censys", "query": f"services.tls.certificates.leaf_data.fingerprint_sha256:{fp}"},
+                {"service": "Validin", "query": fp},
+                {"service": "crt.sh", "query": f"https://crt.sh/?q={fp}"},
+            ], "Every host serving this exact certificate = same operator/deployment.")
+        # Co-SAN: SANs on a DIFFERENT registrable domain than the seed are a strong
+        # cross-brand operator link (one cert covering many apexes). Same-site
+        # subdomains are just this domain's own hosts — not a pivot.
+        seed_reg = _registrable(base_host) if base_host else ""
+        co_apexes = uniq([r for s in cert.get("sans", [])
+                          if (r := _registrable(s)) and r != seed_reg])
+        if co_apexes:
+            queries = [{"service": "Censys", "query":
+                        f"services.tls.certificates.leaf_data.fingerprint_sha256:{fp}"}] if fp else []
+            for apex in co_apexes[:20]:
+                queries += [
+                    {"service": "crt.sh", "query": f"%.{apex}"},
+                    {"service": "urlscan.io", "query": f"domain:{apex}"},
+                ]
+            add("tls_cert:co_san", ", ".join(co_apexes[:20]), "high", queries,
+                "Distinct registrable domains sharing one TLS certificate = same operator.")
+
     for label, token in art.get("verifications", {}).items():
         add(f"verification:{label}", token, "high", [
             {"service": "PublicWWW", "query": f'"{token}"'},
@@ -1042,7 +1330,7 @@ def build_pivots(art: dict, base_host: str):
 
 # =================================================================== main analyze
 def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
-            extra_cookies=None, proxy: str = None):
+            extra_cookies=None, proxy: str = None, probe_tls: bool = True):
     # Unwrap Wayback/archive wrappers so the *original* site is treated as the origin.
     effective_url = unwrap_wayback(base_url) if base_url else ""
     is_archived = bool(base_url) and effective_url != base_url
@@ -1124,6 +1412,21 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
     if favicon:
         favicon["url"] = unwrap_wayback(favicon["url"])  # report the real favicon URL
 
+    # --- live TLS certificate (SANs / issuer / SHA-256 fingerprint) ---
+    # Only probe when we actually fetched the live origin over https. Never touch
+    # a Wayback/archived host or an offline file/stdin source, never re-probe the
+    # same host on crawled sub-pages (probe_tls=False), and NEVER probe directly
+    # when a proxy is set — the raw ssl socket can't use the proxy, so a direct
+    # handshake would leak the analyst's real IP the proxy exists to hide.
+    tls_cert = None
+    if probe_tls and effective_url and not is_archived:
+        parsed = urlparse(effective_url)
+        if parsed.scheme == "https" and parsed.hostname:
+            if proxy:
+                tls_cert = {"skipped": "proxy configured — direct TLS probe suppressed (OPSEC)"}
+            else:
+                tls_cert = fetch_tls_cert(parsed.hostname, parsed.port or 443, timeout=8)
+
     cookie_names = []
     if "set-cookie" in headers:
         cookie_names = uniq([c.split("=")[0].strip()
@@ -1136,6 +1439,7 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
         "meta": {k: v for k, v in meta.items() if k != "_title"},
         "verifications": verifications,
         "favicon": favicon,
+        "tls_cert": tls_cert,
         "trackers": trackers,
         "saas_ids": saas_ids,
         "crypto": crypto,
@@ -1200,6 +1504,23 @@ def render_leads(result: dict) -> str:
             lines.append(f"  - {q['service']}: `{q['query']}`")
         lr = p.get("live_results")
         if lr:
+            dns = lr.get("dns") or {}
+            if dns.get("ips"):
+                lines.append(f"  - 🟢 live DNS ({dns.get('method')}): "
+                             f"{', '.join(dns['ips'])}  ← ground truth")
+                if dns.get("stale_passive_ips"):
+                    lines.append(f"  - ⚠️ stale passive IP(s): "
+                                 f"{', '.join(dns['stale_passive_ips'])} — {dns.get('note','')}")
+            elif dns.get("error"):
+                lines.append(f"  - 🔴 live DNS: {dns['error']}")
+            fir = lr.get("fofa_ip_reverse") or {}
+            if fir.get("results") is not None:
+                _h = sorted({v for r in fir["results"] if r
+                             and (v := (r.get("domain") or r.get("host")))})
+                lines.append(f"  - 🟢 FOFA reverse on live IP: {fir.get('total', 0)} hits"
+                             + (f" → {', '.join(h for h in _h[:12] if h)}" if _h else ""))
+            elif fir.get("error"):
+                lines.append(f"  - 🔴 FOFA reverse on live IP: error — {fir['error']}")
             c = lr.get("crtsh") or {}
             if c.get("error"):
                 lines.append(f"  - 🔴 crt.sh: error — {c['error']}")
@@ -1238,7 +1559,27 @@ def render_leads(result: dict) -> str:
     return "\n".join(lines)
 
 
-def enrich_live(result: dict) -> dict:
+@functools.lru_cache(maxsize=1)
+def _cdn_classifier():
+    """Load the cdn_ranges module + range index once. (None, None) if unavailable
+    (missing cache file or import error) so IP classification degrades gracefully."""
+    try:
+        import cdn_ranges
+        return cdn_ranges, cdn_ranges.load_ranges()
+    except Exception:
+        return None, None
+
+
+def classify_ip(ip: str):
+    """{'ip','cdn'(bool|None),'provider','kind'} — 'origin_candidate' when not a
+    known CDN/cloud edge, 'cdn' otherwise. Returns kind 'unknown' if ranges absent."""
+    mod, idx = _cdn_classifier()
+    if idx is None:
+        return {"ip": ip, "cdn": None, "provider": None, "kind": "unknown"}
+    return mod.classify(ip, idx)
+
+
+def enrich_live(result: dict, fofa_full: bool = False) -> dict:
     """Run live pivots and attach the real hits to each pivot as pivot['live_results'].
 
     Keyless always-on: the base `domain` pivot is resolved live via crt.sh
@@ -1246,26 +1587,60 @@ def enrich_live(result: dict) -> dict:
     domain search — no API key required. Keyed extras when configured: FOFA reverses
     favicon icon_hash and tracker/verification bodies; authenticated urlscan
     content-searches the same tracker/token values.
+
+    fofa_full=True runs every FOFA reverse over ALL historical data (`full=true`)
+    instead of the default ~1-year window.
     """
     have_fofa = bool(_secret("FOFA_KEY", "FOFA_API_KEY"))
     have_urlscan = bool(_secret("URLSCAN_API_KEY"))
     sources = ["crtsh", "passivedns", "urlscan"]  # keyless domain enrichment
     if have_fofa:
-        sources.append("fofa")
+        sources.append("fofa-full" if fofa_full else "fofa")
     result.setdefault("meta", {})["enriched_with"] = sources
     for piv in result.get("pivots", []):
         kind, val = piv.get("kind", ""), piv.get("value")
         lr = {}
         if kind == "domain" and val:
-            # keyless certificate-transparency + passive DNS + urlscan on the base host.
-            # The three lookups are independent I/O, so run them concurrently — bounds
-            # latency to the slowest call instead of the sum (crt.sh is often overloaded).
-            jobs = {"crtsh": lambda: crtsh_search(val),
+            # LIVE DNS FIRST, then keyless CT + passive DNS + urlscan on the base host.
+            # All four are independent I/O, so run them concurrently — bounds latency to
+            # the slowest call instead of the sum (crt.sh is often overloaded).
+            jobs = {"dns": lambda: resolve_live_dns(val),
+                    "crtsh": lambda: crtsh_search(val),
                     "passivedns": lambda: passivedns_search(val),
                     "urlscan": lambda: urlscan_search(f"domain:{val}")}
-            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
                 futures = {k: ex.submit(fn) for k, fn in jobs.items()}
                 lr = {k: fu.result() for k, fu in futures.items()}
+            # Anchor pivots to the LIVE IP: reverse-search FOFA on what DNS resolves to
+            # right now, and flag any passive source still reporting a different (stale) IP.
+            live_ips = lr.get("dns", {}).get("ips", []) or []
+            if live_ips:
+                # Classify each live IP: a CDN/cloud edge (Cloudflare/Fastly/…) is
+                # shared noise — reverse-searching it returns thousands of unrelated
+                # tenants. Only an origin-candidate IP is worth a FOFA reverse.
+                classified = [classify_ip(ip) for ip in live_ips]
+                lr["dns"]["ip_classification"] = classified
+                origin_ips = [c["ip"] for c in classified if c.get("cdn") is False]
+                cdn_ips = [c for c in classified if c.get("cdn") is True]
+                if cdn_ips:
+                    lr["dns"]["cdn_note"] = (
+                        "live IP(s) are shared CDN/cloud edge (%s) — hosting IP is noise, "
+                        "not an origin pivot; FOFA IP-reverse skipped for these" %
+                        ", ".join(sorted({c["provider"] for c in cdn_ips if c.get("provider")})))
+                # reverse the first origin candidate; if the index is unavailable
+                # (kind 'unknown'), fall back to the old behaviour (reverse ip[0]).
+                fofa_ip = origin_ips[0] if origin_ips else (
+                    live_ips[0] if classified[0].get("cdn") is None else None)
+                if have_fofa and fofa_ip:
+                    lr["fofa_ip_reverse"] = fofa_search(f'ip="{fofa_ip}"',
+                                                        fields="host,ip,domain,title,server",
+                                                        full=fofa_full)
+                passive_ips = set(lr.get("passivedns", {}).get("ips", []) or [])
+                stale = sorted(passive_ips - set(live_ips))
+                if stale:
+                    lr["dns"]["stale_passive_ips"] = stale
+                    lr["dns"]["note"] = ("passive sources report IP(s) not in live DNS — "
+                                         "likely a migrated/IP-hopping host; trust live DNS")
         else:
             fofa_q = None
             if kind == "favicon_hash":
@@ -1273,7 +1648,7 @@ def enrich_live(result: dict) -> dict:
             elif kind.startswith(("tracker:", "verification:")):
                 fofa_q = f'body="{val}"'
             if fofa_q and have_fofa:
-                f = fofa_search(fofa_q)
+                f = fofa_search(fofa_q, full=fofa_full)
                 if f is not None:
                     lr["fofa"] = f
             if have_urlscan and kind.startswith(("tracker:", "verification:")):
@@ -1360,6 +1735,9 @@ _MULTI_TLDS = {
     "co.uk", "org.uk", "gov.uk", "ac.uk", "com.au", "net.au", "org.au", "co.nz",
     "com.br", "com.cn", "com.hk", "com.sg", "com.tw", "co.jp", "co.kr", "co.in",
     "com.vn", "com.mx", "co.za", "com.tr", "com.ua",
+    # second-level ccTLDs seen on multi-apex certs / scam infra
+    "com.ar", "com.co", "com.pe", "com.pk", "com.ph", "com.my", "com.eg",
+    "com.sa", "com.ng", "com.pl", "co.id", "co.th", "co.il", "co.ke",
 }
 
 
@@ -1370,7 +1748,7 @@ def _registrable(host: str) -> str:
     No tldextract dependency — uses a small known multi-part-TLD set, else the last
     two labels. Good enough to keep the crawl scoped to one owner's domain.
     """
-    host = strip_www(host or "")
+    host = strip_www(host or "").split(":")[0]   # drop any :port before eTLD+1 logic
     parts = host.split(".")
     if len(parts) <= 2:
         return host
@@ -1517,6 +1895,10 @@ def main():
     ap.add_argument("--no-enrich", action="store_true",
                     help="do NOT run live enrichment (keyless crt.sh/passive-DNS/urlscan on the "
                          "domain, plus FOFA/urlscan when keys are configured)")
+    ap.add_argument("--fofa-full", action="store_true",
+                    help="run FOFA reverses over ALL historical data (full=true) instead of the "
+                         "default ~1-year window — catches favicon/tracker assets later scrubbed. "
+                         "Needs a FOFA tier that permits full/historical search.")
     ap.add_argument("--no-whois", action="store_true",
                     help="do NOT run WhoisXML enrichment even if WHOISXML_API_KEY is set")
     ap.add_argument("--whois-reverse", action="store_true",
@@ -1530,6 +1912,22 @@ def main():
     ap.add_argument("--submit", action="store_true",
                     help="actively archive the URL: submit to Wayback Save-Page-Now AND urlscan.io "
                          "(needs URLSCAN_API_KEY for the scan). Archives attached to result.archives.")
+    ap.add_argument("--report", nargs="?", const=True, default=None, metavar="PATH",
+                    help="render a finished-intelligence assessment in CIA analytic-tradecraft "
+                         "style (ICD 203: BLUF, Key Judgments, estimative language, confidence). "
+                         "Bare flag → print to stdout; give a PATH to write the Markdown.")
+    ap.add_argument("--master", nargs="?", const="evidence/master_pivots.csv", default=None,
+                    metavar="PATH",
+                    help="append every pivot from this run to a master evidence ledger for "
+                         "export into evidence folders (dedupes on host+kind+value, never loses "
+                         "rows). Bare flag → evidence/master_pivots.csv; .xlsx path → Excel "
+                         "(needs openpyxl) plus a sibling .csv.")
+    ap.add_argument("--case", default=None,
+                    help="case name tagged onto the report and every master-ledger row")
+    ap.add_argument("--classification", default="UNCLASSIFIED//FOR OFFICIAL USE ONLY",
+                    help="classification banner printed at the top and bottom of the report")
+    ap.add_argument("--analyst", default=None,
+                    help="analyst name/handle stamped on the intelligence assessment header")
     args = ap.parse_args()
 
     # --- resolve User-Agent + proxy rotation. Crawling auto-enables UA rotation so a
@@ -1681,7 +2079,7 @@ def main():
                 print(f"[!] crawl skip {url} ({e})", file=sys.stderr)
                 continue
             sub = analyze(url, c_html, c_base or url, c_headers, c_ua,
-                          extra_cookies=c_cookies, proxy=c_proxy)
+                          extra_cookies=c_cookies, proxy=c_proxy, probe_tls=False)
             merge_result(result, sub)
             crawled.append(url)
             print(f"[+] crawled ({len(crawled)}/{max_pages}) {url}", file=sys.stderr)
@@ -1694,7 +2092,7 @@ def main():
         sort_pivots(result["pivots"])  # re-rank after folding in crawled pages
 
     if not args.no_enrich:
-        enrich_live(result)
+        enrich_live(result, fofa_full=args.fofa_full)
     if not args.no_whois:
         whois_enrich_result(result, do_reverse=args.whois_reverse,
                             history_mode=args.whois_history_mode)
@@ -1730,16 +2128,57 @@ def main():
         print(f"    urlscan: {u.get('result') or u.get('error') or u.get('skipped')}", file=sys.stderr)
         result["archives"] = archives
 
+    if args.report is not None or args.master is not None:
+        import evidence_report
+
+    # --- append this run's pivots to the master evidence ledger (for evidence folders) ---
+    if args.master is not None:
+        # Bare --master + --case → drop the ledger into that case's evidence folder,
+        # matching the project's cases/<case>/… convention. An explicit path is honored.
+        master_path = args.master
+        if args.case and master_path == "evidence/master_pivots.csv":
+            master_path = os.path.join("cases", args.case, "evidence", "master_pivots.csv")
+        try:
+            summ = evidence_report.append_master(
+                result, path=master_path, case=args.case, source_file=args.out or src)
+            tgt = summ.get("xlsx") or summ["csv"]
+            print(f"[+] master ledger: {tgt} "
+                  f"(+{summ['rows_added']} new, {summ['rows_updated']} updated, "
+                  f"{summ['rows_total']} total rows)", file=sys.stderr)
+            if summ["xlsx_requested"] and not summ["xlsx_written"]:
+                print("    (xlsx skipped: openpyxl not installed — wrote CSV instead: "
+                      f"{summ['csv']})", file=sys.stderr)
+        except Exception as e:
+            print(f"[!] master ledger failed: {e}", file=sys.stderr)
+
+    # --- finished-intelligence assessment (CIA analytic tradecraft) ---
+    # A bare --report (const True) prints to stdout; --report PATH writes a file.
+    report_md, print_report = None, (args.report is True)
+    if args.report is not None:
+        try:
+            report_md = evidence_report.render_cia_report(
+                result, case=args.case, classification=args.classification,
+                analyst=args.analyst)
+            if isinstance(args.report, str):
+                with open(args.report, "w", encoding="utf-8") as f:
+                    f.write(report_md)
+                print(f"[+] wrote intelligence assessment -> {args.report}", file=sys.stderr)
+        except Exception as e:
+            print(f"[!] report generation failed: {e}", file=sys.stderr)
+            print_report = False
+
     # Persist the JSON whenever -o is given — independent of --leads. (--leads used to return
     # before this, silently dropping the -o file.)
-    if args.out or not args.leads:
+    if args.out or not (args.leads or print_report):
         out = json.dumps(result, indent=2 if args.pretty else None, ensure_ascii=False)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:
             f.write(out)
         print(f"wrote {args.out} ({len(result['pivots'])} pivots)", file=sys.stderr)
 
-    if args.leads:
+    if print_report:
+        print(report_md)
+    elif args.leads:
         print(render_leads(result))
     elif not args.out:
         print(out)

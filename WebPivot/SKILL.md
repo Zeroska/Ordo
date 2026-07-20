@@ -18,6 +18,11 @@ With keys set, the tool runs the HIGH-confidence pivots live — FOFA reverses t
 values, and WhoisXML adds current + historical registrant data plus reverse-WHOIS pivots — all
 attached to each pivot as `live_results` (shown inline in `--leads`). Use `--no-enrich` /
 `--no-whois` to skip; `--whois-reverse` runs reverse-WHOIS live (costs credits).
+By default FOFA reverses search only the most recent ~1-year window; add `--fofa-full` to
+run every FOFA reverse (favicon `icon_hash`, tracker/verification bodies, live-IP reverse)
+over **all historical data** (`full=true`) — this catches assets that were live in the past
+and later scrubbed. Requires a FOFA tier that permits full/historical search; lower tiers
+ignore or reject `full=true`.
 **No keys → keyless mode, unchanged.** Prefer macOS Keychain over a plaintext `.env`;
 see `SKILLCUSTOMIZATIONS/WebPivot/PREFERENCES.md` for setup.
 
@@ -176,9 +181,32 @@ python3 "$WP/tools/wayback_ga.py" suspect.example --max 15 --timeline
 python3 "$WP/tools/wayback_ga.py" -f domains.txt --pretty > "$CASE/history.json"
 ```
 
+**Live TLS certificate — SANs, co-SAN cross-apex link, cert fingerprint.** When the
+seed is fetched live over https (never for archived/offline input), the tool reads the
+**served certificate** directly (443 handshake, stdlib `ssl` — no new dependency) and
+records its **SAN list, issuer, serial, validity, and SHA-256 fingerprint** as
+`artifacts.tls_cert`. A hostname-mismatched / expired / self-signed cert doesn't abort —
+it falls back to an unverified read and still yields the fingerprint + DER-scanned SANs
+(those failures are themselves signals). Two HIGH-confidence pivots come out of it:
+- **`tls_cert:co_san`** — SANs whose **registrable domain differs from the seed's** (one
+  cert covering `brand-a.com` *and* `brand-b.net`). This is often a cleaner same-operator
+  link than the hosting IP. Same-site subdomains are excluded (they're just this domain's
+  own hosts). Emits crt.sh / Censys / urlscan queries per co-apex.
+- **`tls_cert:fingerprint_sha256`** — the cert fingerprint → Censys
+  (`services.tls.certificates.leaf_data.fingerprint_sha256`), Validin, and crt.sh to find
+  **every host serving the exact same certificate**.
+
+**Hosting IP is noise, not a pivot — `cdn_ranges` is now wired in.** During live enrichment
+each resolved IP is classified against `tools/cdn_ranges.py` (Cloudflare/Fastly/CloudFront/
+Google/Bunny ranges). A shared **CDN/cloud edge** IP is flagged as noise and the FOFA
+IP-reverse is **skipped** for it (reversing a Cloudflare IP returns thousands of unrelated
+tenants); only an **origin-candidate** IP gets reversed. Classification is attached to the
+domain pivot's `live_results.dns.ip_classification`. If the range cache is missing the step
+degrades gracefully (old behaviour). Refresh ranges with `python3 tools/cdn_ranges.py --update`.
+
 **What it extracts** (see `references/PivotArtifacts.md`): favicon mmh3/md5/sha256, analytics & ad IDs (GA4 `G-`, `GTM-`, AdSense `pub-`, FB Pixel, Yandex, Hotjar, Matomo, Sentry DSN, …), crypto wallets (BTC/ETH/XMR/TRON/LTC), emails, social handles, third-party hosts, inline-script SHA-256, form actions + input names (phishing-kit tell), HTML comments, DOM-skeleton hash (template reuse), tech fingerprints, cookie names, server headers, **SaaS / no-code operator tokens** (GoHighLevel `msgsndr` location ID, backend Google Sheet ID, Make/Zapier/Apps-Script automation webhooks, TrustedForm lead-cert) — attribution-grade for hosted-builder funnels, and only fully present in the `--render` DOM.
 
-**What it emits:** a `pivots` array, ranked high→low confidence, each with copy-paste queries for the right engine (with the correct hash algorithm per engine — Shodan/FOFA=mmh3, Censys=MD5, Netlas=SHA-256), plus redirect-chain / affiliate-code pivots for tracker links and reverse-WHOIS (email + name, current + historic) under `--whois-reverse`.
+**What it emits:** a `pivots` array, ranked high→low confidence, each with copy-paste queries for the right engine (with the correct hash algorithm per engine — Shodan/FOFA=mmh3, Censys=MD5, Netlas=SHA-256), plus redirect-chain / affiliate-code pivots for tracker links, live-TLS-cert pivots (`tls_cert:co_san` cross-apex + `tls_cert:fingerprint_sha256`), and reverse-WHOIS (email + name, current + historic) under `--whois-reverse`.
 
 **Case graph — `tools/graph_build.py`.** Merges many `pivot_extract` JSONs into one
 normalized, **clustered** graph model: typed nodes (domains + shared artifacts as hub
