@@ -159,6 +159,20 @@ The skills persist to the same `cases/` + `knowledge/` folders, so CLI and chat 
 | `--save-dom [PATH]` | store the raw collected DOM |
 | `--submit` | archive the URL to Wayback + urlscan |
 | `--no-enrich` / `--no-whois` | skip live enrichment / WHOIS |
+| `--report [PATH]` | render a CIA-tradecraft intelligence assessment (BLUF, Key Judgments, ICD 203 estimative language + confidence). Bare → stdout; PATH → Markdown file |
+| `--master [PATH]` | append every pivot to a master evidence ledger for the evidence folder (dedupes on host+kind+value, never loses rows). Bare → `evidence/master_pivots.csv`; `.xlsx` → Excel (needs openpyxl) + sibling CSV |
+| `--case NAME` | tag the report + every ledger row with a case name |
+| `--classification BANNER` | report banner (default `UNCLASSIFIED//FOR OFFICIAL USE ONLY`) |
+| `--analyst NAME` | analyst handle stamped on the assessment header |
+
+**Evidence workflow example** — one command produces the analyst product *and* grows the master exhibit register:
+
+```bash
+python3 "$WP/tools/pivot_extract.py" https://target.example \
+    --case acme --report "$CASE/reports/target.example.md" \
+    --master "$CASE/evidence/master_pivots.csv"
+# re-running any host updates its rows in place — the ledger is one clean export.
+```
 
 ---
 

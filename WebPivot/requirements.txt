@@ -3,6 +3,7 @@
 
 requests            # faster/robust fetching (falls back to urllib if absent)
 playwright          # rendered post-JS DOM via --render  (then: playwright install chromium)
+openpyxl            # --master with a .xlsx path (falls back to CSV if absent)
 
 # NOT required: favicon mmh3 hashing uses a bundled pure-Python MurmurHash3,
 # and HTML parsing uses stdlib regex/urllib — no bs4, no mmh3 package needed.

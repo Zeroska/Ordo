@@ -122,6 +122,20 @@ def _contact(rec, *keys):
     return {}
 
 
+def _phone(contact):
+    """Normalized registrant phone (digits/+ only, keep extension marker)."""
+    raw = (contact.get("telephone") or contact.get("phone") or "").strip()
+    return raw or None
+
+
+def _address(contact):
+    """Single-line street/city/state/postal/country address, pivot-ready."""
+    parts = [contact.get(k) for k in
+             ("street1", "street2", "city", "state", "postalCode", "country")]
+    parts = [str(p).strip() for p in parts if p and str(p).strip()]
+    return ", ".join(parts) or None
+
+
 def whois_current(domain, timeout=30):
     """Current WHOIS for a domain. Returns a normalized dict or {'error':...} / None."""
     key = _key()
@@ -144,6 +158,8 @@ def whois_current(domain, timeout=30):
         "registrant_name": reg.get("name") or None,
         "registrant_org": reg.get("organization") or None,
         "registrant_country": reg.get("country") or reg.get("countryCode") or None,
+        "registrant_phone": _phone(reg),
+        "registrant_address": _address(reg),
         "registrar": rec.get("registrarName") or None,
         "created": rec.get("createdDateNormalized") or rec.get("createdDate") or None,
         "updated": rec.get("updatedDateNormalized") or rec.get("updatedDate") or None,
@@ -167,12 +183,14 @@ def whois_history(domain, mode="purchase", timeout=40):
     except Exception as e:
         return {"error": str(e), "domain": domain}
     recs = data.get("records") or []
-    emails, names, registrars, out = set(), set(), set(), []
+    emails, names, registrars, phones, addresses, out = set(), set(), set(), set(), set(), []
     for rec in recs:
         reg = _contact(rec, "registrantContact", "registrant")
         em = (reg.get("email") or "").lower().strip()
         nm = (reg.get("name") or reg.get("organization") or "").strip()
         rg = (rec.get("registrarName") or "").strip()
+        ph = _phone(reg)
+        ad = _address(reg)
         if nm and any(0x80 <= ord(c) <= 0x9f for c in nm):
             nm = ""  # drop C1-mojibake-corrupted names (double-encoding artifacts)
         if em:
@@ -181,8 +199,13 @@ def whois_history(domain, mode="purchase", timeout=40):
             names.add(nm)
         if rg:
             registrars.add(rg)
+        if ph:
+            phones.add(ph)
+        if ad:
+            addresses.add(ad)
         out.append({
             "email": em or None, "name": nm or None, "registrar": rg or None,
+            "phone": ph, "address": ad,
             "created": rec.get("createdDateNormalized") or rec.get("createdDateISO8601"),
             "updated": rec.get("updatedDateNormalized"),
             "expires": rec.get("expiresDateNormalized"),
@@ -191,6 +214,8 @@ def whois_history(domain, mode="purchase", timeout=40):
         "count": data.get("recordsCount", len(recs)),
         "registrant_emails": sorted(emails),
         "registrant_names": sorted(names),
+        "registrant_phones": sorted(phones),
+        "registrant_addresses": sorted(addresses),
         "registrars": sorted(registrars),
         "records": out if mode == "purchase" else [],
     }
@@ -236,7 +261,8 @@ def whois_summary(domain, history_mode="purchase", timeout=40):
     hist = whois_history(domain, mode=history_mode, timeout=timeout) or {}
     out = dict(cur)
     out["history"] = {k: hist.get(k) for k in
-                      ("count", "registrant_emails", "registrant_names", "registrars")}
+                      ("count", "registrant_emails", "registrant_names",
+                       "registrant_phones", "registrant_addresses", "registrars")}
     if hist.get("error"):
         out["history"]["error"] = hist["error"]
     return out
@@ -280,6 +306,7 @@ def main():
     if w:
         print(f"# WHOIS — {w.get('domain')}")
         for k in ("registrant_email", "registrant_name", "registrant_org",
+                  "registrant_phone", "registrant_address",
                   "registrar", "created", "updated", "expires"):
             if w.get(k):
                 print(f"  {k:18} {w[k]}")
@@ -289,9 +316,13 @@ def main():
         if h.get("count"):
             print(f"  history: {h['count']} records")
             if h.get("registrant_emails"):
-                print(f"    emails: {', '.join(h['registrant_emails'])}")
+                print(f"    emails:    {', '.join(h['registrant_emails'])}")
             if h.get("registrant_names"):
-                print(f"    names:  {', '.join(h['registrant_names'])}")
+                print(f"    names:     {', '.join(h['registrant_names'])}")
+            if h.get("registrant_phones"):
+                print(f"    phones:    {', '.join(h['registrant_phones'])}")
+            if h.get("registrant_addresses"):
+                print(f"    addresses: {', '.join(h['registrant_addresses'])}")
     for key in ("reverse_email", "reverse_name"):
         r = out.get(key)
         if r:
