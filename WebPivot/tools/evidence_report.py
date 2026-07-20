@@ -296,6 +296,22 @@ def _norm(v) -> str:
     return "" if v is None else str(v).strip().lower()
 
 
+# Managed-DNS nameserver domains + verification-token shapes that appear in passive DNS
+# but are NOT operator infrastructure — keep them out of Discovered Infrastructure.
+_NS_NOISE = ("ns.cloudflare.com", "dns.cloudflare.com", "awsdns", "domaincontrol.com",
+             "registrar-servers.com", "nsone.net", "dnspod.net", "googledomains.com",
+             "azure-dns.", "ns.buddyns.com", "name.com", "dnsowl.com", "he.net")
+
+
+def _is_infra_noise_host(h: str) -> bool:
+    """True for a discovered host that is DNS-provider plumbing or a verification token,
+    not a pivotable operator asset."""
+    h = _norm(h)
+    if not h or "_" in h:                       # verification tokens (mandrill_verify.*, etc.)
+        return True
+    return any(ns in h for ns in _NS_NOISE)
+
+
 def _is_identity_pivot(kind: str) -> bool:
     """Kinds that, when shared across hosts, indicate common OPERATOR control —
     the backbone of a same-operator cluster (favicon, analytics/verif/SaaS tokens,
@@ -402,7 +418,9 @@ def render_cluster_report(results: list,
                     for h in (blk.get("results") or blk.get("domains") or []):
                         hh = _norm(h.get("domain") or h.get("host") if isinstance(h, dict) else h)
                         hh = hh.split("//")[-1].split("/")[0]
-                        if hh and hh not in case_hosts and "." in hh and not hh.replace(".", "").isdigit():
+                        if (hh and hh not in case_hosts and "." in hh
+                                and not hh.replace(".", "").isdigit()
+                                and not _is_infra_noise_host(hh)):
                             discovered.setdefault(hh, f"{lr_key} on {host}")
             if _is_identity_pivot(kind) and val is not None:
                 key = (kind, _norm(val))
