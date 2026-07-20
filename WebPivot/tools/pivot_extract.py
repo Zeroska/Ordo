@@ -874,6 +874,28 @@ def urlscan_intel(host: str, ua: str = DEFAULT_UA, limit: int = 20):
     return out
 
 
+def urlscan_dom(intel: dict, ua: str = DEFAULT_UA, timeout: int = 30):
+    """Fetch the rendered DOM of the most recent urlscan scan for a host, so a dead /
+    blocked target is still analyzable from a third-party capture. Returns (html, id)
+    or ('', None). urlscan stores the DOM at /dom/<uuid>/."""
+    for scan in (intel or {}).get("recent_scans", []):
+        res = scan.get("result") or ""
+        m = re.search(r"/result/([0-9a-f\-]{16,})", res)
+        if not m:
+            continue
+        uid = m.group(1)
+        try:
+            req = urllib.request.Request(f"https://urlscan.io/dom/{uid}/",
+                                         headers={"User-Agent": ua})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                html = r.read().decode("utf-8", "ignore")
+            if html and len(html) > 200:
+                return html, uid
+        except Exception:
+            continue
+    return "", None
+
+
 def wayback_save(url: str, ua: str = DEFAULT_UA, timeout: int = 40):
     """Submit a URL to the Wayback Machine's Save Page Now. Returns a dict with the
     archived snapshot URL (or an error). Passive-safe: it makes web.archive.org fetch the
@@ -2093,11 +2115,26 @@ def main():
             intel = urlscan_intel(host_for_intel, ua=seed_ua)
             print(f"[+] urlscan: {intel.get('total', 0)} prior scans, "
                   f"{len(intel.get('related_domains', []))} related domains", file=sys.stderr)
+            # No Wayback copy but urlscan has a prior scan → analyze its stored DOM.
+            if not html:
+                dom_html, dom_id = urlscan_dom(intel, ua=seed_ua)
+                if dom_html:
+                    html = dom_html
+                    base_url = base_url or f"https://{host_for_intel}/"
+                    recovered_via = f"urlscan_dom:{dom_id}"
+                    print(f"[+] recovered urlscan DOM {dom_id}", file=sys.stderr)
     else:
         ap.error("source must be a URL, an existing file, or '-'")
 
     result = analyze(src, html, base_url, headers, seed_ua, extra_cookies=cookies,
                      proxy=seed_proxy)
+
+    # Dead / blocked live target with no recoverable content: still RECORD the intended
+    # host so the run is a persisted fact (not a silent MISS) and any passive intel
+    # (urlscan related infra) attaches to a named host. (Gap #4)
+    if src.startswith(("http://", "https://")) and not result["meta"].get("host"):
+        result["meta"]["host"] = strip_www(urlparse(src).netloc)
+        result["meta"]["final_url"] = result["meta"].get("final_url") or src
 
     # --- redirect chain + affiliate/referral codes (first-class pivots for tracker links) ---
     if redirects:
