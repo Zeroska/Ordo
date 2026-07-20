@@ -167,6 +167,12 @@ artifacts from hosted builders (Wix/Squarespace/Shopify favicon hashes, `faceboo
 handles, `*.wixpress.com` emails and Sentry DSNs) are filtered out so they never create false
 same-operator clusters.
 
+**Dead / blocked targets recover passively (not a silent miss).** If the live fetch fails
+(NXDOMAIN, firewalled, Cloudflare block), the tool falls back to the most recent **urlscan stored
+DOM** then a **Wayback** snapshot, and — even when nothing is recoverable — still records the
+intended host with its passive intel (urlscan related domains/IPs) so the target is a persisted
+fact, not dropped. `recovered_via` in `meta` records the source. `--no-fallback` disables this.
+
 **Collect + archive in one pass — `--save-dom` and `--submit`.** Store the raw DOM you
 collected, and actively push the URL to the Wayback Machine *and* urlscan.io so there's a
 permanent third-party capture and a fresh scan to mine later:
@@ -180,6 +186,24 @@ python3 "$WP/tools/pivot_extract.py" https://target.example --render \
 content like inline form scripts only appears there). `--submit` attaches `archives.wayback.snapshot`
 and `archives.urlscan.result` to the JSON. A Wayback read-timeout does **not** mean the capture
 failed — Save-Page-Now usually completes server-side.
+
+**Evidentiary screenshot — `--screenshot [PATH]`.** With rendering on, saves a full-page PNG
+of what the target actually served (phishing-kit evidence); implies `--render`, path recorded in
+`result.archives.screenshot`. Needs the playwright venv (see `--render`).
+
+**IOC bundle for sharing — `--misp [PATH]`.** Writes a MISP-event JSON of the extracted
+artifacts (domains, IPs, TLS cert fingerprints, wallets, tokens) — importable into MISP or
+convertible to STIX. Registrar-privacy/boilerplate is filtered out. Also case-wide:
+`python3 tools/evidence_report.py cases/<case>/raw/*.json --case <c> --misp cases/<c>/iocs.misp.json`.
+
+**Continuous CT brand monitoring — `tools/ct_monitor.py`.** A zero-dependency, poll-based
+stand-in for certstream: polls Certificate Transparency (crt.sh, Certspotter fallback), remembers
+seen certs in a state file, and on each run reports only NEWLY-ISSUED certs for a brand — run on a
+loop/cron; fresh SANs print as ready-to-pivot seeds. Domain monitoring is reliable; `%keyword%` is
+best-effort (crt.sh throttles broad LIKE). First run baselines silently.
+```bash
+python3 tools/ct_monitor.py watch ultimamarkets.com vtm.trading --state "$CASE/ct_state.json"
+```
 
 **Historical analytics (Bellingcat method) — `tools/wayback_ga.py`.** Walks a domain's
 *entire Wayback history* and extracts every GA/GTM/AdSense/verification ID ever present —
