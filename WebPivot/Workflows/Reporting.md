@@ -5,6 +5,27 @@ IOCs, and watching a brand over time. All of it is `tools/evidence_report.py`,
 `tools/ct_monitor.py`, and a few `pivot_extract.py` flags. **A WebPivot run is only "done"
 when it ends with a readable ICD-203 assessment, not raw JSON.**
 
+## 🎯 Trigger: "output full report for that cluster" → the WHOLE-CASE rollup
+
+When the analyst says **"output full report for that cluster"** (or "full report", "cluster
+report", "campaign report", "report the whole cluster"), that means the **whole-case ICD-203
+rollup over `cases/<case>/raw/*.json`** — NOT a single-host `--report`. The goal of this workflow
+is cluster attribution: rolling every domain **and every analyzed binary** (BinaryPivot JSON lands
+in the same `raw/` dir) into one assessment that surfaces the shared identifiers exposing the
+operator's real identity. Run this, and lead with its BLUF + Key Judgments + Confirmed Sub-Clusters:
+
+```bash
+# THE cluster deliverable — every host + binary in the case, one ICD-203 assessment
+python3 tools/evidence_report.py cases/<case>/raw/*.json --case <name> --analyst <you> \
+    -o cases/<case>/assessment.md
+# share-ready IOC bundle for the whole cluster
+python3 tools/evidence_report.py cases/<case>/raw/*.json --case <name> \
+    --misp cases/<case>/iocs.misp.json
+```
+
+A single-domain `--report` (below) is only for eyeballing one page in isolation — it is **not** the
+cluster deliverable and should not be presented when the request was for the cluster.
+
 ## Finished-intelligence reporting (ICD-203 / CIA analytic tradecraft) — `tools/evidence_report.py`
 
 Two levels, both in US IC style: classification banner, **BLUF**, **Key Judgments** with ICD-203

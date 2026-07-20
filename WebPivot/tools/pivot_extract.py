@@ -1139,6 +1139,14 @@ _APK_EXT_RE = re.compile(
     r"""(?:href|src|data-[\w-]+|content|url)\s*[=:]\s*["'(]?\s*"""
     r"""((?:https?:)?[^"'()\s<>]+?\.(?:apk|aab|xapk|ipa|plist))(?:\?[^"'()\s<>]*)?""", re.I)
 _APK_BARE_RE = re.compile(r"""https?://[^\s"'()<>]+?\.(?:apk|aab|xapk)(?:\?[^\s"'()<>]*)?""", re.I)
+# Desktop "trading terminal" installers are the other half of the scam-app funnel (Windows/macOS/
+# Linux). These extensions are almost always an installer, so catch them unconditionally; the host
+# serving them is backend infra and the file itself is a BinaryPivot target (hash + embedded IOCs).
+_DESKTOP_EXT_RE = re.compile(
+    r"""(?:href|src|data-[\w-]+|content|url)\s*[=:]\s*["'(]?\s*"""
+    r"""((?:https?:)?[^"'()\s<>]+?\.(?:exe|msi|dmg|pkg|appimage|deb|rpm|jar))(?:\?[^"'()\s<>]*)?""", re.I)
+_DESKTOP_BARE_RE = re.compile(
+    r"""https?://[^\s"'()<>]+?\.(?:exe|msi|dmg|pkg|appimage|deb|rpm)(?:\?[^\s"'()<>]*)?""", re.I)
 _PLAY_RE = re.compile(r"""play\.google\.com/store/apps/details\?[^"'\s<>]*?id=([A-Za-z0-9._]+)""", re.I)
 _APPLE_RE = re.compile(r"""apps\.apple\.com/[^"'\s<>]*?/id(\d{6,})""", re.I)
 _SMART_PLAY_RE = re.compile(r"""name=["']google-play-app["'][^>]*content=["'][^"']*app-id=([A-Za-z0-9._]+)""", re.I)
@@ -1166,6 +1174,20 @@ def extract_app_downloads(html: str, base_url: str = ""):
         out["apk_urls"] = apk[:20]
     if ipa:
         out["ios_pkg_urls"] = ipa[:10]
+    # desktop installers (Windows/macOS/Linux scam-terminal funnel)
+    desk = []
+    for m in _DESKTOP_EXT_RE.finditer(html):
+        desk.append(m.group(1))
+    desk += _DESKTOP_BARE_RE.findall(html)
+    desk_res = []
+    for u in desk:
+        try:
+            desk_res.append(unwrap_wayback(urljoin(base_url or "", u)))
+        except Exception:
+            desk_res.append(u)
+    desk = uniq([u for u in desk_res if re.search(r"\.(exe|msi|dmg|pkg|appimage|deb|rpm|jar)(\?|$)", u, re.I)])
+    if desk:
+        out["desktop_installers"] = desk[:20]
     pkgs = uniq(_PLAY_RE.findall(html) + _SMART_PLAY_RE.findall(html))
     if pkgs:
         out["android_packages"] = pkgs[:15]
@@ -1444,13 +1466,27 @@ def build_pivots(art: dict, base_host: str):
     for apk in app.get("apk_urls", []):
         apk_host = strip_www(urlparse(apk).netloc)
         add("app:apk", apk, "high", [
-            {"service": "download+analyze", "query": f"pull {apk} → sha256 → VirusTotal / Koodous / MobSF"},
+            {"service": "→ BinaryPivot", "query": f"python3 BinaryPivot/tools/analyze_artifact.py {apk} --leads"},
             {"service": "urlscan.io", "query": f'"{apk}"'},
             {"service": "PublicWWW", "query": f'"{apk}"'},
             {"service": "crt.sh (backend host)", "query": f"%.{apk_host}"},
             {"service": "reverse-IP (backend host)", "query": apk_host},
-        ], f"Sideloaded APK download — the host serving it ({apk_host}) is backend infra; "
-           f"hash the APK and pivot its signing cert / package.")
+        ], f"Sideloaded APK download — the host serving it ({apk_host}) is backend infra. "
+           f"Run BinaryPivot on the file to pull its signing-cert SHA-256, package, embedded backend "
+           f"hosts and wallets — those become shared indicators that cluster this app's whole portfolio.")
+    for inst in app.get("desktop_installers", []):
+        inst_host = strip_www(urlparse(inst).netloc)
+        ext = re.search(r"\.(exe|msi|dmg|pkg|appimage|deb|rpm|jar)(\?|$)", inst, re.I)
+        add("app:desktop_installer", inst, "high", [
+            {"service": "→ BinaryPivot", "query": f"python3 BinaryPivot/tools/analyze_artifact.py {inst} --leads"},
+            {"service": "VirusTotal / MalwareBazaar", "query": f"hash the file, then search sha256"},
+            {"service": "urlscan.io", "query": f'"{inst}"'},
+            {"service": "PublicWWW", "query": f'"{inst}"'},
+            {"service": "crt.sh (backend host)", "query": f"%.{inst_host}"},
+        ], f"Desktop 'trading terminal' installer ({ext.group(1).lower() if ext else 'binary'}) — "
+           f"the host serving it ({inst_host}) is backend infra. Run BinaryPivot on the file for its "
+           f"hash + embedded C2/backend hosts + code-signing identity; the same installer re-skinned "
+           f"across clones is a strong same-operator link.")
     for pkg in app.get("android_packages", []):
         add("app:android_package", pkg, "high", [
             {"service": "PublicWWW", "query": f'"{pkg}"'},
