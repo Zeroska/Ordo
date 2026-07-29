@@ -21,6 +21,7 @@ import sys
 import json
 import hashlib
 import argparse
+import ipaddress
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -35,6 +36,42 @@ try:
 except Exception:
     def _valid_wallet(label, value):   # fail-open if collector not importable
         return True
+
+# CDN/cloud classifier — a domain's Cloudflare/Fastly edge IP is NOT its operator host, so a
+# `hosted_on` edge to it would be noise. Reused from WebPivot; fail-open (treat unknown as origin —
+# --strong prevalence gating still drops any IP shared by too many domains).
+try:
+    from wp_analyze import classify_ip as _classify_ip  # noqa: E402
+except Exception:
+    def _classify_ip(ip):
+        return {"ip": ip, "cdn": None, "provider": None, "kind": "unknown"}
+
+
+def _is_ipaddr(s):
+    """True only for a real IPv4/IPv6 literal — guards against pdns records whose A/AAAA rdata is a
+    hostname (CNAME chains / mislabeled rrtype), which must never become an `ip:<domain>` node."""
+    try:
+        ipaddress.ip_address((s or "").strip())
+        return True
+    except ValueError:
+        return False
+
+
+def _ip_is_cdn(ip):
+    try:
+        return _classify_ip(ip).get("cdn") is True
+    except Exception:
+        return False
+
+
+def _epoch_day(v):
+    """A passive-DNS time_first/time_last → 'YYYY-MM-DD'. Accepts unix epoch (int/str) or ISO."""
+    if v is None or v == "":
+        return None
+    try:
+        return datetime.fromtimestamp(int(float(v)), timezone.utc).strftime("%Y-%m-%d")
+    except (ValueError, TypeError, OSError):
+        return str(v)[:10] or None
 
 COLLECTOR = "webpivot/pivot_extract"
 
@@ -95,6 +132,63 @@ def _is_privacy(v):
 
 def _day(iso):
     return (iso or "")[:10] or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _resolved_ip_edges(kb, host, lr, observed, ev):
+    """Emit `domain host --hosted_on--> indicator ip:<ip>` for the domain's resolved IPs, so a
+    domain graph-links to the IP box (and thus to its co-tenants). Carries the hosting time window
+    when passive DNS supplies it. CDN/cloud edge IPs are dropped (not the operator's host). Merges
+    live-DNS ('now') and CIRCL passive-DNS (historical, time-windowed) into one edge per IP.
+
+    `lr` is the `domain` pivot's live_results: dns.ips (+ip_classification), pdns.records
+    (rrtype/rdata/time_first/time_last), passivedns.ips."""
+    today = (observed or "")[:10]
+    ips = {}   # ip -> {first, last, via:set}
+
+    def _note(ip, first, last, via):
+        m = ips.setdefault(ip, {"first": None, "last": None, "via": set()})
+        for f in (first,):
+            if f and (m["first"] is None or f < m["first"]):
+                m["first"] = f
+        for l in (last,):
+            if l and (m["last"] is None or l > m["last"]):
+                m["last"] = l
+        m["via"].add(via)
+
+    # live A/AAAA records — classification already computed by enrich_live
+    dns = lr.get("dns") or {}
+    cls = {c.get("ip"): c for c in (dns.get("ip_classification") or [])}
+    for ip in dns.get("ips") or []:
+        ip = (ip or "").strip()
+        if not _is_ipaddr(ip) or (cls.get(ip) or {}).get("cdn") is True:
+            continue
+        _note(ip, today, today, "live_dns")
+
+    # CIRCL passive DNS — historical hosting with a real time window
+    for rec in ((lr.get("pdns") or {}).get("records") or []):
+        if rec.get("rrtype") not in ("A", "AAAA"):
+            continue
+        ip = (rec.get("rdata") or "").strip()
+        if not _is_ipaddr(ip) or _ip_is_cdn(ip):   # A/AAAA rdata can still be a CNAME target — reject non-IPs
+            continue
+        _note(ip, _epoch_day(rec.get("time_first")) or today,
+              _epoch_day(rec.get("time_last")) or today, "pdns")
+
+    # HackerTarget passive DNS — origin IPs, no timing
+    for ip in ((lr.get("passivedns") or {}).get("ips") or []):
+        ip = (ip or "").strip()
+        if not _is_ipaddr(ip) or _ip_is_cdn(ip):
+            continue
+        _note(ip, today, today, "passivedns")
+
+    n = 0
+    for ip, m in ips.items():
+        attrs = {"first_seen": m["first"] or today, "last_seen": m["last"] or today,
+                 "via": ",".join(sorted(m["via"]))}
+        kb.add_edge("domain", host, "hosted_on", "indicator", f"ip:{ip}",
+                    "webpivot", "webpivot/dns", observed, "medium", ev, attrs=attrs)
+        n += 1
+    return n
 
 
 def _norm_domain(hd):
@@ -367,6 +461,12 @@ def ingest_file(kb, path):
                         kb.add_edge("domain", hd, "registered_by", "email", piv["value"].lower(),
                                     "whoisxml", "webpivot/whois_enrich", observed, "medium", ev)
                         n += 1
+
+    # --- resolved IPs: domain hosted_on ip:<ip> (+ hosting time window) — links domain ↔ IP box ---
+    for piv in d.get("pivots") or []:
+        if piv.get("kind") == "domain":
+            n += _resolved_ip_edges(kb, host, piv.get("live_results") or {}, observed, ev)
+            break
     return n
 
 

@@ -110,12 +110,18 @@ class KB:
                 e["source"], e["collector"])
 
     def add_edge(self, src_type, src, rel, dst_type, dst, source, collector,
-                 observed_at, confidence, evidence_ref=None):
-        """Attributed, deduped relationship. Ensures both endpoints exist as entities."""
+                 observed_at, confidence, evidence_ref=None, attrs=None):
+        """Attributed, deduped relationship. Ensures both endpoints exist as entities.
+
+        `attrs` (optional) merges extra data-level fields onto the edge — e.g. a `hosted_on`
+        edge's `first_seen`/`last_seen` hosting window from passive DNS. It does not affect the
+        dedup key, so the first ingest's window is preserved on re-ingest."""
         e = {"src_type": src_type, "src": src, "rel": rel, "dst_type": dst_type,
              "dst": dst, "source": source, "collector": collector,
              "observed_at": observed_at, "confidence": _conf(confidence),
              "evidence_ref": evidence_ref}
+        if attrs:
+            e.update(attrs)
         k = self._edge_key(e)
         if k not in self._edge_keys:
             self._edge_keys.add(k)
