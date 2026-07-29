@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# intel — console entrypoint for the OSINT harness. Run from anywhere:
+#   ./intel status
+#   ./intel open     CASE-0001 https://site-a.example https://site-b.example
+#   ./intel continue CASE-0001 --depth 4 https://site-a.example
+# Thin shim: resolves the repo root, then dispatches to harness/cli.py.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 "$here/harness/cli.py" "$@"

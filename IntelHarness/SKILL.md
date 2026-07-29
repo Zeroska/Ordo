@@ -32,6 +32,14 @@ The tradecraft for each phase lives in the sibling skills — **read/apply `WebP
 and `IntelAnalysis` for judgement.** This skill is the *orchestration*: what to run, in what order,
 what to reject, and when to stop.
 
+**Prefer the typed MCP tools when connected.** If the `intel` MCP server (repo-root `.mcp.json`,
+`harness/mcp_server.py`) is available, the phase tools are exposed as native, typed tools —
+`pivot_extract`, `fallback_probe`, `kb_ingest`, `kb_cluster`, `kb_entity`, `cert_overlap`,
+`reference_check`, `which_cases`, `domain_verdict`, … — backed by the *same* CLIs. Use them instead
+of shelling out; they're typed and permission-gated, and you skip the bash quoting. The `python3 …`
+command forms shown in the phases below are the **fallback** for when the server isn't connected
+(check `/mcp`), and remain the reference for exact flags.
+
 ---
 
 ## Setup (every run)

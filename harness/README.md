@@ -45,9 +45,16 @@ Three phases; each is one `query()` call, wired so consistency comes from the sc
   so stdout stays clean JSON. Use it to measure real cost-per-case on your first runs.
 
 ## Files
+- `cli.py` — the `intel` console entrypoint (`open` / `continue` / `status`); `../intel` is the shim.
 - `tools.py` — your CLI scripts wrapped as in-process `@tool`s (+ the egress guardrail).
 - `schemas.py` — the `Assessment` Pydantic model (the structured checkpoint).
 - `orchestrator.py` — the Collect→Correlate→Assess driver + CLI.
+- `prompts/` — the per-phase **task** prompts (`collect.md` / `correlate.md` / `assess.md`), the
+  single editable source of truth for what each phase instructs. `orchestrator._prompt(name, **kw)`
+  loads and fills them (`{{token}}`); the phase *system* prompt still comes from the SKILL body.
+- `mcp_server.py` — a standalone **stdio MCP server** that serves the *same* `tools.py` tool
+  objects to Claude Code / any MCP client (auto-discovered, so it never drifts); `mcp-server` is
+  its launch shim, wired up by the repo-root `.mcp.json`.
 - `agents.py` — *optional* subagent definitions for parallel fan-out (ParallelBatch).
 
 ## Run
@@ -61,6 +68,17 @@ python3 harness/orchestrator.py CASE-0001 --hostile https://sketchy.example
 ```
 Prints the validated `Assessment` as JSON. Reads/writes the same `cases/` + `knowledge/`
 stores as the skills (both git-ignored).
+
+### `intel` — the console entrypoint
+Prefer the repo-root `intel` shim over the long `python3 harness/orchestrator.py …` form. `open`
+and `continue` forward every flag straight through to `orchestrator.py`; `status` reads the
+`cases/` store directly — **no LLM, no `ANTHROPIC_API_KEY`** — so it works mid-run:
+```bash
+./intel status                                   # one line per case (fleet view)
+./intel status CASE-0001                          # detail: rounds, attribution, BLUF, next pivots
+./intel open     CASE-0001 https://site-a.example https://site-b.example
+./intel continue CASE-0001 --depth 4 https://site-a.example   # iterate to convergence
+```
 
 ## Never end a seed on silent "nothing found"
 When `pivot_extract` comes back cold — zero/near-zero pivots, an empty-favicon/parked page, or
@@ -227,6 +245,29 @@ The judgment phase also has a **`reverse_whois`** tool that returns only high-va
 Every run prints/saves the standard **Domain Summary table** (`tools/domain_table.py`) — Domain · Status · Registered · Expires · Registrar · Nameservers · Registrant · IP·ASN · Attribution · Context — for the domains collected this run, above the assessment.
 
 New env knobs: `HARNESS_FLARESOLVERR` (CF solver URL) · `HARNESS_RENDER_PY` (playwright python, default `WebPivot/.venv`).
+
+## One typed tool surface for both front-ends (`mcp_server.py` + `.mcp.json`)
+The SDK driver already gets clean, typed MCP tools (built-ins stripped, no shell-flailing). The
+Claude-Code front-end historically did the opposite — driving the same work via raw
+`python3 …/pivot_extract.py` bash. `mcp_server.py` closes that gap: a **standalone stdio MCP
+server** that serves the *same* `tools.py` tool objects to Claude Code (or any MCP client), so both
+front-ends share one typed, permission-gated surface.
+
+- **Zero duplication / no drift** — it re-implements nothing. It imports `tools.py` and
+  auto-discovers every `@tool` (`pivot_extract`, `kb_cluster`, `cert_overlap`, … — all 13); the
+  handlers and the CLIs under them stay the source of truth. Add a tool to `tools.py` and it appears
+  here automatically.
+- **Wired up** by the repo-root `.mcp.json` (`command: ./harness/mcp-server`). The shim runs the
+  server under the **WebPivot venv** (tools.py imports `claude_agent_sdk`); edit `PY` in the shim if
+  your SDK venv lives elsewhere.
+- **Smoke test** (newline-delimited JSON-RPC on stdin):
+  ```bash
+  ./harness/mcp-server        # then send: {"jsonrpc":"2.0","id":1,"method":"tools/list"}
+  ```
+- **Verification boundary**: the server's `initialize` / `tools/list` / `tools/call` handshake is
+  tested; confirming Claude Code *loads* it needs a Claude Code restart in this repo (it reads
+  `.mcp.json` at startup — check `/mcp`). Egress policy still defaults to non-hostile here; enforce
+  hostile egress out of process (below).
 
 ## The guardrail seam
 `tools.POLICY["hostile"]` is flipped by the orchestrator for `--hostile` runs; the

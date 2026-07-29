@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "intel": {
+      "command": "./harness/mcp-server",
+      "args": []
+    }
+  }
+}

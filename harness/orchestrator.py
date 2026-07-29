@@ -42,7 +42,8 @@ import render  # noqa: E402
 import tools as T  # noqa: E402
 from schemas import Assessment  # noqa: E402
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HERE = os.path.dirname(os.path.abspath(__file__))            # harness/
+ROOT = os.path.dirname(HERE)                                  # repo root
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,18 @@ def _skill(name: str) -> str:
     the SDK can also auto-load skills from .claude/ via setting_sources)."""
     with open(os.path.join(ROOT, name, "SKILL.md"), encoding="utf-8") as f:
         return f.read()
+
+
+def _prompt(name: str, **kw: object) -> str:
+    """Load a phase TASK prompt from harness/prompts/<name>.md — the single editable source
+    of truth for what each phase instructs (the phase system_prompt still comes from the SKILL
+    body via _skill). Placeholders are {{token}}, filled from kwargs; a token with no matching
+    kwarg is left intact. Plain { } and $ are NOT special, so the prose can be edited freely."""
+    with open(os.path.join(HERE, "prompts", name + ".md"), encoding="utf-8") as f:
+        body = f.read().rstrip("\n")
+    for k, v in kw.items():
+        body = body.replace("{{" + k + "}}", str(v))
+    return body
 
 
 def _domain_table(case: str) -> str:
@@ -190,19 +203,14 @@ async def investigate(seeds: list[str], case: str, hostile: bool = False) -> Ass
     prior = _prior_knowledge(seeds)
     _log("prior knowledge:\n" + prior)
     p1 = await _phase(
-        "You have ONLY the provided tools (pivot_extract, fallback_probe, kb_ingest) — no shell or "
-        "filesystem. Ignore any shell commands in the instructions; call the tools directly.\n\n"
-        f"Case `{case}`. Prior knowledge — do NOT re-collect seeds already collected/attributed "
-        f"(pivot_extract returns cached data for those instantly); spend live collection only on NEW seeds:\n"
-        f"{prior}\n\n"
-        "For EACH seed: call pivot_extract, then kb_ingest the case.\n"
-        "EMPTY-RESULT RULE: if pivot_extract returns zero/near-zero pivots or a parked / "
-        "empty-favicon / NXDOMAIN page (WHOIS+FOFA+urlscan all cold), you MUST call "
-        "fallback_probe(seed) before moving on — never end a seed on a silent 'nothing found'. "
-        "Report its VERDICT (PIVOTABLE with the surviving leads, or NO-PIVOT-YET with next steps) "
-        "so the analyst always gets a verdict, not silence.\n"
-        + ("Targets are HOSTILE — pass passive=true or a proxy on pivot_extract.\n" if hostile else "")
-        + f"Seeds:\n{seed_lines}",
+        _prompt(
+            "collect",
+            case=case,
+            prior=prior,
+            seed_lines=seed_lines,
+            hostile_note=("Targets are HOSTILE — pass passive=true or a proxy on pivot_extract.\n"
+                          if hostile else ""),
+        ),
         label="collect",
         system=_skill("WebPivot"),
         tools=T.COLLECT_TOOLS,
@@ -230,24 +238,7 @@ async def _judge(domains: list[str], case: str) -> tuple[Assessment | None, dict
     seed_csv = ", ".join(domains)
     # PHASE 2 — CORRELATE  (IntelAnalysis brain, judge model). Fresh session, reads the KB.
     p2 = await _phase(
-        "You have ONLY the provided tools (kb_cluster, kb_entity, kb_query_shared, risk_signals, "
-        "reverse_whois, cert_overlap, reference_check, reference_add, which_cases, domain_verdict) "
-        "— no shell or filesystem. Ignore shell commands in the instructions.\n\n"
-        f"Case `{case}` (domains: {seed_csv}). Collection is already ingested. For EACH domain, call "
-        "kb_cluster(domain) for its peers and kb_entity(domain) for its facts — that focused subgraph "
-        "is your primary evidence. Call domain_verdict(domain) or which_cases(domain) so you know which "
-        "prior CASE(S) a domain/artifact already belongs to — a known artifact carries prior context, "
-        "and an indicator shared across MULTIPLE cases is a cross-case link to surface. "
-        "BEFORE trusting any shared hash/keyword as a same-operator link, reference_check it — a "
-        "BENIGN verdict means it's a common logo/CDN/CSS artifact (false positive, discard it); if "
-        "you confirm a NEW benign or a distinctive SIGNAL fingerprint, reference_add it so future "
-        "cases benefit. Call risk_signals for the case. Use kb_query_shared ONLY if you "
-        "genuinely need the KB-wide picture (it is large/expensive). "
-        "TLS CHECK (required when you have 2+ candidate same-operator domains): call "
-        "cert_overlap(domains=those domains) — a shared TLS cert / SAN cross-cover is near-decisive "
-        "same-operator proof, and a clean NO-CT-OVERLAP is itself evidence to weigh. "
-        "Then triage the shared artifacts by tier and name the candidate same-operator cluster(s). "
-        "Reason only.",
+        _prompt("correlate", case=case, seed_csv=seed_csv),
         label="correlate",
         system=_skill("IntelAnalysis"),
         tools=T.ANALYZE_TOOLS,
@@ -260,10 +251,7 @@ async def _judge(domains: list[str], case: str) -> tuple[Assessment | None, dict
         return None, {"correlate": p2}
 
     # PHASE 3 — ASSESS  (resume CORRELATE; schema-forced structured assessment)
-    assess_prompt = (
-        "Produce the final assessment as JSON matching the schema: BLUF with an estimative word; "
-        "the cluster and the artifacts binding it; the attribution level and the evidence for it; "
-        "gaps / competing explanation; prioritised next pivots.")
+    assess_prompt = _prompt("assess")
     assess_kw = dict(system=_skill("IntelAnalysis"), tools=T.ANALYZE_TOOLS,
                      servers={"analyze": T.ANALYZE_SERVER}, resume=session, output_schema=Assessment)
     p3 = await _phase(assess_prompt, label="assess", model=JUDGE.model, effort=JUDGE.effort, **assess_kw)
