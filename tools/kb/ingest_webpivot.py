@@ -97,15 +97,89 @@ def _day(iso):
     return (iso or "")[:10] or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def _norm_domain(hd):
+    """Normalize a co-tenant host to a bare registrable-ish domain: drop scheme/port/path/www."""
+    hd = (hd or "").strip().lower()
+    hd = re.sub(r"^[a-z]+://", "", hd).split("/")[0].split(":")[0]
+    return hd[4:] if hd.startswith("www.") else hd
+
+
+def _ingest_ip(kb, d, meta, ip, observed, day):
+    """Ingest an IPPivot result (meta.kind=='ip'). The IP becomes an `indicator` node `ip:<ip>`;
+    co-hosted domains get a `hosted_on` edge to it, so domains sharing an origin IP auto-cluster
+    exactly like a shared favicon (union-find keys on domain→indicator edges). For a NOISE provider
+    (shared CDN/cloud/hosting) co-tenancy is NOT ownership, so those are recorded as facts only —
+    never clustering edges. ASN/org/ports/PTR/git-servers/provenance are attached as facts."""
+    art = (d.get("artifacts") or {}).get("ip_intel") or {}
+    ev = kb.save_evidence("webpivot-ip", ip, d, day)
+    ind = f"ip:{ip}"
+    kb.touch("indicator", ind, observed)
+    n = 1
+
+    ii = art.get("ipinfo") or {}
+    for attr, val, conf in (("asn", ii.get("asn"), "high"), ("org", ii.get("org_name"), "high"),
+                            ("ptr", art.get("ptr"), "medium"),
+                            ("ports", ",".join(art.get("ports") or []), "medium"),
+                            ("services", ", ".join(art.get("services") or []), "low")):
+        if val:
+            kb.add_fact("indicator", ind, attr, val, "webpivot", COLLECTOR, observed, conf, ev)
+            n += 1
+    if meta.get("provenance"):
+        kb.add_fact("indicator", ind, "provenance", meta["provenance"][:400],
+                    "webpivot", COLLECTOR, observed, "high", ev)
+        n += 1
+    # exposed operator git servers (case-specific, high attribution value)
+    for label, g in (art.get("git_servers") or {}).items():
+        detail = " ".join(x for x in (g.get("url"),
+                          ("%s/%s" % (g.get("owner"), g.get("repo"))) if g.get("repo") else None,
+                          ("fronted_by=%s" % g["fronted_by"]) if g.get("fronted_by") else None) if x)
+        kb.add_fact("indicator", ind, f"git_server:{label}", detail,
+                    "webpivot", COLLECTOR, observed, "high", ev)
+        n += 1
+
+    noise = bool(art.get("noise"))
+    # co-hosted / historical co-tenant domains (FOFA reverse + urlscan history)
+    cohosts, seen = [], set()
+    for hd in (list(art.get("co_hosted_domains") or []) + list(art.get("urlscan_cotenants") or [])):
+        nd = _norm_domain(hd)
+        if nd and not _is_ip_host(nd) and nd not in seen:
+            seen.add(nd)
+            cohosts.append(nd)
+    for nd in cohosts:
+        if noise:
+            # shared provider — co-tenancy is not ownership; keep as a fact, never a cluster edge
+            kb.add_fact("indicator", ind, "co_tenant", nd, "webpivot", COLLECTOR, observed, "low", ev)
+        else:
+            # origin box — domains here are same-operator leads; cluster them on the ip: indicator
+            kb.add_edge("domain", nd, "hosted_on", "indicator", ind,
+                        "fofa/urlscan", "webpivot/ip", observed, "medium", ev)
+        n += 1
+
+    # self-hosted mail domain (managed providers already filtered out in build_ip_result)
+    mail = art.get("mail") or {}
+    if mail and mail.get("mx") and not mail.get("managed"):
+        for md in mail.get("mail_domains") or []:
+            nd = _norm_domain(md)
+            if nd and not _is_ip_host(nd):
+                kb.add_edge("domain", nd, "hosted_on", "indicator", ind,
+                            "webpivot", COLLECTOR, observed, "medium", ev)
+                n += 1
+    return n
+
+
 def ingest_file(kb, path):
     d = json.load(open(path, encoding="utf-8"))
-    host = (d.get("meta") or {}).get("host")
-    if not host or _is_ip_host(host):   # IP-literals / IP:port are not domain entities — skip
+    meta = d.get("meta") or {}
+    host = meta.get("host")
+    if not host:
         return 0
-    art = d.get("artifacts") or {}
     # observed_at: file mtime as ISO (collections don't carry their own timestamp)
     observed = datetime.fromtimestamp(os.path.getmtime(path), timezone.utc).isoformat()
     day = _day(observed)
+    # IPPivot result → IP-shaped ingest (co-hosted domains cluster on the ip: indicator)
+    if meta.get("kind") == "ip" or _is_ip_host(host):
+        return _ingest_ip(kb, d, meta, host, observed, day)
+    art = d.get("artifacts") or {}
     ev = kb.save_evidence("webpivot", host, d, day)
     n = 0
 
