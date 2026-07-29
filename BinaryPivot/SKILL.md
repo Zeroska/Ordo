@@ -3,6 +3,12 @@ name: BinaryPivot
 description: Static IOC extraction from binaries pulled off fraud/scam sites — the file half of a scam funnel (sideloaded Android APK, desktop "trading terminal" .exe/.dmg/.msi, bundled .jar/.zip). Downloads/opens the artifact, hashes it, and pulls the operator-clustering identifiers that survive re-skinning: APK signing-cert SHA-256, package name + permissions, embedded backend/C2 hosts, Firebase/appspot cloud tenant, S3 buckets, crypto wallets, Telegram/WhatsApp handles. Emits WebPivot-shaped pivot JSON so the SAME KB/case graph clusters the app with the web infrastructure. USE WHEN analyze APK, analyze binary, analyze exe, analyze installer, scam app, trading app, sideloaded APK, extract IOCs from file, malware IOCs, signing certificate, package name, APK backend, C2 endpoint, firebase project, mobile app analysis, reverse the app, what does this app connect to, pivot from a downloaded file, app download funnel.
 ---
 
+> **OPSEC — this skill is portable/shared. Never write case data into it.** No real operator
+> names, emails, domains, IPs, wallets, tracking IDs, hashes, or case IDs in this file, its
+> workflows, tool code, or test fixtures. Investigation data lives only in the git-ignored
+> `cases/` / `knowledge/` / `MEMORY/`. In examples use placeholders (`example.com`,
+> `G-XXXXXXXXXX`, `CASE-0001`). See the repo-root `CLAUDE.md` for the full rule.
+
 ## 🚨 MANDATORY: Voice Notification (REQUIRED BEFORE ANY ACTION)
 
 Send this BEFORE anything else when this skill is invoked:

@@ -10,8 +10,8 @@ must not become an operator hub. This tool refuses to ingest above --max-domains
 reports the decision instead of silently linking.
 
 Usage:
-  python3 ingest_reverse_whois.py --kb knowledge --email ductaibc1@gmail.com
-  python3 ingest_reverse_whois.py --kb knowledge --name "Lê Nhất Duy" --max-domains 150
+  python3 ingest_reverse_whois.py --kb knowledge --email registrant@example.com
+  python3 ingest_reverse_whois.py --kb knowledge --name "Registrant Name" --max-domains 150
 """
 import os
 import sys

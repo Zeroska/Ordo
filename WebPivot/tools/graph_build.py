@@ -18,7 +18,7 @@ Edges are typed and evidence-graded per investigative convention:
 
 Usage:
   graph_build.py out/*.json -o graph.json
-  graph_build.py a.json b.json --operator "anhquoc" --operator-links lambang247.shop,lambangxinviec.shop -o graph.json
+  graph_build.py a.json b.json --operator "operator-a" --operator-links site-a.example,site-b.example -o graph.json
 
 Feed graph.json to IntelGraph/scripts/render_network.py for the interactive HTML.
 """

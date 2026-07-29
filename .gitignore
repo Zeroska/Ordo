@@ -8,12 +8,18 @@
 # NOTE: .gitignore has no inline comments — keep each pattern on its own line.
 .claude/settings.local.json
 # PAI session PRDs — local work state, not the skill:
-MEMORY/
+/MEMORY/
 
 # === per-investigation data (target data + your analysis) — keep private ===
 # Comment these out if you deliberately want to share example cases.
-cases/
-knowledge/
+# Anchored to repo root (leading /) so nested dirs like tools/eval/cases/ (the
+# shippable golden-set fixtures) are NOT swept up by these rules.
+/cases/
+/knowledge/
+# stray per-investigation artifacts that live OUTSIDE cases/ (target lists, host dumps)
+# — the cases/ rule above does not match root-level files like cases_<x>_hosts.txt
+cases_*.txt
+*_hosts.txt
 
 # === OS / Python cruft ===
 .DS_Store
@@ -23,6 +29,9 @@ __pycache__/
 *.pyc
 *.pyo
 .playwright-cli/
+# local virtualenvs — machine-specific, never ship with a portable skill
+.venv/
+**/.venv/
 
 # === large scraped inputs ===
 malicious.html

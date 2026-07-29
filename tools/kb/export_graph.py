@@ -3,8 +3,8 @@
 export_graph.py — project the KNOWLEDGE BASE into a scannable, domain-centric graph.
 
 Fixes two problems with building the graph from raw pivot_extract JSON:
-  1. it missed KB-only edges (reverse-WHOIS registrant links) — so e.g. lambangsieunhanh.com
-     never connected to ductaibc1@gmail.com.
+  1. it missed KB-only edges (reverse-WHOIS registrant links) — so e.g. a domain
+     never connected to its registrant email.
   2. it drew every domain<->indicator as its own line = a 200-node hairball.
 
 This reads ALL KB edges and COLLAPSES them to domain<->domain edges weighted by shared
@@ -13,7 +13,7 @@ favicon), plus person/email operator anchors. Same registrant + same UA between 
 domains = a strong, short edge → the sub-clusters pull apart visibly. Louvain communities
 color the sub-clusters. Reuses graph_build's analytics (communities, betweenness, sizing).
 
-  python3 export_graph.py --kb knowledge -o cases/unified/kb_graph.json
+  python3 export_graph.py --kb knowledge -o kb_graph.json
 """
 import os
 import sys
@@ -108,25 +108,31 @@ def main():
 
     graph = gb.assemble(g)
 
-    # Recolor by OPERATOR attribution (clearer than raw Louvain): 0 = Nguyen Duc Tai
-    # (ductaibc1@gmail.com), 1 = Lê Nhất Duy, 2 = unattributed. Layout already
-    # separates them via the anchors; this makes the sub-clusters read at a glance.
-    reg = defaultdict(set)
+    # Recolor by OPERATOR attribution (clearer than raw Louvain): rank the registrant
+    # anchors by how many domains each registers — the largest operators get the low
+    # ranks (0, 1, …) and everything unattributed falls to the trailing bucket. Fully
+    # data-driven (no hard-coded identities), so it ports to any case's KB. Layout
+    # already separates them via the anchors; this makes the sub-clusters read at a glance.
+    from collections import Counter
+    reg = defaultdict(set)          # domain -> {registrant tags, lowercased}
+    reg_count = Counter()           # registrant tag -> # domains it registers
     for e in kb.edges():
         if e["rel"] == "registered_by" and e["src_type"] == "domain":
-            reg[e["src"]].add(e["dst"].lower())
+            tag = e["dst"].lower()
+            reg[e["src"]].add(tag)
+            reg_count[tag] += 1
+
+    # a registrant anchoring >= 2 domains is an operator hub; give each a stable rank.
+    ranked = [t for t, c in reg_count.most_common() if c >= 2]
+    op_rank = {t: i for i, t in enumerate(ranked)}
+    UNATTRIB = len(ranked)          # trailing "unattributed" bucket
 
     def op_by_registrant(dom):
-        tags = reg.get(dom, set())
-        if "ductaibc1@gmail.com" in tags or "nguyen duc tai" in tags:
-            return 0
-        if any("duy" in t for t in tags):
-            return 1
-        return None
+        ranks = [op_rank[t] for t in reg.get(dom, set()) if t in op_rank]
+        return min(ranks) if ranks else None
 
     # Propagate the operator label across each artifact community by majority vote,
     # so privacy-registered domains inherit the operator they're artifact-linked to.
-    from collections import Counter
     comm_votes = defaultdict(Counter)
     for n in graph["nodes"]:
         if n["type"] == "domain":
@@ -138,12 +144,10 @@ def main():
     for n in graph["nodes"]:
         if n["type"] == "domain":
             direct = op_by_registrant(n["label"])
-            n["community_rank"] = direct if direct is not None else comm_op.get(n.get("community"), 2)
+            n["community_rank"] = direct if direct is not None else comm_op.get(n.get("community"), UNATTRIB)
         elif n["type"] in ("email", "person"):
-            lab = n["label"].lower()
-            n["community_rank"] = 0 if ("ductaibc1" in lab or lab == "nguyen duc tai") \
-                else 1 if "duy" in lab else 2
-    graph["meta"]["coloring"] = "operator (0=Nguyen Duc Tai, 1=Lê Nhất Duy, 2=unattributed)"
+            n["community_rank"] = op_rank.get(n["label"].lower(), UNATTRIB)
+    graph["meta"]["coloring"] = "operator (ranked by registrant domain-count; last bucket = unattributed)"
 
     json.dump(graph, open(args.out, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     m = graph["meta"]

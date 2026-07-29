@@ -150,20 +150,34 @@ def whois_current(domain, timeout=30):
     rec = data.get("WhoisRecord") or {}
     if not rec:
         return {"error": "no WhoisRecord", "domain": domain}
-    reg = _contact(rec, "registrantContact", "registrant")
-    ns = (rec.get("nameServers") or {}).get("hostNames") or []
+    # Many registrars (e.g. Hostinger/thin registries) populate dates + name servers
+    # ONLY under the nested registryData, leaving the top-level fields empty. Read
+    # each field from rec, then fall back to registryData so they aren't dropped.
+    reg_data = rec.get("registryData") or {}
+    def _f(*keys):
+        for src in (rec, reg_data):
+            for k in keys:
+                v = src.get(k)
+                if v:
+                    return v
+        return None
+    reg = _contact(rec, "registrantContact", "registrant") \
+        or _contact(reg_data, "registrantContact", "registrant") or {}
+    ns = ((rec.get("nameServers") or {}).get("hostNames")
+          or (reg_data.get("nameServers") or {}).get("hostNames") or [])
     return {
         "domain": domain,
-        "registrant_email": (reg.get("email") or rec.get("contactEmail") or "").lower() or None,
+        "registrant_email": (reg.get("email") or rec.get("contactEmail")
+                             or reg_data.get("contactEmail") or "").lower() or None,
         "registrant_name": reg.get("name") or None,
         "registrant_org": reg.get("organization") or None,
         "registrant_country": reg.get("country") or reg.get("countryCode") or None,
         "registrant_phone": _phone(reg),
         "registrant_address": _address(reg),
-        "registrar": rec.get("registrarName") or None,
-        "created": rec.get("createdDateNormalized") or rec.get("createdDate") or None,
-        "updated": rec.get("updatedDateNormalized") or rec.get("updatedDate") or None,
-        "expires": rec.get("expiresDateNormalized") or rec.get("expiresDate") or None,
+        "registrar": _f("registrarName"),
+        "created": _f("createdDateNormalized", "createdDate"),
+        "updated": _f("updatedDateNormalized", "updatedDate"),
+        "expires": _f("expiresDateNormalized", "expiresDate"),
         "name_servers": sorted({n.lower() for n in ns if n}),
     }
 

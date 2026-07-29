@@ -41,6 +41,9 @@ ROOT = os.path.dirname(HERE)                          # intelligence_assist proj
 WP = os.path.join(ROOT, "WebPivot", "tools")
 KB_TOOLS = os.path.join(ROOT, "tools", "kb")
 KB = os.path.join(ROOT, "knowledge")
+# confirmed-operator registry (git-ignored, lives under knowledge/). The LEARN step of an
+# investigation appends to it; `open` reads it so a new case inherits prior attributions.
+OPERATORS = os.path.join(KB, "operators.jsonl")
 
 # IntelGraph scripts: repo copy first, then the installed skill symlink
 _GRAPH_CANDIDATES = [
@@ -88,6 +91,80 @@ def _run(cmd, **kw):
     return subprocess.run(cmd, **kw)
 
 
+def _load_operators():
+    """Read the confirmed-operator registry (git-ignored). Returns domain -> [operator,…]."""
+    import json
+    dom2op = {}
+    if not os.path.isfile(OPERATORS):
+        return dom2op
+    for line in open(OPERATORS, encoding="utf-8"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue
+        op = rec.get("operator") or rec.get("name")
+        for d in rec.get("domains", []):
+            if op:
+                dom2op.setdefault(_host(d), []).append(op)
+    return dom2op
+
+
+def _prior_overlap(hosts, min_shared=1):
+    """LEARN-FROM-THE-PAST: after ingest, surface which of this case's seeds already
+    connect — through a shared indicator in the KB — to domains from PRIOR work, and to
+    any confirmed operator in the registry. This is the auto-correlation payoff made visible
+    (it was previously latent in shared.txt). Zero web I/O — pure KB read.
+    """
+    sys.path.insert(0, KB_TOOLS)
+    try:
+        from knowledge_base import KB as _KB  # noqa: E402
+    except Exception as e:
+        print(f"   note: prior-overlap check skipped ({e})")
+        return
+    kb = _KB(KB)
+    seeds = {h.lower() for h in hosts}
+    edges = kb.edges()
+    # indicator (type,value) -> set(domains that use it)
+    ind_domains = {}
+    for e in edges:
+        if e["src_type"] == "domain" and e["dst_type"] in ("indicator", "email", "person", "org"):
+            ind_domains.setdefault((e["dst_type"], e["dst"]), set()).add(e["src"].lower())
+    # for each seed, the prior (non-seed) domains it shares an indicator with, and via what
+    prior_peers = {}     # peer_domain -> set("kind:value")
+    for (dt, dv), doms in ind_domains.items():
+        if not (seeds & doms):
+            continue
+        for peer in doms - seeds:
+            prior_peers.setdefault(peer, set()).add(dv if ":" in str(dv) else f"{dt}:{dv}")
+
+    dom2op = _load_operators()
+    hit_ops = {}
+    for peer in prior_peers:
+        for op in dom2op.get(peer, []):
+            hit_ops.setdefault(op, set()).add(peer)
+
+    print("\n== prior-knowledge overlap (does this case connect to what we already know?) ==")
+    if not prior_peers:
+        print("   none — these seeds share no KB indicator with any previously-seen domain (new cluster).")
+        return
+    if hit_ops:
+        print("   ⚠ CONFIRMED-OPERATOR MATCH:")
+        for op, doms in sorted(hit_ops.items(), key=lambda x: -len(x[1])):
+            print(f"      • {op}  (via {len(doms)} known domain(s): {', '.join(sorted(doms)[:5])}"
+                  + (" …" if len(doms) > 5 else "") + ")")
+    strong = [(p, v) for p, v in prior_peers.items() if len(v) >= min_shared]
+    print(f"   {len(strong)} prior domain(s) share an indicator with this case's seeds:")
+    for peer, via in sorted(strong, key=lambda x: -len(x[1]))[:15]:
+        tag = f"  [{', '.join(dom2op[peer])}]" if peer in dom2op else ""
+        print(f"      {peer}{tag}  via {len(via)}: {', '.join(sorted(via)[:4])}"
+              + (" …" if len(via) > 4 else ""))
+    if len(strong) > 15:
+        print(f"      … and {len(strong) - 15} more (see shared.txt for the full cluster).")
+
+
 def _extract_one(host, case_dir, timeout, whois_reverse, fofa_full=False, render=False):
     """Extract one host into raw/<host>.json. Returns (host, ok, note)."""
     out_file = os.path.join(case_dir, "raw", f"{host}.json")
@@ -117,6 +194,30 @@ def _extract_one(host, case_dir, timeout, whois_reverse, fofa_full=False, render
     if attempt():                       # one retry (archive.org / transient rate-limit)
         return (host, True, "ok (retry)")
     return (host, False, "no host extracted (rate-limit / unreachable)")
+
+
+def _risk_signals(raw_files):
+    """Score each freshly-collected host for NRD / BPH / money-trail. Pure local read."""
+    sys.path.insert(0, KB_TOOLS)
+    try:
+        import json as _json
+        import risk_signals as _rs  # noqa: E402
+    except Exception as e:
+        print(f"   note: risk-signals check skipped ({e})")
+        return
+    print("\n== scam red-flags (newly-registered / bulletproof-hosting / money-trail) ==")
+    esc = []
+    for rf in sorted(raw_files):
+        try:
+            s = _rs.score_domain(_json.load(open(rf, encoding="utf-8")))
+        except Exception:
+            continue
+        print(_rs._fmt(s))
+        if s.get("escalate"):
+            esc.append(s)
+    if esc:
+        print("   ⚠ escalate: " +
+              "; ".join(f"{s['host']}[{','.join(s['escalate'])}]" for s in esc[:10]))
 
 
 def cmd_open(a):
@@ -151,6 +252,12 @@ def cmd_open(a):
     print(f"== ingesting {len(raw_files)} raw file(s) into {os.path.relpath(KB, ROOT)} ==")
     _run([sys.executable, os.path.join(KB_TOOLS, "ingest_webpivot.py"),
           "--kb", KB, *raw_files])
+
+    # 2.5) prior-knowledge overlap — surface cross-case learning, not just latent in shared.txt
+    _prior_overlap(hosts)
+
+    # 2.6) scam red-flag signals — NRD / bulletproof-hosting / money-trail per seed
+    _risk_signals(raw_files)
 
     # 3) shared cluster seeds — saved to the case, not just printed ----------
     shared_path = os.path.join(case_dir, "shared.txt")

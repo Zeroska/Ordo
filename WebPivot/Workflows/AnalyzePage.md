@@ -24,7 +24,37 @@ Extract every pivot artifact from one page and produce ranked leads.
      routes the target-site fetches through a rotating proxy pool. No proxy flag → direct, unchanged.
    - **2b Passive** (hostile target): pull the DOM from urlscan.io or a Wayback snapshot, save to `page.html`, then `python3 "$WP/tools/pivot_extract.py" page.html --pretty -o "$CASE/raw/<host>.json"`.
 
-3. **Read the artifacts.** The JSON `artifacts` block covers favicon hashes, trackers, crypto, emails, socials, third-party hosts, inline-script hashes, forms, comments, DOM-skeleton hash, tech fingerprint, cookies, headers.
+2c. **ALWAYS check the web archive — every run, even when the live site loads.** The live
+   page is one moment in time. The Wayback CDX timeline tells you whether the domain is
+   parked-now-but-active-before, active-now-but-parked-before, or dropped-and-recatched (a
+   `created` WHOIS date *inside* the capture history = a prior owner). Never conclude "parked /
+   dead / nothing to pivot on" from the live page alone — a domain parked today may have hosted a
+   live scam funnel last year, and that archived DOM is a full set of pivot artifacts.
+   ```bash
+   # full snapshot timeline (status codes reveal parking 302→ww1./ww25. PPC vs real 200 content)
+   curl -s "http://web.archive.org/cdx/search/cdx?url=<host>*&output=json&collapse=digest&limit=200"
+   ```
+   - Read the **status codes + mimetypes**: `302 → ww1./ww2./ww25.<host>/?subid1=` is Bodis/
+     above.com PPC parking; a Sedo/NameSilo `200` is parking too — neither is operator content.
+   - For any capture with **real `200` content**, pull that archived DOM and run it through
+     `pivot_extract.py page.html` — those are real pivot artifacts even if the site is dead now.
+   - Then walk the **entire** analytics history (catches scrubbed/shared GA-GTM IDs):
+     `python3 "$WP/tools/wayback_ga.py" <host> --max 15 --timeline` (see `HistoricalAnalytics.md`).
+   - `pivot_extract.py` already auto-falls-back to Wayback/urlscan **only when the live fetch
+     fails** — this step is the *additional* discipline of checking history on a live-and-loading
+     target too, and mining every past-content snapshot, not just the most recent one.
+
+3. **Read the artifacts.** The JSON `artifacts` block covers favicon hashes, trackers, crypto, emails, socials, third-party hosts, inline-script hashes, forms, comments, DOM-skeleton hash, tech fingerprint, cookies, headers, and **`qr_codes`** (decoded QR payloads + undecoded QR images).
+
+3b. **QR codes + redirects — check them, the payload is often the key.** Scam funnels hide the
+   deposit wallet / Telegram invite / affiliate link inside a **QR image**. The tool always
+   zero-dep-decodes QR *generator-service* URLs (`?data=`/`&chl=`); add **`--decode-qr`** to also
+   decode QR `<img>`/`data:` images from pixels (needs `pyzbar`+Pillow or OpenCV — else they surface
+   as `qr:undecoded_image` leads). A canvas-drawn QR → `--render --screenshot`, decode the shot.
+   Decoded payloads become `qr:crypto:<coin>` / `qr:telegram` / `qr:whatsapp` / `qr:url` pivots.
+   For any **URL** payload (or the seed's own `meta.redirect_chain`), resolve the redirect fully —
+   a QR/short URL usually hops to a more interesting host than the one on the page. Keep URLs
+   **full and unshortened** when you record or resolve them.
 
 4. **Get ranked leads.** `python3 "$WP/tools/pivot_extract.py" <URL> --leads` prints pivot suggestions high→low confidence with copy-paste queries.
 

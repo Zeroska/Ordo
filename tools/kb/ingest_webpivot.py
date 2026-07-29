@@ -16,6 +16,7 @@ Usage:
   python3 ingest_webpivot.py --kb knowledge cases/<case>/raw/*.json
 """
 import os
+import re
 import sys
 import json
 import hashlib
@@ -24,8 +25,42 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from knowledge_base import KB  # noqa: E402
+from noise_filters import is_managed_dns, is_parking_favicon, is_noise_email  # noqa: E402
+
+# reuse the collector's checksum validator so bad wallets can't enter via a stale raw file either
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "WebPivot", "tools"))
+    from pivot_extract import valid_crypto_address as _valid_wallet  # noqa: E402
+except Exception:
+    def _valid_wallet(label, value):   # fail-open if collector not importable
+        return True
 
 COLLECTOR = "webpivot/pivot_extract"
+
+_IP_HOST_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}(?:[:_]\d+)?$")
+# corporate suffixes → the registrant is an ORG, not a natural person (route to type 'org')
+_ORG_SUFFIX = (" ltd", " ltd.", " llc", " inc", " inc.", " co.", " corp", " gmbh", " pty",
+               " limited", " group", " s.r.o", " pte", " b.v", " co ltd", " company",
+               " technologies", " technology", " systems", " media", " holdings", " sarl")
+# WHOIS field-label / status junk mis-captured as a registrant name
+_NAME_JUNK = ("registrant state", "registrant province", "registrant country", "registrant city",
+              "registrant_", "state/province", "reactivation period", "pending delete",
+              "redemption period", "pending renewal", "on behalf of", "domain buyer")
+
+
+def _is_ip_host(host):
+    return bool(_IP_HOST_RE.match((host or "").strip()))
+
+
+def _name_kind(nm):
+    """Classify a registrant name → 'org' | 'person' | None(junk)."""
+    s = (nm or "").strip().lower()
+    if not s or any(j in s for j in _NAME_JUNK):
+        return None
+    if any(suf in " " + s for suf in _ORG_SUFFIX):
+        return "org"
+    return "person"
 
 # artifact class -> (relationship, confidence)  — encodes attribution weight
 REL = {
@@ -65,7 +100,7 @@ def _day(iso):
 def ingest_file(kb, path):
     d = json.load(open(path, encoding="utf-8"))
     host = (d.get("meta") or {}).get("host")
-    if not host:
+    if not host or _is_ip_host(host):   # IP-literals / IP:port are not domain entities — skip
         return 0
     art = d.get("artifacts") or {}
     # observed_at: file mtime as ISO (collections don't carry their own timestamp)
@@ -120,10 +155,16 @@ def ingest_file(kb, path):
     # --- favicon ---
     fav = art.get("favicon") or {}
     if fav.get("shodan_mmh3") is not None:
-        ind = f"favicon:{fav['shodan_mmh3']}"
-        kb.add_edge("domain", host, "uses_favicon", "indicator", ind, "webpivot", COLLECTOR, observed, "high", ev)
-        kb.add_fact("indicator", ind, "md5", fav.get("md5"), "webpivot", COLLECTOR, observed, "high", ev)
-        n += 1
+        if is_parking_favicon(fav["shodan_mmh3"]):
+            # parking/for-sale favicon — record as a fact, but never as a clustering hub
+            kb.add_fact("domain", host, "parking_favicon", str(fav["shodan_mmh3"]),
+                        "webpivot", COLLECTOR, observed, "low", ev)
+            n += 1
+        else:
+            ind = f"favicon:{fav['shodan_mmh3']}"
+            kb.add_edge("domain", host, "uses_favicon", "indicator", ind, "webpivot", COLLECTOR, observed, "high", ev)
+            kb.add_fact("indicator", ind, "md5", fav.get("md5"), "webpivot", COLLECTOR, observed, "high", ev)
+            n += 1
     # --- verification tokens (owner-tied) ---
     for label, tok in (art.get("verifications") or {}).items():
         ind = f"verification:{label}:{tok}"
@@ -135,6 +176,27 @@ def ingest_file(kb, path):
             ind = f"social:{net}:{h.rstrip('/').split('/')[-1]}"
             kb.add_edge("domain", host, "uses_contact", "indicator", ind, "webpivot", COLLECTOR, observed, "medium", ev)
             n += 1
+
+    # --- money trail: crypto wallets (attribution-grade — a reused wallet = the same payee) ---
+    crypto = art.get("crypto") or {}
+    for kind, vals in crypto.items():
+        for v in (vals if isinstance(vals, list) else [vals]):
+            if not v or not _valid_wallet(kind, v):   # checksum-reject md5/hash false-positives
+                continue
+            ind = f"wallet:{kind}:{v}"
+            kb.add_edge("domain", host, "uses_wallet", "indicator", ind, "webpivot", COLLECTOR, observed, "high", ev)
+            kb.add_fact("indicator", ind, "kind", f"wallet_{kind}", "webpivot", COLLECTOR, observed, "high", ev)
+            n += 1
+    # --- money trail: on-page contact emails (how the operator gets reached to close the fraud) ---
+    _GENERIC_EMAIL = ("support@", "info@", "admin@", "contact@", "hello@", "sales@",
+                      "noreply@", "no-reply@", "office@")
+    for em in (art.get("emails") or []):
+        em = (em or "").strip().lower()
+        if not em or "@" not in em or _is_privacy(em):
+            continue
+        conf = "low" if em.startswith(_GENERIC_EMAIL) else "medium"
+        kb.add_edge("domain", host, "shows_email", "email", em, "webpivot", COLLECTOR, observed, conf, ev)
+        n += 1
 
     # --- SaaS / no-code operator tokens (GHL location, backend Sheet, automation webhooks) ---
     # attribution-grade: a private, owner-controlled account/automation id. Same token = same operator.
@@ -166,20 +228,33 @@ def ingest_file(kb, path):
         emails = ([wh.get("registrant_email")] +
                   ((wh.get("history") or {}).get("registrant_emails") or []))
         for em in emails:
-            if em and not _is_privacy(em):
+            if em and not _is_privacy(em) and not is_noise_email(em):
                 kb.add_edge("domain", host, "registered_by", "email", em.lower(),
                             "whoisxml", "webpivot/whois_enrich", observed, "high", ev)
+                n += 1
+            elif em and is_noise_email(em):   # registrar/abuse role email — keep as fact only
+                kb.add_fact("domain", host, "whois_role_email", em.lower(),
+                            "whoisxml", "webpivot/whois_enrich", observed, "low", ev)
                 n += 1
         names = ([wh.get("registrant_name") or wh.get("registrant_org")] +
                  ((wh.get("history") or {}).get("registrant_names") or []))
         for nm in names:
             if nm and not _is_privacy(nm):
-                kb.add_edge("domain", host, "registered_by", "person", nm.strip(),
+                kind = _name_kind(nm)          # org / person / None(junk label — skip)
+                if not kind:
+                    continue
+                kb.add_edge("domain", host, "registered_by", kind, nm.strip(),
                             "whoisxml", "webpivot/whois_enrich", observed, "high", ev)
                 n += 1
         for ns in wh.get("name_servers") or []:
-            kb.add_edge("domain", host, "uses_nameserver", "indicator", f"ns:{ns.lower()}",
-                        "whoisxml", "webpivot/whois_enrich", observed, "low", ev)
+            if is_managed_dns(ns):
+                # managed/registrar/parking DNS (Cloudflare, NameSilo, GoDaddy…) — shared by
+                # millions of unrelated domains. Record as a fact, never a clustering edge.
+                kb.add_fact("domain", host, "nameserver", ns.lower(),
+                            "whoisxml", "webpivot/whois_enrich", observed, "low", ev)
+            else:
+                kb.add_edge("domain", host, "uses_nameserver", "indicator", f"ns:{ns.lower()}",
+                            "whoisxml", "webpivot/whois_enrich", observed, "low", ev)
             n += 1
 
     # --- externally-discovered siblings (FOFA / urlscan / reverse-WHOIS) ---
@@ -204,7 +279,7 @@ def ingest_file(kb, path):
                    else "uses_verification" if kind.startswith("verification:")
                    else "uses_analytics")
             for hd in filter(None, hits):
-                if hd == host:
+                if hd == host or _is_ip_host(hd):   # FOFA indexes IP:port — not a domain entity
                     continue
                 kb.add_edge("domain", hd, rel, "indicator", ind, engine, f"webpivot/{engine}",
                             observed, "medium", ev)
@@ -214,7 +289,7 @@ def ingest_file(kb, path):
             for stk in ("reverse_whois_current", "reverse_whois_historic"):
                 blk = lr.get(stk) or {}
                 for hd in blk.get("domains", []) or []:
-                    if hd and hd != host:
+                    if hd and hd != host and not _is_ip_host(hd):
                         kb.add_edge("domain", hd, "registered_by", "email", piv["value"].lower(),
                                     "whoisxml", "webpivot/whois_enrich", observed, "medium", ev)
                         n += 1

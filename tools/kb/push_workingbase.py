@@ -16,7 +16,7 @@ Config (env, or --url/--token flags):
   WORKINGBASE_TOKEN        shared secret matching the server's WEBPIVOT_INGEST_TOKEN
 
 Usage:
-  python3 tools/kb/push_workingbase.py cases/<case>/raw/*.json --case CASE-2026-07-001
+  python3 tools/kb/push_workingbase.py cases/<case>/raw/*.json --case CASE-0001
   python3 tools/kb/push_workingbase.py cases/<case>            # a case dir (finds raw/*.json)
   python3 tools/kb/push_workingbase.py cases/<case> --dry-run  # print payload, don't send
 

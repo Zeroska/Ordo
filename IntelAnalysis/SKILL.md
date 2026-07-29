@@ -1,7 +1,13 @@
 ---
 name: IntelAnalysis
-description: The analyst / judgment layer for OSINT — correlation, attribution, confidence calibration, and next-pivot decisions over the knowledge base. Does NOT collect; it reasons over facts that collectors (WebPivot, etc.) already gathered. USE WHEN correlate findings, attribute infrastructure, who is behind this, same operator, same actor, build the case, assess confidence, weigh evidence, cluster analysis, what should I pivot on next, is this the same owner, investigation judgment, connect the dots, threat attribution.
+description: The analyst / judgment layer for OSINT — correlation, attribution, confidence calibration, and next-pivot decisions over the knowledge base. Does NOT collect; it reasons over facts that collectors (WebPivot, etc.) already gathered. USE WHEN correlate findings, attribute infrastructure, who is behind this, same operator, same actor, build the case, assess confidence, weigh evidence, cluster analysis, what should I pivot on next, is this the same owner, investigation judgment, connect the dots, threat attribution, generate hypothesis, prove or disprove, newly registered domain, NRD, bulletproof hosting, money trail, trace the money, reused wallet, scam red flags, my investigation style, feed past reports.
 ---
+
+> **OPSEC — this skill is portable/shared. Never write case data into it.** No real operator
+> names, emails, domains, IPs, wallets, tracking IDs, hashes, or case IDs in this file, its
+> workflows, tool code, or test fixtures. Investigation data lives only in the git-ignored
+> `cases/` / `knowledge/` / `MEMORY/`. In examples use placeholders (`example.com`,
+> `G-XXXXXXXXXX`, `CASE-0001`). See the repo-root `CLAUDE.md` for the full rule.
 
 # IntelAnalysis — the analyst's brain
 
@@ -46,7 +52,27 @@ they are not inside this skill folder, so `cd` to the project root first (`cd "$
 ```
 Triage facts → Correlate into clusters → Attribute (same-kit vs same-operator vs same-actor)
    → Calibrate confidence → Form & falsify hypotheses → Prioritise next pivots → Write the assessment
+   → Capture what it taught (register the operator + any new tell) so the next case starts ahead
 ```
+
+**Before you start, load your priors + check what you already know.**
+- Read `knowledge/analyst_profile.md` (your standing brief — thresholds, tells, house style; see
+  `Workflows/AnalystProfile.md` to set it up and to feed in past reports with `ingest_report.py`).
+- `intel.py open` prints a **prior-knowledge overlap** block after ingest — which seeds already
+  connect to previously-seen domains and to any confirmed operator in `knowledge/operators.jsonl`.
+  A `⚠ CONFIRMED-OPERATOR MATCH` means this isn't a new investigation, it's an extension of a closed
+  one. Look up any domain with `python3 tools/kb/operator_registry.py find <domain>`.
+- It also prints **scam red-flags** per seed (NRD / bulletproof-hosting / money-trail — see below and
+  `references/RiskIndicators.md`). Run `python3 tools/kb/risk_signals.py --case <case>` anytime.
+
+**Generate hypotheses, then break them.** `python3 tools/kb/hypothesize.py --kb knowledge --min 2`
+turns the KB into falsifiable operator hypotheses — each with the disconfirming check and the open
+questions to answer. It clusters ONLY on attribution-grade identity artifacts (same-operator ≠
+same-kit) and drops proxy/high-fan-out noise. Full loop: `Workflows/Hypothesis.md`.
+
+**When you finish, close the loop (`Workflows/Learn.md`).** Record the operator you assessed to the
+registry and append any reusable tell to the "Captured (in-case)" blocks below — this is the
+difference between a KB that grows and one that just accumulates.
 
 ---
 
@@ -83,13 +109,20 @@ Seeded from cases so far — **edit the tiers as you learn**:
 
 | Tier | Weight | Artifacts | Why |
 |---|---|---|---|
+| **Money-trail** | high | **reused crypto wallet** (btc/eth/usdt/tron), payment-processor/merchant id, registrant/on-page **phone**, contact **email**, IBAN/SWIFT | how the operator gets *paid* and *contacted* — the crucial category for loss/LE/takedown. A reused wallet = the same payee (attribution-grade). Now KB edges: `uses_wallet`, `shows_email`. See `references/RiskIndicators.md` |
 | **Attribution-grade** | high | registrant email/name, GA4/GTM property, ahrefs/GSC verification token, favicon hash on a *niche/custom* kit, reused crypto wallet | private, owner-controlled — a stranger can't share these by accident |
 | **Corroborating** | medium | Messenger/contact handle, phone, distinctive template/DOM-skeleton hash, self-hosted third-party host | meaningful with ≥1 attribution-grade artifact; weak alone |
 | **Noise** | low / drop | Cloudflare name servers, generic registrar (GoDaddy/Porkbun), shared CDN host, common favicon (WordPress default), `googletagmanager.com` | shared by millions; near-zero attribution value — keep for completeness, never assert on |
 
+**Infrastructure red-flags (raise the scam prior, not attribution):** `risk_signals.py` scores each
+host for **NRD** (newly-registered — young + shared kit = one batch/operator), **bulletproof/abuse-
+tolerant hosting** (registrar/NS/host match — a lead, verify origin IP vs CDN first), and the
+**money-trail** above. A young unbranded site with a wallet + a Telegram/WhatsApp handle is the
+archetypal payment funnel — `escalate`. Tunable lists: `references/risk_indicators.json`.
+
 **Tells learned in-case (keep adding yours):**
 - **Sequential GA/UA account numbers** = one operator batch-provisioned them in a sitting.
-  A tight block like `UA-163843824` … `UA-164041825` across sibling sites is strong same-operator.
+  A tight block like `UA-100000001` … `UA-100000009` across sibling sites is strong same-operator.
 - **Shared WordPress theme** (e.g. `flatsome`) = weak-medium same-kit; **identical inline-CSS
   block or DOM-skeleton hash** across sites = stronger (same build, not just same theme).
 - **Reverse-WHOIS count is a filter:** a registrant tied to a handful of thematically-coherent
@@ -110,11 +143,11 @@ Seeded from cases so far — **edit the tiers as you learn**:
 ▢ **Your rules:** _how you treat a GA4 ID that appears on 200 domains (link farm vs shared SEO agency); when a favicon is "niche" vs "off-the-shelf"; TLD-rotation patterns you've seen; Vietnamese-market registrar tells (Mat Bao, PA Vietnam, iNET)…_
 
 **Captured (in-case — edit freely):**
-- **Sequential handle aliases = one person.** `ductaibc1@ / ductaibc5@ / ductaibc20@gmail.com` is one identity, not three. Normalize `name+<n>@` families to a single actor before counting.
-- **A thematically-coherent registrant is attribution-grade even under privacy.** "Nguyen Duc Tai" across the lambang*/baoxinviec* diploma set holds even when *current* WHOIS is a privacy proxy — recover it from WHOIS **history** (pre-privacy record), don't stop at the masked current record.
+- **Sequential handle aliases = one person.** `alias1@ / alias5@ / alias20@example.com` is one identity, not three. Normalize `name+<n>@` families to a single actor before counting.
+- **A thematically-coherent registrant is attribution-grade even under privacy.** A single registrant name recurring across a thematically-coherent brand family (e.g. one seller's product-line domains) holds even when *current* WHOIS is a privacy proxy — recover it from WHOIS **history** (pre-privacy record), don't stop at the masked current record.
 - **Mis-parsed / ad-network indicators are noise — drop, never assert.** `g-recaptcha` captured as a GA4 `G-` id (parser artifact); an AdSense `pub-…` or GA id shared across 80–100+ thematically-unrelated shops = a shared ad/SEO network, not one owner. (Same class as the reverse-WHOIS >200-domain reseller filter.)
-- **Build fingerprints beat theme names.** A shared `wp_theme:flatsome` is weak same-kit; an identical **HTML-comment hash / inline-CSS hash / DOM-skeleton** across sites is strong same-build — and reaches domains outside the seed list (the `comment:e137c25e84d7747b` fingerprint spanned 41 sites incl. `quayvideoquangcao.xyz`).
-- **Same WHOIS registration/expiry date = one batch, one actor.** Exact-same creation date (and the matching expiry, since expiry = created + term) across thematically-coherent domains means they were registered in one sitting by the same person — same class as sequential GA/UA numbers. Corroborating→same-operator; strongest with same registrar + a small coherent set, down-weight a huge set or a registrar bulk-promo default. In-case: `khacdaugia.net`+`lamcccdgia.net` both created 2023-07-12 (a 2nd signal for ID-card Cluster B beyond the shared phone); `baoxinviec.shop`+`lambangnhanh.vip` both 2024-07-20 (bridges the two Tai families). *Enforced:* `graph_build.py` models `regdate:<YYYY-MM-DD>` as a hub (day precision).
+- **Build fingerprints beat theme names.** A shared `wp_theme:<name>` is weak same-kit; an identical **HTML-comment hash / inline-CSS hash / DOM-skeleton** across sites is strong same-build — and reaches domains outside the seed list (a single HTML-comment fingerprint can span dozens of sites beyond the seed list).
+- **Same WHOIS registration/expiry date = one batch, one actor.** Exact-same creation date (and the matching expiry, since expiry = created + term) across thematically-coherent domains means they were registered in one sitting by the same person — same class as sequential GA/UA numbers. Corroborating→same-operator; strongest with same registrar + a small coherent set, down-weight a huge set or a registrar bulk-promo default. In-case pattern: two thematically-related domains sharing one creation date (a 2nd signal beyond a shared phone); two brand-family domains sharing another creation date (bridging two sub-families). *Enforced:* `graph_build.py` models `regdate:<YYYY-MM-DD>` as a hub (day precision).
 
 ## 2. Correlation & the same-* distinction  ▢ TUNE
 
@@ -131,9 +164,9 @@ generic artifact is a *lead*, not a finding.
 ▢ **Your thresholds:** _when you'll assert on a single artifact (which ones earn that trust); how you down-weight artifacts that co-occur because of a shared SEO/agency tool rather than a shared owner._
 
 **Captured (in-case — edit freely):**
-- **A shared phone / Zalo / Messenger handle is corroborating, never attribution.** Do NOT merge two clusters on a phone alone. Keep them separate until a registrant, verification token, or GA/GTM property confirms. (This is why the ID-card cluster — bound only by Zalo `0934893825` — was assessed a *separate* operator, not folded into the Tai ring.)
-- **Resolve a theme-only cluster with a registrant lookup before asserting same-operator.** When sites bind only by a shared generic theme (`vnnews`), run WHOIS registrant-name before deciding — that's what reclassified `ringting/tingbing/tingzing.net` from "likely unrelated" to Tai's.
-- **A named-identity bridge on ONE node can merge two artifact families.** `baoxinviec.org` carrying Tai's email *and* the lambangnhanh ahrefs token on the same page is enough to assert the two families are one operator — a single node that holds two families' private artifacts is attribution-grade glue.
+- **A shared phone / Zalo / Messenger handle is corroborating, never attribution.** Do NOT merge two clusters on a phone alone. Keep them separate until a registrant, verification token, or GA/GTM property confirms. (This is why an ID-card cluster bound only by a shared Zalo number should be assessed a *separate* operator, not folded into the main ring, until a registrant or token confirms.)
+- **Resolve a theme-only cluster with a registrant lookup before asserting same-operator.** When sites bind only by a shared generic theme, run WHOIS registrant-name before deciding — that can reclassify a theme-only cluster from "likely unrelated" to a known operator's.
+- **A named-identity bridge on ONE node can merge two artifact families.** A single page carrying one family's registrant email *and* another family's ahrefs token is enough to assert the two families are one operator — a single node that holds two families' private artifacts is attribution-grade glue.
 
 ## 3. Confidence calibration  ▢ TUNE
 
@@ -144,6 +177,17 @@ Blend source reliability × corroboration × recency into a 0–1 score. Startin
 - keep the *provenance* — a claim's score is only as good as its `evidence_ref`.
 
 ▢ **Your calibration:** _the priors you actually trust per source (FOFA latest-index blind spots, urlscan freshness, WhoisXML history gaps), and how much a Vietnamese-registrar early record outweighs later privacy._
+
+**Log every confidence call so the labels stay honest — `tools/kb/calibration.py`.** When you
+assert a cluster/attribution, record it; when reality settles it, resolve it. `score` then tells
+you whether your HIGHs actually land (Brier score + a per-label reliability table: are your
+"high" calls confirmed ~85% of the time, or are you OVERconfident?). The judgement layer is an
+*aid* — this is how you learn how much to trust it.
+```bash
+python3 tools/kb/calibration.py record --case <case> --claim "X,Y = one operator (reused GA4)" --confidence high
+python3 tools/kb/calibration.py resolve --id <id> --outcome confirmed   # …later
+python3 tools/kb/calibration.py score
+```
 
 ## 4. Hypothesis loop  ▢ TUNE
 
@@ -169,6 +213,21 @@ Rank open leads by **expected yield ÷ cost** (cost = API credits, time, attribu
 
 ▢ **Your priorities:** _the order you'd actually run things given a credit budget._
 
+**Know when to STOP — `tools/kb/convergence.py`.** Pivoting has no natural finish line, so
+define one: snapshot the case each round and stop when the last N rounds add no new hosts and
+no new (noise-filtered) indicators. That's the signal to stop chasing the tail and write the
+assessment.
+```bash
+python3 tools/kb/convergence.py snapshot <case>          # after each pivot round
+python3 tools/kb/convergence.py status <case> --stale 2  # CONVERGED vs EXPANDING (+ budget)
+```
+
+> **Shared-infrastructure is filtered automatically — `tools/kb/noise_filters.py`.** A managed
+> nameserver (Cloudflare/NameSilo), a parking favicon, a registrar/privacy abuse email, or a
+> malformed GA4 (`g-recaptcha`) links unrelated domains without implying common ownership.
+> `--shared` and the ingester now drop these at the source, so a `--shared` cluster is a real
+> lead, not infra noise. If a new managed-DNS/parking provider slips through, add it to that file.
+
 ## 6. Conflict handling
 
 The store keeps disagreements (WHOIS vs RDAP, two registrants across history). **Surface
@@ -187,12 +246,12 @@ the conflict in the assessment**; don't silently pick one. A conflict is often t
 
 ---
 
-## Worked example (current case — replace as the KB grows)
+## Worked example (illustrative — replace with your own as the KB grows)
 
-`--shared` over the store yields: ahrefs token `d85dca…` on 4 domains, GA4 `G-PN3PJL74EJ`
-+ GTM + favicon on the lambangnhanh family, Messenger `61591524489399` bridging
-`baoxinviec.shop`↔`lambangnhanh.vip`, and a leaked registrant **Ông Lê Nhất Duy** on
-`lambangnhanh.online`. Triaged: those are all attribution-grade except the Cloudflare NS
-(noise). Corroboration: ≥2 attribution-grade artifacts across the set **and** a named
-identity → **assessed same-operator, one named actor.** Next pivot (§5): reverse-WHOIS on
-"Lê Nhất Duy" (named identity > another favicon sweep).
+`--shared` over the store yields: an ahrefs token on 4 domains, a GA4 property
+`G-XXXXXXXXXX` + GTM + favicon on one brand family, a Messenger handle bridging two
+sibling domains, and a leaked registrant name on a third domain. Triaged: those are all
+attribution-grade except the Cloudflare NS (noise). Corroboration: ≥2 attribution-grade
+artifacts across the set **and** a named identity → **assessed same-operator, one named
+actor.** Next pivot (§5): reverse-WHOIS on the leaked registrant name (named identity >
+another favicon sweep).

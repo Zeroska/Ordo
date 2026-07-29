@@ -3,6 +3,12 @@ name: IntelGraph
 description: Generate publication-quality charts, graphs, timelines, Gantt charts, and relationship diagrams from threat-intelligence and OSINT reports. Produces TWO outputs per figure — a high-resolution PNG/SVG/PDF for embedding in reports, and a lower-res analytical thumbnail for quick review. Use this skill WHENEVER the user pastes or uploads an intelligence report, IOC table, incident timeline, campaign summary, actor-infrastructure mapping, or asks for a "chart", "graph", "timeline", "Gantt", "diagram", "network graph", or "visualization" from investigative/CTI data — even if they don't say the word "skill". Also renders WebPivot case graphs via scripts/render_network.py. Output is deliberately non-AI-looking, using matplotlib, Mermaid, or Graphviz with a clean editorial theme. Supports English and Vietnamese labels.
 ---
 
+> **OPSEC — this skill is portable/shared. Never write case data into it.** No real operator
+> names, emails, domains, IPs, wallets, tracking IDs, hashes, or case IDs in this file, its
+> workflows, tool code, or test fixtures. Investigation data lives only in the git-ignored
+> `cases/` / `knowledge/` / `MEMORY/`. In examples use placeholders (`example.com`,
+> `G-XXXXXXXXXX`, `CASE-0001`). See the repo-root `CLAUDE.md` for the full rule.
+
 # IntelGraph — Graph Design
 
 Turn intelligence reports into clean, credible, report-ready graphics. The house style is understated and editorial — the kind of figure that looks hand-built by an analyst in a SOC report, not auto-generated. No gradients, no drop shadows, no rainbow palettes, no 3D.

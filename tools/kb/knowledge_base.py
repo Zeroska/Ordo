@@ -164,14 +164,30 @@ class KB:
                 out.append((e["src_type"], e["src"], e["rel"], e["confidence"]))
         return out
 
-    def shared_indicators(self, min_domains=2):
+    def shared_indicators(self, min_domains=2, drop_noise=True):
         """Indicators (favicon/tracker/token/registrant/…) linked to >= N domains.
         These are the same-operator cluster seeds — the auto-correlation payoff.
+
+        `drop_noise` (default on) filters out shared-INFRASTRUCTURE indicators — a
+        managed-DNS nameserver, a parking favicon — that link unrelated domains without
+        implying common ownership (see noise_filters.py). This cleans historical KBs too,
+        not just fresh ingests.
         """
+        try:
+            from noise_filters import is_noise_indicator, is_noise_email
+        except Exception:
+            def is_noise_indicator(_):  # graceful degrade if module missing
+                return False
+            def is_noise_email(_):
+                return False
         by_ind = {}
         for e in self._edges:
             # domain --rel--> indicator/email/person
             if e["src_type"] == "domain" and e["dst_type"] in ("indicator", "email", "person", "org"):
+                if drop_noise and e["dst_type"] == "indicator" and is_noise_indicator(e["dst"]):
+                    continue
+                if drop_noise and e["dst_type"] == "email" and is_noise_email(e["dst"]):
+                    continue
                 by_ind.setdefault((e["dst_type"], e["dst"]), {}).setdefault(e["rel"], set()).add(e["src"])
         out = []
         for (dtype, dval), rels in by_ind.items():

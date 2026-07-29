@@ -32,8 +32,8 @@ cases/<case>/raw/*.json   case_graph.json   <case>_network.html   history.json
    components, communities, and **betweenness centrality**:
    ```bash
    python3 tools/graph_build.py cases/<case>/raw/*.json \
-     --operator "anhquoc / Anh Quốc" \
-     --operator-links lambang247.shop,lambangxinviec.shop \
+     --operator "operator-a / Operator A" \
+     --operator-links site-a.example,site-b.example \
      --history cases/<case>/history.json \   # optional: from wayback_ga.py → timeline
      --leiden \                               # optional: Leiden clustering (needs igraph+leidenalg; else Louvain)
      -o cases/<case>/case_graph.json

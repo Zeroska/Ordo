@@ -16,7 +16,7 @@ extractors as pivot_extract.py.
 
 Usage:
   python3 wayback_ga.py <domain> [--max 12] [--from 2018] [--to 2026] [--timeline] [--pretty]
-  python3 wayback_ga.py baoxinviec.info --timeline
+  python3 wayback_ga.py example.com --timeline
   python3 wayback_ga.py -f domains.txt --pretty          # one domain per line
 
 FOR AUTHORIZED INVESTIGATIONS ONLY. All fetches hit web.archive.org, never the

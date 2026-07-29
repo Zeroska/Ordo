@@ -60,7 +60,7 @@ import ssl
 import shutil
 import subprocess
 import concurrent.futures
-from urllib.parse import urljoin, urlparse, urlencode, quote, parse_qsl
+from urllib.parse import urljoin, urlparse, urlencode, quote, parse_qsl, unquote
 
 # ------------------------------------------------------------------ optional deps
 try:
@@ -81,6 +81,11 @@ except Exception:
 DEFAULT_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
               "AppleWebKit/537.36 (KHTML, like Gecko) "
               "Chrome/140.0.0.0 Safari/537.36")
+
+# Set by --decode-qr in main(): when true, extract_qr fetches candidate QR images and
+# decodes them from pixels (needs pyzbar+PIL or OpenCV). Off by default — the zero-dep
+# generator-param decode always runs regardless.
+QR_DECODE_IMAGES = False
 
 # Rotated when crawling or with --rotate-ua, so a multi-page walk doesn't hammer the
 # target from one identical fingerprint. Current (2026) real desktop/mobile browsers —
@@ -473,29 +478,90 @@ def fetch_tls_cert(host: str, port: int = 443, timeout: int = 15):
                 "validated": False, "validation_error": verr}
 
 
-def crtsh_search(domain: str, timeout: int = 25):
-    """Certificate-transparency search via crt.sh for subdomains of `domain`.
+def _crtsh_fetch(value: str, timeout: int = 25):
+    """Fetch crt.sh JSON rows for a search value, resilient to crt.sh flakiness.
 
-    Keyless. Returns {'query','total','subdomains':[...]} or {'error':...}.
-    crt.sh is frequently overloaded — errors are returned, never raised.
+    crt.sh's `?q=` endpoint frequently returns an nginx 502 HTML page (not JSON);
+    its `?identity=` endpoint is more stable. Try `q` first, then fall back to
+    `identity` for the same value. Returns a list of rows (possibly empty) or
+    raises the last error so the caller can record it.
+    """
+    last_err = None
+    for param in ("q", "identity"):
+        api = "https://crt.sh/?" + urlencode({param: value, "output": "json"})
+        try:
+            req = urllib.request.Request(api, headers={"User-Agent": DEFAULT_UA})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                body = r.read().decode("utf-8", "ignore").strip()
+            if not body:
+                last_err = "empty response"
+                continue
+            data = json.loads(body)          # a 502 returns HTML → JSONDecodeError → try next form
+            return data if isinstance(data, list) else []
+        except Exception as e:
+            last_err = str(e)
+            continue
+    raise RuntimeError(last_err or "crt.sh unavailable")
+
+
+def crtsh_search(domain: str, timeout: int = 25):
+    """Certificate-transparency (SSL) search via crt.sh for `domain`.
+
+    Enumerates every CT-logged certificate covering the registrable domain and
+    its subdomains — including **wildcard** certs — via two queries merged:
+    `%.<domain>` (subdomains) and the apex `identity`. Each cert's issuer +
+    validity window + serial is kept so the CT result carries the SSL detail an
+    analyst needs (issuance timeline, wildcard scope) without a second lookup.
+
+    Keyless. Returns {'query','total','subdomains','wildcards','certs',...} or
+    {'error':...}. crt.sh is frequently overloaded — errors are returned, never raised.
     """
     query = f"%.{domain}"
-    api = "https://crt.sh/?" + urlencode({"q": query, "output": "json"})
-    try:
-        req = urllib.request.Request(api, headers={"User-Agent": DEFAULT_UA})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            data = json.load(r)
-    except Exception as e:
-        return {"query": query, "error": str(e)}
-    subs = set()
-    for row in data if isinstance(data, list) else []:
-        for name in str(row.get("name_value", "")).splitlines():
-            name = name.strip().lstrip("*.").lower()
-            if name and "@" not in name:
-                subs.add(name)
-    subs.discard(domain.lower())
+    rows = []
+    err = None
+    for value in (query, domain):            # subdomains, then the apex cert(s)
+        try:
+            rows.extend(_crtsh_fetch(value, timeout=timeout))
+        except Exception as e:
+            err = str(e)
+    if not rows and err:
+        return {"query": query, "error": err}
+
+    subs, wildcards, certs, seen_cert = set(), set(), [], set()
+    for row in rows:
+        names = []
+        for name in str(row.get("name_value", "")).splitlines() + [row.get("common_name", "")]:
+            name = name.strip().lower()
+            if not name or "@" in name:
+                continue
+            names.append(name)
+            if name.startswith("*."):
+                wildcards.add(name)
+            bare = name.lstrip("*.")
+            if bare and bare != domain.lower():
+                subs.add(bare)
+        cid = row.get("id")
+        if cid and cid not in seen_cert:          # one entry per logged certificate
+            seen_cert.add(cid)
+            certs.append({
+                "id": cid,
+                "issuer": row.get("issuer_name"),
+                "common_name": row.get("common_name"),
+                "names": uniq(names),
+                "not_before": row.get("not_before"),
+                "not_after": row.get("not_after"),
+                "serial": row.get("serial_number"),
+            })
+    certs.sort(key=lambda c: c.get("not_before") or "", reverse=True)
     ordered = sorted(subs)
-    return {"query": query, "total": len(ordered), "subdomains": ordered[:80]}
+    return {
+        "query": query,
+        "total": len(ordered),
+        "subdomains": ordered[:80],
+        "wildcards": sorted(wildcards),          # *.domain certs (broad-scope reuse signal)
+        "cert_count": len(certs),
+        "certs": certs[:40],                     # newest-first, issuer + validity + serial
+    }
 
 
 def passivedns_search(domain: str, timeout: int = 25):
@@ -770,6 +836,71 @@ def fetch(url: str, timeout: int = 20, ua: str = DEFAULT_UA, proxy: str = None,
         return url, e.code, eh, _decode_body(e.read(), eh.get("content-encoding"))
 
 
+# --- Cloudflare challenge handling -------------------------------------------------
+# A CF-fronted target returns a 403/503 challenge page instead of the site. Detecting it
+# lets us (a) report it honestly (not as a generic error) and (b) ESCALATE: a plain UA
+# swap does NOT beat CF's managed challenge / Turnstile — those require a JS-executing
+# browser. The escalation ladder, weakest→strongest: full browser headers (always on) →
+# UA rotation (--rotate-ua) → residential/rotating proxy (--proxy/--proxy-range; CF blocks
+# datacenter IPs hardest) → a real browser that runs the challenge JS (--render) → a
+# dedicated solver (FlareSolverr, --flaresolverr / --solve-cf).
+# ⚠️ Authorized OSINT only — see EthicalFramework.md. Use non-attributable egress.
+_CF_BODY_MARKERS = (
+    "challenges.cloudflare.com", "cf_chl_", "cf-chl", "__cf_chl", "just a moment",
+    "attention required", "cloudflare to restrict", "cf-mitigated", "ray id",
+    "enable javascript and cookies to continue", "checking your browser", "even geduld",
+    "cf_clearance", "turnstile",
+)
+
+
+def detect_cloudflare_challenge(status: int, headers: dict, body: str):
+    """Return a short label if this response is a Cloudflare interstitial, else None."""
+    h = {k.lower(): str(v).lower() for k, v in (headers or {}).items()}
+    server = h.get("server", "")
+    cf = ("cloudflare" in server) or ("cf-ray" in h) or ("cf-mitigated" in h)
+    low = (body or "")[:20000].lower()
+    body_hit = any(m in low for m in _CF_BODY_MARKERS)
+    if status in (403, 429, 503) and (cf or body_hit) and body_hit:
+        # managed challenge / Turnstile pages are JS interstitials — need a real browser
+        return "cloudflare_challenge"
+    if status in (403, 503) and cf:
+        return "cloudflare_block"
+    return None
+
+
+def flaresolverr_get(url: str, endpoint: str, timeout: int = 60, proxy: str = None):
+    """Solve a Cloudflare challenge via a FlareSolverr instance (open-source CF solver that
+    drives a headless browser). Returns (final_url, html, cookies) or (None, None, None).
+
+    Point --flaresolverr / $FLARESOLVERR_URL at a running instance
+    (docker run ghcr.io/flaresolverr/flaresolverr, default http://localhost:8191). This is the
+    proper way to collect a CF-walled page for authorized OSINT — it executes the challenge JS
+    the same way a browser would; we never forge a Cloudflare clearance token ourselves.
+    """
+    api = endpoint.rstrip("/")
+    if not api.endswith("/v1"):
+        api += "/v1"
+    payload = {"cmd": "request.get", "url": url, "maxTimeout": int(timeout * 1000)}
+    if proxy:
+        payload["proxy"] = {"url": proxy}
+    try:
+        req = urllib.request.Request(
+            api, data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout + 10) as resp:
+            data = json.loads(resp.read().decode("utf-8", "ignore"))
+    except Exception as e:
+        print(f"[!] flaresolverr error: {e}", file=sys.stderr)
+        return None, None, None
+    sol = data.get("solution") or {}
+    html = sol.get("response")
+    if not html:
+        print(f"[!] flaresolverr: no solution ({data.get('message','')})", file=sys.stderr)
+        return None, None, None
+    cookies = [{"name": c.get("name"), "value": c.get("value")} for c in sol.get("cookies", [])]
+    return sol.get("url") or url, html, cookies
+
+
 def render_dom(url: str, timeout: int = 30, ua: str = DEFAULT_UA, proxy: str = None,
                screenshot_path: str = None):
     """Return post-JS rendered HTML using Playwright (chromium). Requires playwright.
@@ -910,6 +1041,13 @@ def wayback_save(url: str, ua: str = DEFAULT_UA, timeout: int = 40):
     archived snapshot URL (or an error). Passive-safe: it makes web.archive.org fetch the
     page, so the archive box (not you) touches the target from then on."""
     save_url = "https://web.archive.org/save/" + url
+    # A REAL capture URL is /web/<14-digit-timestamp>/<original>. The bare /save/ endpoint URL
+    # is NOT a snapshot — SPN returns it when it could not crawl the target (e.g. a CF wall).
+    # Returning that as a "snapshot" makes the caller analyze archive.org's own wrapper page.
+    _CAPTURE_RE = re.compile(r"https?://web\.archive\.org/web/\d{4,14}/")
+
+    def _valid(snap):
+        return bool(snap) and bool(_CAPTURE_RE.match(snap))
     try:
         # requests follows the redirect to the created snapshot; note Content-Location too
         if HAVE_REQUESTS:
@@ -918,12 +1056,18 @@ def wayback_save(url: str, ua: str = DEFAULT_UA, timeout: int = 40):
             snap = r.headers.get("Content-Location") or ""
             if snap and not snap.startswith("http"):
                 snap = "https://web.archive.org" + snap
-            return {"snapshot": snap or r.url, "status": r.status_code}
+            snap = snap or r.url
+            if _valid(snap):
+                return {"snapshot": snap, "status": r.status_code}
+            return {"error": f"no capture created (status {r.status_code}) — target likely "
+                             f"un-crawlable (Cloudflare/robots)", "status": r.status_code}
         req = urllib.request.Request(save_url, headers={"User-Agent": ua})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             cl = resp.headers.get("Content-Location") or ""
             snap = ("https://web.archive.org" + cl) if cl else resp.geturl()
-            return {"snapshot": snap, "status": resp.status}
+            if _valid(snap):
+                return {"snapshot": snap, "status": resp.status}
+            return {"error": f"no capture created (status {resp.status})", "status": resp.status}
     except Exception as e:
         return {"error": str(e)}
 
@@ -1085,6 +1229,15 @@ def extract_trackers(html: str):
             vals.append(v)
         if vals:
             found[label] = uniq(vals)
+    # GA4 IDs are canonically UPPERCASE `G-XXXXXXXXXX`. The case-insensitive match above also
+    # catches web-component classes like `g-recaptcha` / `g-signin` — a false GA4 that would
+    # cluster every reCAPTCHA site. Keep only the canonical uppercase form.
+    if "google_analytics_ga4" in found:
+        real = [v for v in found["google_analytics_ga4"] if re.fullmatch(r"G-[A-Z0-9]{8,12}", v)]
+        if real:
+            found["google_analytics_ga4"] = real
+        else:
+            del found["google_analytics_ga4"]
     return found
 
 
@@ -1121,11 +1274,63 @@ def extract_saas(html: str):
     return found
 
 
+_B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+_BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+
+
+def _b58check_ok(s: str) -> bool:
+    """True iff s is a valid base58check string (BTC/LTC legacy, TRON) — checksum verified."""
+    num = 0
+    for ch in s:
+        i = _B58_ALPHABET.find(ch)
+        if i < 0:
+            return False
+        num = num * 58 + i
+    raw = num.to_bytes((num.bit_length() + 7) // 8, "big")
+    pad = len(s) - len(s.lstrip("1"))            # leading '1' → leading zero byte
+    raw = b"\x00" * pad + raw
+    if len(raw) < 5:
+        return False
+    payload, checksum = raw[:-4], raw[-4:]
+    return hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4] == checksum
+
+
+def _bech32_ok(s: str) -> bool:
+    """True iff s is a valid bech32/bech32m string (segwit bc1/ltc1) — polymod verified."""
+    s = s.lower()
+    pos = s.rfind("1")
+    if pos < 1 or pos + 7 > len(s):
+        return False
+    hrp, data = s[:pos], s[pos + 1:]
+    try:
+        dvals = [_BECH32_CHARSET.index(c) for c in data]
+    except ValueError:
+        return False
+    chk = 1
+    for c in [ord(x) >> 5 for x in hrp] + [0] + [ord(x) & 31 for x in hrp] + dvals:
+        top = chk >> 25
+        chk = ((chk & 0x1ffffff) << 5) ^ c
+        for i, g in enumerate((0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3)):
+            chk ^= g if (top >> i) & 1 else 0
+    return chk in (1, 0x2bc830a3)                # bech32 (v0) or bech32m (v1+)
+
+
+def valid_crypto_address(label: str, value: str) -> bool:
+    """Reject regex matches that aren't real addresses (md5/asset hashes false-positive the
+    legacy BTC/LTC pattern). Money-tracing depends on this — an unvalidated wallet is noise."""
+    if label == "eth":
+        return bool(re.fullmatch(r"0x[a-fA-F0-9]{40}", value))       # md5 has no 0x prefix
+    if label == "xmr":
+        return len(value) in (95, 106)                               # length-checked; no cheap checksum
+    if value.lower().startswith(("bc1", "ltc1", "tb1")):
+        return _bech32_ok(value)
+    return _b58check_ok(value)                                       # btc/ltc/tron legacy + tron T…
+
+
 def extract_crypto(text: str):
     found = {}
     for label, pat in CRYPTO_PATTERNS:
-        vals = uniq(re.findall(pat, text))
-        # eth regex sometimes eats other 0x — keep as-is; analyst validates
+        vals = [v for v in uniq(re.findall(pat, text)) if valid_crypto_address(label, v)]
         if vals:
             found[label] = vals[:25]
     return found
@@ -1197,6 +1402,191 @@ def extract_app_downloads(html: str, base_url: str = ""):
     intents = uniq(_INTENT_RE.findall(html))
     if intents:
         out["deep_links"] = intents[:15]
+    return out
+
+
+# --- QR codes -----------------------------------------------------------------------
+# Scam funnels hide the "money" inside a QR image: a BTC/ETH deposit address, a Telegram
+# invite, a WhatsApp/affiliate link. Two extraction paths, both worth having:
+#   1) ZERO-DEP (always on): many sites render the QR through a generator SERVICE whose
+#      payload sits right in the image URL query string (api.qrserver.com ...?data=,
+#      Google Charts ...&chl=). We URL-decode that param directly — no image processing.
+#   2) OPTIONAL (`--decode-qr`): if a QR decoder lib is present (pyzbar+PIL or OpenCV) we
+#      fetch each candidate <img> (or decode an inline data: image) and read the payload
+#      from the pixels. Without a lib we still REPORT the candidate images as leads to
+#      decode by hand — a detected-but-undecoded QR is never silently dropped.
+# NOTE: a canvas-drawn QR (qrcode.js etc.) has no <img> to read statically — capture it
+# with `--render --screenshot` and decode the screenshot.
+_QR_GENERATOR_PARAMS = [
+    ("api.qrserver.com", "data"), ("goqr.me", "data"),
+    ("chart.googleapis.com", "chl"), ("chart.apis.google.com", "chl"),
+    ("quickchart.io/qr", "text"), ("qrcode.tec-it.com", "data"),
+    ("qrickit.com", "d"), ("qrtag.net", "d"), ("qrcode.kaywa.com", "d"),
+    ("qrcode-generator", "data"), ("amazonaws.com/qr", "data"),
+]
+_QR_IMG_TAG_RE = re.compile(r"<img\b[^>]*>", re.I)
+_QR_SRC_RE = re.compile(r'src=["\']([^"\']+)["\']', re.I)
+_QR_DATAURI_RE = re.compile(r'data:image/[a-z.+-]+;base64,[A-Za-z0-9+/=]{80,}', re.I)
+
+
+def _qr_generator_payload(url: str):
+    """If `url` is a known QR-generator service link, return the decoded payload param."""
+    try:
+        pr = urlparse(url)
+    except Exception:
+        return None
+    hp = (pr.netloc + pr.path).lower()
+    for needle, param in _QR_GENERATOR_PARAMS:
+        if needle in hp:
+            for k, v in parse_qsl(pr.query):
+                if k == param and v:
+                    return unquote(v)
+    return None
+
+
+def _qr_decoder_backend():
+    try:
+        import pyzbar.pyzbar  # noqa: F401
+        from PIL import Image  # noqa: F401
+        return "pyzbar"
+    except Exception:
+        pass
+    try:
+        import cv2  # noqa: F401
+        import numpy  # noqa: F401
+        return "cv2"
+    except Exception:
+        return None
+
+
+def _decode_qr_bytes(raw: bytes):
+    """Decode QR payload(s) from raw image bytes with whatever backend is installed."""
+    backend = _qr_decoder_backend()
+    if not backend or not raw:
+        return []
+    out = []
+    try:
+        if backend == "pyzbar":
+            import io
+            from PIL import Image
+            from pyzbar.pyzbar import decode as _zdecode
+            for r in _zdecode(Image.open(io.BytesIO(raw))):
+                try:
+                    out.append(r.data.decode("utf-8", "ignore"))
+                except Exception:
+                    pass
+        else:
+            import cv2
+            import numpy as np
+            img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_GRAYSCALE)
+            if img is not None:
+                data, _, _ = cv2.QRCodeDetector().detectAndDecode(img)
+                if data:
+                    out.append(data)
+    except Exception:
+        pass
+    return uniq([p for p in out if p and p.strip()])
+
+
+_QR_CRYPTO_SCHEMES = {"bitcoin": "btc", "litecoin": "ltc", "ethereum": "eth",
+                      "monero": "xmr", "tron": "tron"}
+
+
+def _qr_strip_uri(payload: str) -> str:
+    """bitcoin:bc1q...?amount=1 → bc1q...  (bare address for tracing)."""
+    p = (payload or "").strip()
+    m = re.match(r'^([a-zA-Z]+):([^?#\s]+)', p)
+    if m and m.group(1).lower() in _QR_CRYPTO_SCHEMES:
+        return m.group(2).strip()
+    return p.split("?")[0].strip()
+
+
+def _qr_crypto_coin(payload: str):
+    """Coin label if the QR payload is a crypto address / payment URI, else None."""
+    p = (payload or "").strip()
+    m = re.match(r'^([a-zA-Z]+):', p)
+    if m and m.group(1).lower() in _QR_CRYPTO_SCHEMES:
+        return _QR_CRYPTO_SCHEMES[m.group(1).lower()]
+    addr = _qr_strip_uri(p)
+    for label, pat in CRYPTO_PATTERNS:
+        mm = re.search(pat, addr)
+        if mm:
+            val = mm.group(1) if mm.groups() else mm.group(0)
+            if valid_crypto_address(label, val):
+                return label
+    return None
+
+
+def extract_qr(html: str, base_url: str = "", ua: str = DEFAULT_UA,
+               proxy: str = None, decode_images: bool = False):
+    """Find QR codes on the page and decode their payloads where possible.
+    Returns {payloads:[{payload, via, source}], undecoded_images:[url,...]}."""
+    payloads, seen = [], set()
+
+    def _add(payload, via, source):
+        payload = (payload or "").strip()
+        if payload and payload not in seen:
+            seen.add(payload)
+            payloads.append({"payload": payload, "via": via, "source": source})
+
+    # 1) generator-service URLs anywhere in the markup (img src, links, inline CSS)
+    for m in re.finditer(r'''["'(]((?:https?:)?//[^"'()\s<>]+)''', html):
+        u = m.group(1)
+        if u.startswith("//"):
+            u = "https:" + u
+        p = _qr_generator_payload(u)
+        if p:
+            _add(p, "generator_param", u)
+
+    # 2) <img> that looks like a QR (src/alt/class/id mentions qr) → decode candidate
+    candidates = []
+    for tag in _QR_IMG_TAG_RE.findall(html):
+        low = tag.lower()
+        srcm = _QR_SRC_RE.search(tag)
+        src = srcm.group(1) if srcm else ""
+        flat = low.replace("-", "").replace("_", "")
+        if "qrcode" in flat or re.search(r'\bqr\b', low) or (src and re.search(r'qr', src, re.I)):
+            candidates.append(src or "(inline)")
+    datauris = _QR_DATAURI_RE.findall(html)
+
+    # 3) optional pixel decode of candidate images / inline data-URIs
+    if decode_images and _qr_decoder_backend():
+        for src in candidates:
+            if not src or src == "(inline)" or _qr_generator_payload(src):
+                continue
+            try:
+                full = unwrap_wayback(urljoin(base_url or "", src))
+                if full.startswith("data:"):
+                    raw = base64.b64decode(full.split(",", 1)[1] + "===")
+                else:
+                    _, status, _, raw = fetch(full, ua=ua, proxy=proxy, timeout=15)
+                    if status >= 400:
+                        raw = b""
+                for p in _decode_qr_bytes(raw):
+                    _add(p, "image_decode", full)
+            except Exception:
+                pass
+        for du in datauris[:10]:
+            try:
+                for p in _decode_qr_bytes(base64.b64decode(du.split(",", 1)[1] + "===")):
+                    _add(p, "image_decode", "(inline data-uri)")
+            except Exception:
+                pass
+
+    # candidates we could NOT decode (no lib / fetch failed) → surface as manual-decode leads
+    decoded_srcs = {p["source"] for p in payloads}
+    undecoded = []
+    for src in candidates:
+        if src and src != "(inline)" and src not in decoded_srcs and not _qr_generator_payload(src):
+            undecoded.append(unwrap_wayback(urljoin(base_url or "", src)))
+    if datauris and not any(p["via"] == "image_decode" for p in payloads):
+        undecoded.append(f"(inline data-uri image x{len(datauris)})")
+
+    out = {}
+    if payloads:
+        out["payloads"] = payloads
+    if undecoded:
+        out["undecoded_images"] = uniq(undecoded)[:15]
     return out
 
 
@@ -1552,6 +1942,49 @@ def build_pivots(art: dict, base_host: str):
                 {"service": "search engine / PublicWWW", "query": f'"{v}"'},
             ], "Reused wallet links scam/campaign infrastructure.")
 
+    # --- QR-code payloads (wallet / Telegram / affiliate link hidden in a QR image) ---
+    qr = art.get("qr_codes") or {}
+    for item in qr.get("payloads", []):
+        payload = item["payload"]
+        via = item.get("via", "qr")
+        low = payload.lower()
+        coin = _qr_crypto_coin(payload)
+        if coin:
+            addr = _qr_strip_uri(payload)
+            add(f"qr:crypto:{coin}", addr, "high", [
+                {"service": "blockchain explorer", "query": addr},
+                {"service": "Chainabuse", "query": addr},
+                {"service": "search engine / PublicWWW", "query": f'"{addr}"'},
+            ], f"Wallet address hidden in a QR ({via}) — the payout address. "
+               f"Trace on-chain and cluster: the same deposit wallet across sites = one operator.")
+        elif re.search(r'(?:t\.me/|telegram\.me/|tg://)', low):
+            add("qr:telegram", payload, "high", [
+                {"service": "open channel", "query": payload},
+                {"service": "urlscan.io / PublicWWW", "query": f'"{payload}"'},
+                {"service": "Telegram search", "query": payload},
+            ], f"Telegram invite in a QR ({via}) — the operator's recruitment/support channel; "
+               f"often the strongest human pivot.")
+        elif "wa.me" in low or "api.whatsapp.com" in low or "chat.whatsapp.com" in low:
+            add("qr:whatsapp", payload, "medium", [
+                {"service": "search engine / PublicWWW", "query": f'"{payload}"'},
+            ], f"WhatsApp contact in a QR ({via}) — extract the phone number and pivot it.")
+        elif low.startswith("http"):
+            add("qr:url", payload, "medium", [
+                {"service": "resolve redirect", "query": f"curl -sIL '{payload}'"},
+                {"service": "urlscan.io", "query": payload},
+                {"service": "unfurl / redirect tracer", "query": payload},
+            ], f"QR encodes a URL ({via}) — frequently a redirector / affiliate link; "
+               f"resolve it to the real destination (that's usually the more interesting host).")
+        else:
+            add("qr:text", payload, "low", [
+                {"service": "search engine", "query": f'"{payload}"'},
+            ], f"Decoded QR payload ({via}).")
+    for img in qr.get("undecoded_images", []):
+        add("qr:undecoded_image", img, "medium", [
+            {"service": "decode manually", "query": f"install pyzbar/opencv then re-run with --decode-qr, or scan: {img}"},
+        ], "A QR image was detected but not decoded (no decoder lib / not fetched). "
+           "Re-run with --decode-qr, or decode it by hand — QR payloads hide wallets & invite links.")
+
     for e in art.get("emails", []):
         add("email", e, "medium", [
             {"service": "reverse-WHOIS (ViewDNS/WhoisXML)", "query": e},
@@ -1693,6 +2126,26 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
             if al:
                 app_downloads["assetlinks"] = al
 
+    # --- QR codes (wallet address / Telegram / affiliate link hidden in a QR image) ---
+    qr_codes = extract_qr(html, base_url, ua=ua, proxy=proxy, decode_images=QR_DECODE_IMAGES)
+    # Expose decoded QR indicators to the KB the same way BinaryPivot does — as trackers —
+    # so a reused wallet / Telegram channel / affiliate URL clusters across the case. Only
+    # off-site/actionable payloads are promoted; a QR that just re-encodes this site's own
+    # URL is not a pivot.
+    for _item in qr_codes.get("payloads", []):
+        _p = _item["payload"]
+        _low = _p.lower()
+        _coin = _qr_crypto_coin(_p)
+        if _coin:
+            trackers.setdefault(f"qr_wallet_{_coin}", []).append(_qr_strip_uri(_p))
+        elif re.search(r'(?:t\.me/|telegram\.me/|tg://)', _low):
+            trackers.setdefault("qr_telegram", []).append(_p)
+        elif "wa.me" in _low or "api.whatsapp.com" in _low or "chat.whatsapp.com" in _low:
+            trackers.setdefault("qr_whatsapp", []).append(_p)
+        elif _low.startswith("http") and self_host and self_host not in _low:
+            trackers.setdefault("qr_url", []).append(_p)
+    trackers = {k: uniq(v) for k, v in trackers.items()}
+
     cookie_names = []
     if "set-cookie" in headers:
         cookie_names = uniq([c.split("=")[0].strip()
@@ -1707,6 +2160,7 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
         "favicon": favicon,
         "tls_cert": tls_cert,
         "app_downloads": app_downloads,
+        "qr_codes": qr_codes,
         "trackers": trackers,
         "saas_ids": saas_ids,
         "crypto": crypto,
@@ -1755,6 +2209,17 @@ def render_leads(result: dict) -> str:
         if m.get("redirect_destination"):
             lines.append(f"> Final destination host: **{m['redirect_destination']}**")
         lines.append("")
+    qr = (result.get("artifacts") or {}).get("qr_codes") or {}
+    if qr.get("payloads"):
+        lines.append(f"> 🔳 QR decoded: {len(qr['payloads'])} payload(s) — see qr:* pivots below.")
+    if qr.get("undecoded_images"):
+        lines.append(f"> 🔳 QR images detected but not decoded: {len(qr['undecoded_images'])} "
+                     f"(re-run with --decode-qr).")
+    if qr.get("payloads") or qr.get("undecoded_images"):
+        lines.append("")
+    if m.get("cloudflare"):
+        lines.append(f"> 🛡️ Cloudflare {m['cloudflare']} detected — a UA swap won't pass a managed "
+                     f"challenge. Escalate: `--solve-cf` (FlareSolverr/browser) + a residential `--proxy`.")
     if m.get("live_error"):
         lines.append(f"> ⚠️ Live target unreachable ({m['live_error']}).")
         lines.append(f"> Recovered via: {m.get('recovered_via') or 'not archived'}.")
@@ -1792,8 +2257,13 @@ def render_leads(result: dict) -> str:
             if c.get("error"):
                 lines.append(f"  - 🔴 crt.sh: error — {c['error']}")
             elif "subdomains" in c:
-                lines.append(f"  - 🟢 crt.sh: {c.get('total', 0)} subdomains"
+                lines.append(f"  - 🟢 crt.sh (CT/SSL): {c.get('cert_count', 0)} certs, {c.get('total', 0)} subdomains"
                              + (f" → {', '.join(c['subdomains'][:12])}" if c.get("subdomains") else ""))
+                if c.get("wildcards"):
+                    lines.append(f"    ⚠️ wildcard cert(s): {', '.join(c['wildcards'][:6])} — one cert may cover many sibling hosts")
+                for ct in (c.get("certs") or [])[:3]:
+                    iss = (ct.get("issuer") or "").replace("C=US, O=", "").split(",")[0]
+                    lines.append(f"    · cert {ct.get('not_before','?')[:10]}→{ct.get('not_after','?')[:10]} [{iss}] {', '.join(ct.get('names', [])[:4])}")
             pd = lr.get("passivedns") or {}
             if pd.get("error"):
                 lines.append(f"  - 🔴 passive DNS: error — {pd['error']}")
@@ -1844,6 +2314,57 @@ def classify_ip(ip: str):
     if idx is None:
         return {"ip": ip, "cdn": None, "provider": None, "kind": "unknown"}
     return mod.classify(ip, idx)
+
+
+_DISTINCTIVE_RE = re.compile(r"\d{6,}|[A-Za-z0-9]{8,}")
+_GENERIC_SEGMENTS = {
+    "jquery", "bootstrap", "angular", "react", "vue", "lodash", "moment",
+    "analytics", "gtag", "gtm", "fbevents", "fbq", "hotjar", "clarity",
+    "runtime", "polyfills", "vendor", "vendors", "common", "commons", "chunk",
+    "main", "index", "app", "style", "styles", "script", "scripts", "bundle",
+    "widget", "install", "min", "esm", "umd", "core", "util", "utils", "js", "css",
+}
+
+
+def _is_distinctive_basename(base: str) -> bool:
+    """A resource basename worth a urlscan filename: reverse — one carrying a build
+    hash or long token in ANY dot-segment (project_767893_793428_1783053448.js,
+    index-B3GD2NjP.js, app.7f3c9a2b.chunk.js), not a generic library/entrypoint
+    name (gtm.js, app.js, jquery.min.js, bootstrap.bundle.min.js, style.css).
+
+    Scans every segment except the extension: a segment that is a known generic
+    word is ignored; a NON-generic segment with a 6+ digit run or an 8+ char
+    alnum token makes the basename distinctive."""
+    segs = base.lower().split(".")[:-1]     # drop extension
+    for s in segs:
+        if s in _GENERIC_SEGMENTS:
+            continue
+        if _DISTINCTIVE_RE.search(s):
+            return True
+    return False
+
+
+def _resource_filename_for(result: dict, kind: str, val, seed_reg: str):
+    """Basename of a DISTINCTIVE external resource tied to a saas token or a
+    third-party host — for a urlscan `filename:` reverse. SaaS tokens and 3rd-party
+    infra live inside a loaded resource URL (not page text), so urlscan indexes them
+    by filename, not content. Returns the basename or None."""
+    arts = result.get("artifacts") or {}
+    srcs = list(arts.get("script_srcs") or []) + list(arts.get("stylesheets") or [])
+    for u in srcs:
+        if not u or "://" not in u:               # only absolute, externally-fetched resources
+            continue
+        host = urlparse(u).netloc.lower()
+        if seed_reg and _registrable(host) == seed_reg:   # the seed's own asset — not a link
+            continue
+        base = u.split("?")[0].split("#")[0].rstrip("/").split("/")[-1]
+        if not base or "." not in base or not _is_distinctive_basename(base):
+            continue
+        if kind == "third_party_host" and host == str(val).lower():
+            return base
+        if kind.startswith("saas:") and str(val) in u:
+            return base
+    return None
 
 
 def enrich_live(result: dict, fofa_full: bool = False) -> dict:
@@ -1928,10 +2449,29 @@ def enrich_live(result: dict, fofa_full: bool = False) -> dict:
                 f = fofa_search(fofa_q, full=fofa_full)
                 if f is not None:
                     lr["fofa"] = f
-            if have_urlscan and kind.startswith(("tracker:", "verification:")):
-                u = urlscan_search(f'"{val}"')
-                if u is not None:
-                    lr["urlscan"] = u
+            # --- urlscan reverses — query form matches how urlscan indexes each artifact:
+            #   tracker/verification IDs → page CONTENT search ("<id>")
+            #   favicon                  → resource-HASH search (hash:<sha256>)
+            #   saas token / 3p host     → resource-FILENAME search (filename:<basename>)
+            # (inline-script hashes are NOT indexed — inline scripts aren't fetched
+            #  resources — so they are intentionally not reversed here.)
+            if have_urlscan:
+                us = None
+                if kind.startswith(("tracker:", "verification:")):
+                    us = urlscan_search(f'"{val}"')
+                elif kind == "favicon_hash":
+                    sha = ((result.get("artifacts") or {}).get("favicon") or {}).get("sha256")
+                    if sha:
+                        us = urlscan_search(f"hash:{sha}")
+                elif kind.startswith("saas:") or kind == "third_party_host":
+                    seed_reg = _registrable((result.get("meta") or {}).get("host") or "")
+                    fn = _resource_filename_for(result, kind, val, seed_reg)
+                    if fn:
+                        us = urlscan_search(f"filename:{fn}")
+                        if isinstance(us, dict):
+                            us["reversed_resource"] = fn      # record what we searched
+                if us is not None:
+                    lr["urlscan"] = us
         if lr:
             piv["live_results"] = lr
     return result
@@ -2167,6 +2707,16 @@ def main():
     ap.add_argument("--crawl-depth", type=int, default=1,
                     help="how many link-hops deep to crawl from the seed page (default 1)")
     ap.add_argument("--timeout", type=int, default=20)
+    ap.add_argument("--solve-cf", action="store_true",
+                    help="on a Cloudflare challenge, ESCALATE to solve it: use FlareSolverr if "
+                         "configured (--flaresolverr / $FLARESOLVERR_URL), else a Playwright "
+                         "browser render. Authorized OSINT only; prefer a residential --proxy.")
+    ap.add_argument("--flaresolverr", default=None, metavar="URL",
+                    help="FlareSolverr endpoint (e.g. http://localhost:8191) used by --solve-cf "
+                         "to run the Cloudflare challenge in a real browser. Env: FLARESOLVERR_URL.")
+    ap.add_argument("--archive-missing", action="store_true",
+                    help="if the target is NOT yet in the Wayback Machine, submit it via Save-Page-Now "
+                         "so a snapshot exists to pivot on (then retry the archived copy).")
     ap.add_argument("--no-fallback", action="store_true",
                     help="do NOT fall back to Wayback + urlscan when the live fetch fails")
     ap.add_argument("--no-enrich", action="store_true",
@@ -2211,9 +2761,15 @@ def main():
                     help="classification banner printed at the top and bottom of the report")
     ap.add_argument("--analyst", default=None,
                     help="analyst name/handle stamped on the intelligence assessment header")
+    ap.add_argument("--decode-qr", action="store_true",
+                    help="decode QR-code IMAGES from pixels (fetches candidate <img>/data-URIs; "
+                         "needs pyzbar+Pillow or OpenCV). The zero-dep decode of QR-generator-service "
+                         "URLs (?data=/&chl=) always runs regardless of this flag.")
     args = ap.parse_args()
     if args.screenshot is not None and not args.render:
         args.render = True   # a screenshot requires the rendered (Playwright) page
+    global QR_DECODE_IMAGES
+    QR_DECODE_IMAGES = bool(args.decode_qr)
 
     # --- resolve User-Agent + proxy rotation. Crawling auto-enables UA rotation so a
     #     multi-page walk isn't one identical fingerprint; an explicit --ua pins one UA. ---
@@ -2241,6 +2797,9 @@ def main():
     html = ""
     live_error = None
     recovered_via = None
+    cf_challenge = None       # set if the live target returned a Cloudflare interstitial
+    snap_url = None           # closest existing Wayback snapshot (if any)
+    wb_submitted = None       # result of an --archive-missing Save-Page-Now submission
     screenshot_file = None
     intel = None
     redirects = []  # redirect hops from the seed fetch (URL branch only)
@@ -2277,11 +2836,40 @@ def main():
                                                         proxy=seed_proxy, redirects_out=redirects)
                 html = body.decode("utf-8", "ignore")
                 headers["_status"] = str(status)
-                if status >= 400 or len(html) < 200:
-                    raise RuntimeError(f"HTTP {status}, {len(html)} bytes")
+                cf_challenge = detect_cloudflare_challenge(status, headers, html)
+                if status >= 400 or len(html) < 200 or cf_challenge:
+                    raise RuntimeError(f"HTTP {status}, {len(html)} bytes"
+                                       + (f" [{cf_challenge}]" if cf_challenge else ""))
         except Exception as e:
             live_error = str(e)
             html = ""
+
+        # --- Cloudflare escalation: try to SOLVE the live challenge before going passive ---
+        # (weak→strong; a plain UA swap can't beat a managed challenge, a real browser can)
+        if not html and cf_challenge and args.solve_cf:
+            fs = args.flaresolverr or os.environ.get("FLARESOLVERR_URL")
+            if fs:
+                print(f"[*] cloudflare {cf_challenge}: solving via FlareSolverr {fs} …", file=sys.stderr)
+                f_url, f_html, f_cookies = flaresolverr_get(src, fs, timeout=max(args.timeout, 60),
+                                                            proxy=seed_proxy)
+                if f_html and not detect_cloudflare_challenge(200, {}, f_html):
+                    base_url, html, cookies = f_url, f_html, f_cookies
+                    recovered_via, live_error = "flaresolverr", None
+                    print("[+] cloudflare cleared via FlareSolverr", file=sys.stderr)
+            if not html:
+                try:
+                    print("[*] cloudflare: retrying with a Playwright browser render …", file=sys.stderr)
+                    b, h, c = render_dom(src, timeout=max(args.timeout, 45), ua=seed_ua, proxy=seed_proxy)
+                    if h and not detect_cloudflare_challenge(200, {}, h):
+                        base_url, html, cookies = b, h, c
+                        recovered_via, live_error = "render_cf", None
+                        print("[+] cloudflare cleared via browser render", file=sys.stderr)
+                    else:
+                        print("[!] still challenged after render — try a residential --proxy", file=sys.stderr)
+                except ImportError:
+                    print("[!] --solve-cf render needs Playwright (pip install playwright)", file=sys.stderr)
+                except Exception as e:
+                    print(f"[!] cf render failed: {e}", file=sys.stderr)
         # --- if the live target is unreachable/blocked, go passive ---
         if not html and not args.no_fallback:
             print(f"[!] live fetch failed ({live_error}); falling back to Wayback + urlscan",
@@ -2307,6 +2895,38 @@ def main():
                     base_url = base_url or f"https://{host_for_intel}/"
                     recovered_via = f"urlscan_dom:{dom_id}"
                     print(f"[+] recovered urlscan DOM {dom_id}", file=sys.stderr)
+
+        # --- archive-missing: guarantee a Wayback snapshot exists to pivot on later ---
+        if args.archive_missing:
+            if not snap_url:
+                snap_url, _ = wayback_closest(src, ua=seed_ua)
+            if snap_url:
+                print(f"[=] already archived: {snap_url}", file=sys.stderr)
+            else:
+                print("[*] not in Wayback — submitting to Save-Page-Now …", file=sys.stderr)
+                wb_submitted = wayback_save(src, ua=seed_ua)
+                snap = (wb_submitted or {}).get("snapshot")
+                # only a genuine /web/<ts>/ capture is analyzable; never analyze the /save/
+                # endpoint or an archive.org wrapper (that yields bogus archive.org pivots).
+                if snap and re.match(r"https?://web\.archive\.org/web/\d{4,14}/", snap):
+                    snap_url = snap
+                    print(f"[+] archived now: {snap}", file=sys.stderr)
+                    if not html:   # nothing else recovered → analyze the fresh snapshot
+                        try:
+                            base_url, _, headers, body = fetch(snap, timeout=args.timeout,
+                                                               ua=seed_ua, proxy=seed_proxy)
+                            _h = body.decode("utf-8", "ignore")
+                            uh = strip_www(urlparse(unwrap_wayback(base_url)).netloc)
+                            if _h and uh and uh != "web.archive.org" \
+                                    and not detect_cloudflare_challenge(200, {}, _h):
+                                html, recovered_via = _h, "wayback_spn"
+                        except Exception:
+                            pass
+                else:
+                    wb_submitted = None
+                    print(f"[!] Save-Page-Now made no capture "
+                          f"(target un-crawlable — Cloudflare/robots). Nothing to analyze.",
+                          file=sys.stderr)
     else:
         ap.error("source must be a URL, an existing file, or '-'")
 
@@ -2341,6 +2961,12 @@ def main():
     if live_error:
         result["meta"]["live_error"] = live_error
         result["meta"]["recovered_via"] = recovered_via
+    if cf_challenge:
+        result["meta"]["cloudflare"] = cf_challenge
+    if recovered_via:
+        result["meta"]["recovered_via"] = recovered_via
+    if wb_submitted and wb_submitted.get("snapshot"):
+        result.setdefault("archives", {}).setdefault("wayback", {})["submitted"] = wb_submitted["snapshot"]
     if intel is not None:
         result["related_urlscan"] = intel
         # promote urlscan related-infra to pivots even when the page itself is gone

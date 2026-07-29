@@ -15,7 +15,7 @@ Given the current cluster and open leads, pick the single highest-value next mov
 3. **Run the top pivot with the right collector**, then re-ingest:
    ```bash
    # example — reverse-WHOIS on a leaked registrant name via WebPivot's WHOIS tool
-   python3 WebPivot/tools/whois_enrich.py --reverse-name "Lê Nhất Duy" --search-type historic
+   python3 WebPivot/tools/whois_enrich.py --reverse-name "Registrant Name" --search-type historic
    # example — expand a domain and fold results back into the KB
    python3 WebPivot/tools/pivot_extract.py https://newdomain.example --pretty -o cases/x.json
    python3 tools/kb/ingest_webpivot.py --kb knowledge cases/x.json

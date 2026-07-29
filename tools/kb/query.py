@@ -5,8 +5,8 @@ IntelAnalysis skill and the reporter read from instead of re-querying the world.
 
   python3 query.py --kb knowledge --stats
   python3 query.py --kb knowledge --shared --min 2      # cluster seeds
-  python3 query.py --kb knowledge --entity lambangnhanh.online
-  python3 query.py --kb knowledge --cluster lambangnhanh.vip
+  python3 query.py --kb knowledge --entity example.com
+  python3 query.py --kb knowledge --cluster example.com
   python3 query.py --kb knowledge --type person
 """
 import os

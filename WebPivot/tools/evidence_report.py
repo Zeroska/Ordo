@@ -28,7 +28,17 @@ import csv
 import datetime
 import hashlib
 import os
+import sys
 from typing import Optional
+
+# Standardized analyst Domain Summary table (domains/status/WHOIS/attribution) —
+# auto-prepended to every assessment. Lives at the project-root tools/ dir.
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+        os.path.dirname(os.path.abspath(__file__)))), "tools"))
+    from domain_table import render_domain_table  # type: ignore
+except Exception:                                  # degrade gracefully if unavailable
+    render_domain_table = None
 
 # --------------------------------------------------------------------------- estimative language
 # ICD 203 mandates a standard lexicon for likelihood ("words of estimative probability")
@@ -194,6 +204,15 @@ def render_cia_report(result: dict,
         L.append(f"_Collection note: the live target was unreachable ({m['live_error']}); "
                  f"findings rest on {m.get('recovered_via') or 'passive sourcing'}._")
     L.append("")
+
+    # ---- Domain Summary (standardized table: status / WHOIS / attribution) ---
+    if render_domain_table is not None:
+        try:
+            tbl = render_domain_table([result], case=case)
+            if tbl:
+                L += [tbl, ""]
+        except Exception:
+            pass
 
     # ---- Key Judgments ------------------------------------------------------
     L.append("## Key Judgments")
@@ -509,6 +528,17 @@ def render_cluster_report(results: list,
         L.append(f"Origin-IP reverse lookups surfaced **{len(discovered)}** external host(s) not "
                  f"in the input set — candidate additional infrastructure (see Discovered Infrastructure).")
     L.append("")
+
+    # Domain Summary table — standardized at-a-glance grid (status / WHOIS dates /
+    # registrar+NS / registrant / IP·ASN / attribution / analyst context) so the
+    # analyst can judge the whole cluster before reading the narrative.
+    if render_domain_table is not None:
+        try:
+            tbl = render_domain_table(results, case=case)
+            if tbl:
+                L += [tbl, ""]
+        except Exception:
+            pass
 
     # Key Judgments
     L += ["## Key Judgments", "",
