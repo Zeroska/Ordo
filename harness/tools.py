@@ -12,12 +12,15 @@ your scripts (e.g. pivot_extract's --crawl / --rotate-ua, risk_signals' options)
 """
 from __future__ import annotations
 
+import concurrent.futures
+import datetime
 import glob
 import json
 import os
 import shutil
 import subprocess
 import sys
+import threading
 from typing import Any
 from urllib.parse import urlparse
 
@@ -31,6 +34,43 @@ READONLY = ToolAnnotations(readOnlyHint=True)  # lets the model batch these in p
 KB_DIR = os.environ.get("HARNESS_KB", "knowledge")        # e.g. HARNESS_KB=knowledge_scratch
 SMOKE = bool(os.environ.get("HARNESS_NO_ENRICH"))         # skip FOFA/urlscan/WHOIS (fast, no credits)
 FORCE = bool(os.environ.get("HARNESS_FORCE"))             # re-collect even if already investigated
+SHOT = bool(os.environ.get("HARNESS_SCREENSHOT"))         # capture a page screenshot as visual evidence (needs browser)
+NO_ARCHIVE = bool(os.environ.get("HARNESS_NO_ARCHIVE"))   # disable Wayback SPN + master ledger (evidence capture is ON by default)
+
+
+_MANIFEST_LOCK = threading.Lock()   # collect_many appends the manifest from worker threads
+
+
+def _utcnow() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _append_manifest(case: str, host: str, data: dict, *, reused: bool,
+                     dom_path: str = "", shot_path: str = "") -> None:
+    """Append one provenance row per collection to cases/<case>/evidence/manifest.jsonl — the
+    evidence index answering WHERE (source URL + which enrichment services), WHEN (collected_at),
+    and WHAT WAS ARCHIVED (saved DOM, screenshot, Wayback flag) for every host we touched. The
+    per-pivot detail (kind/value/query) lives alongside it in master_pivots.csv (--master)."""
+    meta = data.get("meta") or {}
+    ev_dir = os.path.join(ROOT, "cases", case, "evidence")
+    os.makedirs(ev_dir, exist_ok=True)
+    row = {
+        "case": case, "host": host,
+        "collected_at": meta.get("collected_at"),          # when the evidence was actually gathered (UTC)
+        "logged_at": _utcnow(),                            # when this manifest row was written
+        "reused_cache": reused,                            # true = served from a prior run, not re-fetched
+        "source_url": meta.get("source"), "final_url": meta.get("final_url"),
+        "fetched_with": meta.get("fetched_with"), "recovered_via": meta.get("recovered_via"),
+        "enriched_with": meta.get("enriched_with"),        # which services corroborated (crtsh/fofa/urlscan/…)
+        "archived_via_wayback": meta.get("archived_via_wayback"),
+        "n_pivots": len(data.get("pivots", [])),
+        "dom_path": os.path.relpath(dom_path, ROOT) if dom_path and os.path.exists(dom_path) else None,
+        "screenshot_path": os.path.relpath(shot_path, ROOT) if shot_path and os.path.exists(shot_path) else None,
+        "ledger": os.path.join("cases", case, "evidence", "master_pivots.csv"),
+    }
+    with _MANIFEST_LOCK:
+        with open(os.path.join(ev_dir, "manifest.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 # CF-bypass: --render needs a playwright-capable python (the WebPivot venv); FlareSolverr needs a URL.
 RENDER_PY = os.environ.get("HARNESS_RENDER_PY") or (
@@ -101,45 +141,67 @@ def _ok(text: str) -> dict[str, Any]:
     {"url": str, "case": str},  # force/passive:bool, proxy:str are optional -> read via args.get()
 )
 async def pivot_extract(args: dict[str, Any]) -> dict[str, Any]:
-    url, case = args["url"], args["case"]
-    passive, proxy = args.get("passive", False), args.get("proxy")
+    res = collect_one(args["url"], args["case"], hostile=POLICY["hostile"],
+                      passive=args.get("passive", False), proxy=args.get("proxy"),
+                      force=bool(args.get("force")))
+    if res.get("error"):
+        return _err(res["error"])
+    blob = json.dumps(res.get("data") or {}, ensure_ascii=False)
+    if res["reused"]:
+        return _ok(f"ALREADY INVESTIGATED — reused cached pivot for {res['host']} "
+                   f"({res['n_pivots']} pivots); NOT re-collected. force=true to refresh.\n{blob[:4000]}")
+    return _ok(f"Extracted {res['n_pivots']} pivots from {res['host']}{res['note']}\n"
+               f"DOM saved for manual review: {res['dom']}\n{blob[:6000]}")
+
+
+def collect_one(url: str, case: str, *, hostile: bool = False, passive: bool = False,
+                proxy: str | None = None, force: bool = False) -> dict[str, Any]:
+    """Collect ONE host end-to-end (cache-reuse → live fetch + enrichment → evidence capture →
+    manifest). Sync + self-contained (no globals beyond config) so it is safe to fan out across
+    threads via collect_many. Returns a summary dict, never raises."""
     raw_dir = os.path.join(ROOT, "cases", case, "raw")
     dom_dir = os.path.join(ROOT, "cases", case, "dom")
+    shot_dir = os.path.join(ROOT, "cases", case, "screenshots")
     os.makedirs(raw_dir, exist_ok=True)
     os.makedirs(dom_dir, exist_ok=True)
     host = _host(url)
     out = os.path.join(raw_dir, host + ".json")
     dom = os.path.join(dom_dir, host + ".html")
+    shot = os.path.join(shot_dir, host + ".png")
 
-    # ALREADY INVESTIGATED? reuse the cached pivot rather than blindly (and expensively) re-collecting.
-    if not (FORCE or args.get("force")):
+    # ALREADY INVESTIGATED? reuse the cached pivot rather than (expensively) re-collecting.
+    if not (FORCE or force):
         prior = out if os.path.exists(out) else _find_cached_raw(host, exclude=out)
         data = _load_json(prior) if prior else None
         if data is not None:
             if prior != out:
                 shutil.copyfile(prior, out)  # bring it into this case so kb_ingest still sees it
-            n = len(data.get("pivots", []))
-            return _ok(f"ALREADY INVESTIGATED — reused cached pivot for {host} ({n} pivots, from "
-                       f"{os.path.relpath(prior, ROOT)}); NOT re-collected. force=true to refresh.\n"
-                       f"{json.dumps(data, ensure_ascii=False)[:4000]}")
+            _append_manifest(case, host, data, reused=True, dom_path=dom if os.path.exists(dom) else "")
+            return {"host": host, "ok": True, "reused": True, "error": None, "dom": dom,
+                    "n_pivots": len(data.get("pivots", [])), "note": " (cached)", "data": data}
 
-    if POLICY["hostile"] and not passive and not proxy:
-        return _err(
-            "BLOCKED by egress policy: target is flagged hostile. Re-call with passive=true "
-            "or proxy='<cidr>' before any live fetch."
-        )
-    # ALWAYS: full WHOIS + FOFA + urlscan enrichment (default), and save the raw DOM for manual review.
+    if hostile and not passive and not proxy:
+        return {"host": host, "ok": False, "reused": False, "n_pivots": 0, "data": None, "dom": dom,
+                "note": "", "error": (f"BLOCKED by egress policy: {host} is hostile. Re-call with "
+                                      "passive=true or proxy='<cidr>'.")}
     base = [os.path.join("WebPivot", "tools", "pivot_extract.py"), url, "--pretty", "-o", out, "--save-dom", dom]
     if proxy:
         base += ["--proxy-range", proxy]
     if SMOKE:
-        base += ["--no-enrich", "--no-whois"]  # cheap smoke only
-    r = _run([PY, *base], timeout=240)
+        base += ["--no-enrich", "--no-whois"]                # cheap smoke only
+    elif not NO_ARCHIVE:
+        # EVIDENCE CAPTURE (default on): Wayback SPN snapshot + master evidence ledger, case-tagged.
+        base += ["--archive-missing", "--master", "--case", case]
+    screenshot_py = PY
+    if SHOT and not SMOKE and not (hostile and not proxy):    # screenshot needs a browser
+        base += ["--render", "--screenshot", shot]
+        screenshot_py = RENDER_PY
+    r = _run([screenshot_py, *base], timeout=300 if SHOT else 240)
     data = _load_json(out)
     if data is None:
-        return _err(f"pivot_extract failed: {(r.stderr or '')[-800:]}")
-    # Cloudflare interstitial? retry once with a real browser (--render) or FlareSolverr (--solve-cf).
-    cf = (data.get("meta") or {}).get("cloudflare")
+        return {"host": host, "ok": False, "reused": False, "n_pivots": 0, "data": None, "dom": dom,
+                "note": "", "error": f"pivot_extract failed for {host}: {(r.stderr or '')[-500:]}"}
+    cf = (data.get("meta") or {}).get("cloudflare")            # Cloudflare interstitial? retry via browser/FS
     used = "direct"
     if cf and not SMOKE:
         if FLARESOLVERR:
@@ -149,11 +211,57 @@ async def pivot_extract(args: dict[str, Any]) -> dict[str, Any]:
             _run([RENDER_PY, *base, "--render"], timeout=300)
             used = "render(browser)"
         data = _load_json(out) or data
-    n = len(data.get("pivots", []))
+    _append_manifest(case, host, data, reused=False, dom_path=dom, shot_path=shot)
     walled = (data.get("meta") or {}).get("cloudflare")
     cfnote = f"  · CF {cf} → {used} ({'STILL WALLED' if walled else 'bypassed'})" if cf else ""
-    return _ok(f"Extracted {n} pivots from {url}{cfnote}\nDOM saved for manual review: {dom}\n"
-               f"{json.dumps(data, ensure_ascii=False)[:6000]}")
+    archnote = "" if (SMOKE or NO_ARCHIVE) else "  · archived + logged"
+    return {"host": host, "ok": True, "reused": False, "error": None, "dom": dom,
+            "n_pivots": len(data.get("pivots", [])), "note": cfnote + archnote, "data": data}
+
+
+def collect_many(seeds: list[str], case: str, *, hostile: bool = False,
+                 max_workers: int = 8) -> list[dict[str, Any]]:
+    """Fan collect_one across `seeds` concurrently (mechanical, no LLM) — the Phase-3 collector
+    that scales to a big seed set without blowing one model session's context/turn budget."""
+    results: list[dict[str, Any]] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = {ex.submit(collect_one, s, case, hostile=hostile): s for s in seeds}
+        for fu in concurrent.futures.as_completed(futs):
+            try:
+                results.append(fu.result())
+            except Exception as e:  # noqa: BLE001
+                results.append({"host": _host(futs[fu]), "ok": False, "reused": False,
+                                "n_pivots": 0, "error": str(e), "data": None})
+    return results
+
+
+def ingest(case: str) -> tuple[bool, str]:
+    """Ingest a case's raw pivot JSON into the KB (sync). Run once after collect_many."""
+    raw = os.path.join(ROOT, "cases", case, "raw")
+    files = [os.path.join(raw, f) for f in os.listdir(raw)] if os.path.isdir(raw) else []
+    if not files:
+        return False, f"no raw pivot JSON in {raw}"
+    r = _run([PY, os.path.join("tools", "kb", "ingest_webpivot.py"), "--kb", KB_DIR, *files])
+    return r.returncode == 0, (r.stdout + r.stderr) or "ingested"
+
+
+@tool(
+    "fallback_probe",
+    "LAST-RESORT probe — call this when pivot_extract returns ZERO/near-zero pivots or an "
+    "empty-favicon/parked/NXDOMAIN page, i.e. WHOIS+FOFA+urlscan all came back empty. Never end "
+    "a seed on a silent 'nothing found'. Keyless sweep of the corners that survive a dead front "
+    "page: crt.sh certs (SAN-sibling domains = strongest same-owner link), the full Wayback "
+    "capture TIMELINE (parked-today was often a live scam last year), archive.today mementos, "
+    "ready-to-run search dorks, and the local KB (already known/attributed?). Returns a VERDICT: "
+    "PIVOTABLE (a lead survived) or NO-PIVOT-YET (genuinely cold + explicit next steps).",
+    {"domain": str},
+    annotations=READONLY,
+)
+async def fallback_probe(args: dict[str, Any]) -> dict[str, Any]:
+    r = _run([PY, os.path.join("tools", "fallback_probe.py"), _host(args["domain"]),
+              "--kb", KB_DIR], timeout=120)
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "probe produced no output"}],
+            "is_error": r.returncode != 0}
 
 
 @tool(
@@ -163,19 +271,46 @@ async def pivot_extract(args: dict[str, Any]) -> dict[str, Any]:
     {"case": str},
 )
 async def kb_ingest(args: dict[str, Any]) -> dict[str, Any]:
-    raw = os.path.join(ROOT, "cases", args["case"], "raw")
-    files = [os.path.join(raw, f) for f in os.listdir(raw)] if os.path.isdir(raw) else []
-    if not files:
-        return _err(f"no raw pivot JSON in {raw}")
-    r = _run([PY, os.path.join("tools", "kb", "ingest_webpivot.py"), "--kb", KB_DIR, *files])
-    return {"content": [{"type": "text", "text": (r.stdout + r.stderr) or "ingested"}],
-            "is_error": r.returncode != 0}
+    ok, msg = ingest(args["case"])
+    if not ok and msg.startswith("no raw"):
+        return _err(msg)
+    return {"content": [{"type": "text", "text": msg or "ingested"}], "is_error": not ok}
 
 
 # ---------------------------------------------------------------- ANALYZE tools
 @tool(
+    "kb_cluster",
+    "Peers of ONE domain — the domains sharing an indicator with it (its cluster neighborhood). "
+    "PREFER this over kb_query_shared: it returns only the seed's subgraph, not the whole KB, so "
+    "it is far cheaper.",
+    {"domain": str},
+    annotations=READONLY,
+)
+async def kb_cluster(args: dict[str, Any]) -> dict[str, Any]:
+    r = _run([PY, os.path.join("tools", "kb", "query.py"),
+              "--kb", KB_DIR, "--cluster", _host(args["domain"])])
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "no peers"}],
+            "is_error": r.returncode != 0}
+
+
+@tool(
+    "kb_entity",
+    "One entity's facts + edges + provenance (a domain, email, indicator, or operator). "
+    "A focused lookup — cheaper than dumping the whole KB.",
+    {"value": str},
+    annotations=READONLY,
+)
+async def kb_entity(args: dict[str, Any]) -> dict[str, Any]:
+    r = _run([PY, os.path.join("tools", "kb", "query.py"),
+              "--kb", KB_DIR, "--entity", args["value"]])
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "no record"}],
+            "is_error": r.returncode != 0}
+
+
+@tool(
     "kb_query_shared",
-    "List indicators shared by >= min domains in the KB — the cluster seeds. Read-only.",
+    "The WHOLE-KB view: every indicator shared by >= min domains. LARGE/expensive — use only when "
+    "you need the global picture; prefer kb_cluster/kb_entity for a specific seed. Read-only.",
     {"min": int},
     annotations=READONLY,
 )
@@ -227,10 +362,90 @@ async def reverse_whois(args: dict[str, Any]) -> dict[str, Any]:
 
 
 @tool(
+    "cert_overlap",
+    "TLS certificate / SAN-overlap check across 2+ domains (comma-separated in `domains`) — a "
+    "CORRELATION signal. Two domains sharing a TLS cert is near-decisive same-operator proof: SAN "
+    "names are chosen by whoever controls the cert. Keyless dual-source CT (Shodan CTL + crt.sh). "
+    "Returns a VERDICT: SHARED-CERT / SAN cross-cover (decisive), SIBLING-OVERLAP (certs share a "
+    "third registrable domain = strong), or NO-CT-OVERLAP. Run this on candidate same-operator "
+    "seeds before asserting a cluster — it either corroborates or refutes at the TLS layer.",
+    {"domains": str},
+    annotations=READONLY,
+)
+async def cert_overlap(args: dict[str, Any]) -> dict[str, Any]:
+    doms = [d.strip() for d in str(args["domains"]).replace(",", " ").split() if d.strip()]
+    if len({_host(d) for d in doms}) < 2:
+        return _err("cert_overlap needs at least two distinct domains (comma-separated).")
+    r = _run([PY, os.path.join("tools", "cert_overlap.py"), *doms], timeout=120)
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "no output"}],
+            "is_error": r.returncode != 0}
+
+
+@tool(
+    "reference_check",
+    "Check a hash/keyword against the curated fingerprint reference BEFORE trusting it as a "
+    "same-operator link. Returns BENIGN (a globally common logo/CDN/CSS-framework artifact — a "
+    "FALSE POSITIVE, do NOT cluster on it), SIGNAL (a distinctive fingerprint from a prior case — "
+    "pivot on it, and see which case), or UNKNOWN. Pass the indicator string (e.g. favicon:123, "
+    "css_hash:ab12, urlscan_resource:<h>) or a keyword. Read-only.",
+    {"value": str},
+    annotations=READONLY,
+)
+async def reference_check(args: dict[str, Any]) -> dict[str, Any]:
+    val = str(args["value"])
+    chk = _run([PY, os.path.join("tools", "kb", "reference.py"), "--kb", KB_DIR, "check", val])
+    srch = _run([PY, os.path.join("tools", "kb", "reference.py"), "--kb", KB_DIR, "search", val])
+    return _ok((chk.stdout or chk.stderr or "").rstrip() + "\n--- related reference entries ---\n"
+               + (srch.stdout or "").rstrip())
+
+
+@tool(
+    "reference_add",
+    "Remember a fingerprint in the reference so it improves every future case. Use verdict="
+    "'benign' when a hash/keyword turned out to be a common logo / CDN / CSS-framework / template "
+    "default (it will be SUPPRESSED from clustering everywhere), or verdict='signal' for a "
+    "distinctive hash/keyword worth watching for (a watchlist tied to this case). Give a short "
+    "label; pass the case so signal provenance is kept.",
+    {"value": str, "verdict": str, "label": str},  # optional: case, note, type via args.get
+)
+async def reference_add(args: dict[str, Any]) -> dict[str, Any]:
+    verdict = str(args.get("verdict", "")).lower()
+    if verdict not in ("benign", "signal"):
+        return _err("verdict must be 'benign' or 'signal'.")
+    cmd = [PY, os.path.join("tools", "kb", "reference.py"), "--kb", KB_DIR, "add",
+           "--value", str(args["value"]), "--verdict", verdict,
+           "--label", str(args.get("label", ""))]
+    if args.get("case"):
+        cmd += ["--case", str(args["case"])]
+    if args.get("note"):
+        cmd += ["--note", str(args["note"])]
+    r = _run(cmd)
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "added"}],
+            "is_error": r.returncode != 0}
+
+
+@tool(
+    "which_cases",
+    "Cross-case provenance: given a domain OR an indicator string (favicon:<h>, ga:<id>, "
+    "wallet:<coin>:<addr>, email:<addr>, social:<net>:<handle>), report which CASE(S) it already "
+    "appears in across the cases/ store. Call this before pivoting on a known artifact — a hit "
+    "means it carries prior case context (don't treat it as new); an indicator seen across "
+    "MULTIPLE cases is a cross-case link worth surfacing. Read-only.",
+    {"artifact": str},
+    annotations=READONLY,
+)
+async def which_cases(args: dict[str, Any]) -> dict[str, Any]:
+    r = _run([PY, os.path.join("tools", "case_index.py"), str(args["artifact"])])
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "no output"}],
+            "is_error": r.returncode != 0}
+
+
+@tool(
     "domain_verdict",
-    "The PRIOR verdict for a domain already in the store: who it's attributed to (operator "
-    "registry) + its known KB facts/edges. Call this before treating a seed as new — if it's "
-    "already resolved, show the verdict instead of re-investigating.",
+    "The PRIOR verdict for a domain already in the store: which CASE(S) it appears in, who it's "
+    "attributed to (operator registry) + its known KB facts/edges. Call this before treating a "
+    "seed as new — if it's already resolved or belongs to a known case, show that instead of "
+    "re-investigating.",
     {"domain": str},
     annotations=READONLY,
 )
@@ -238,18 +453,26 @@ async def domain_verdict(args: dict[str, Any]) -> dict[str, Any]:
     d = _host(args["domain"])
     op = _run([PY, os.path.join("tools", "kb", "operator_registry.py"), "find", d])
     kb = _run([PY, os.path.join("tools", "kb", "query.py"), "--kb", KB_DIR, "--entity", d])
+    ci = _run([PY, os.path.join("tools", "case_index.py"), d])
     verdict = (op.stdout or "").strip() or "not attributed to any known operator"
     facts = (kb.stdout or "").strip() or "no KB record for this domain"
+    cases = (ci.stdout or "").strip() or f"{d} (domain): NOT seen in any existing case."
     collected = bool(_find_cached_raw(d))
     return _ok(f"VERDICT for {d}  (pivot data on file: {'yes' if collected else 'no'})\n"
-               f"[operator] {verdict}\n[KB] {facts[:3000]}")
+               f"[cases] {cases}\n[operator] {verdict}\n[KB] {facts[:3000]}")
 
 
 # ---------------------------------------------------------------- servers + names
-COLLECT_SERVER = create_sdk_mcp_server("collect", tools=[pivot_extract, kb_ingest])
+COLLECT_SERVER = create_sdk_mcp_server("collect", tools=[pivot_extract, fallback_probe, kb_ingest])
 ANALYZE_SERVER = create_sdk_mcp_server(
-    "analyze", tools=[kb_query_shared, risk_signals, reverse_whois, domain_verdict])
+    "analyze", tools=[kb_cluster, kb_entity, kb_query_shared, risk_signals,
+                      reverse_whois, cert_overlap, reference_check, reference_add,
+                      which_cases, domain_verdict])
 
-COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__kb_ingest"]
-ANALYZE_TOOLS = ["mcp__analyze__kb_query_shared", "mcp__analyze__risk_signals",
-                 "mcp__analyze__reverse_whois", "mcp__analyze__domain_verdict"]
+COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__fallback_probe",
+                 "mcp__collect__kb_ingest"]
+ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
+                 "mcp__analyze__kb_query_shared", "mcp__analyze__risk_signals",
+                 "mcp__analyze__reverse_whois", "mcp__analyze__cert_overlap",
+                 "mcp__analyze__reference_check", "mcp__analyze__reference_add",
+                 "mcp__analyze__which_cases", "mcp__analyze__domain_verdict"]

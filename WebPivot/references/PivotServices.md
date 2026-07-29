@@ -41,9 +41,23 @@ Helper tools that build cross-engine queries: `favihunter`, `favihash`, osint.sh
 | Service | Query | Cost | API |
 |---|---|---|---|
 | **crt.sh** | `%.domain`, cert hash | Free | JSON `?output=json`, no key ⚠️ often overloaded/down |
+| **Shodan CTL** ⭐ | domain | Free | **keyless mirror of the crt.sh DB — steadier when crt.sh 502s** |
 | **Certspotter** (SSLMate) | domain | Free tier + paid | REST, free key (low quota) |
 | **Censys** | cert fields | Freemium | Platform API, key |
 | **Cloudflare Merkle Town / Azul** | dashboard | Free | limited |
+
+**Shodan CTL (keyless, no Shodan account needed)** — a second CT index that reads the same
+crt.sh database from a steadier host, so it covers crt.sh's frequent outages. Two endpoints:
+```
+https://ctl.shodan.io/api/v1/domain/<domain>            # cert objects: subject_cn, issuer_cn,
+                                                         #   not_before/after (unix epoch), san_dns_names
+https://ctl.shodan.io/api/v1/domain/<domain>/hostnames  # flat JSON array of every hostname → subdomains
+```
+Use it to **enumerate a target's subdomains** and to read each cert's `san_dns_names` — a cert
+whose SAN list covers a *different registrable domain* is a strong same-operator link. `pivot_extract`
+now queries crt.sh **and** Shodan CTL concurrently and unions them (`ct_search`), so a run survives
+either source being down and gets fuller subdomain coverage; `tools/fallback_probe.py` does the same
+on cold seeds.
 
 ## 5. Passive DNS / shared IP / shared infra
 | Service | Cost | API |

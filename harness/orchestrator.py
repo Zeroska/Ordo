@@ -19,7 +19,11 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import datetime
+import glob
+import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -56,11 +60,18 @@ COLLECT = Profile(
     os.environ.get("HARNESS_COLLECT_MODEL", "haiku"),
     os.environ.get("HARNESS_COLLECT_EFFORT", "low"),
 )
-# Judgment (correlate + assess) -> strong model, deep reasoning.
+# Judgment (correlate + assess) -> capable-but-cheaper model by default (Sonnet).
 JUDGE = Profile(
-    os.environ.get("HARNESS_JUDGE_MODEL", "opus"),
+    os.environ.get("HARNESS_JUDGE_MODEL", "sonnet"),
     os.environ.get("HARNESS_JUDGE_EFFORT", "high"),
 )
+# Cascade: escalate the ASSESS phase to a stronger model only when the cheap judge
+# returns low confidence (a minority of cases) — cost of Opus only where it earns it.
+ESCALATE = Profile(
+    os.environ.get("HARNESS_ESCALATE_MODEL", "opus"),
+    os.environ.get("HARNESS_ESCALATE_EFFORT", "high"),
+)
+ESCALATE_ON = os.environ.get("HARNESS_ESCALATE", "1").lower() not in ("0", "false", "no", "")
 
 
 MAX_TURNS = int(os.environ.get("HARNESS_MAX_TURNS", "40"))  # lower for cheap smoke runs
@@ -179,12 +190,17 @@ async def investigate(seeds: list[str], case: str, hostile: bool = False) -> Ass
     prior = _prior_knowledge(seeds)
     _log("prior knowledge:\n" + prior)
     p1 = await _phase(
-        "You have ONLY the provided tools (pivot_extract, kb_ingest) — no shell or filesystem. "
-        "Ignore any shell commands in the instructions; call the tools directly.\n\n"
+        "You have ONLY the provided tools (pivot_extract, fallback_probe, kb_ingest) — no shell or "
+        "filesystem. Ignore any shell commands in the instructions; call the tools directly.\n\n"
         f"Case `{case}`. Prior knowledge — do NOT re-collect seeds already collected/attributed "
         f"(pivot_extract returns cached data for those instantly); spend live collection only on NEW seeds:\n"
         f"{prior}\n\n"
         "For EACH seed: call pivot_extract, then kb_ingest the case.\n"
+        "EMPTY-RESULT RULE: if pivot_extract returns zero/near-zero pivots or a parked / "
+        "empty-favicon / NXDOMAIN page (WHOIS+FOFA+urlscan all cold), you MUST call "
+        "fallback_probe(seed) before moving on — never end a seed on a silent 'nothing found'. "
+        "Report its VERDICT (PIVOTABLE with the surviving leads, or NO-PIVOT-YET with next steps) "
+        "so the analyst always gets a verdict, not silence.\n"
         + ("Targets are HOSTILE — pass passive=true or a proxy on pivot_extract.\n" if hostile else "")
         + f"Seeds:\n{seed_lines}",
         label="collect",
@@ -199,13 +215,39 @@ async def investigate(seeds: list[str], case: str, hostile: bool = False) -> Ass
     # which the judgment phases read via tools — carrying the (large) collect transcript
     # into every Opus turn was the main cost driver. Judgment runs in its own session.
 
+    # PHASE 2+3 — judgment (Correlate → Assess) over the seeds, reading the ingested KB.
+    assessment, jphases = await _judge(seeds, case)
+    _report_cost({"collect": p1, **jphases})
+    if assessment is None:
+        raise RuntimeError("assessment failed (correlate/assess produced nothing)")
+    return assessment
+
+
+async def _judge(domains: list[str], case: str) -> tuple[Assessment | None, dict]:
+    """The judgment half — Correlate → Assess (+cascade) over `domains`, reusable per cluster. No
+    collection; reads the already-ingested KB in its own fresh session. Returns (Assessment|None,
+    phases_dict) so the caller aggregates cost across one or many clusters."""
+    seed_csv = ", ".join(domains)
     # PHASE 2 — CORRELATE  (IntelAnalysis brain, judge model). Fresh session, reads the KB.
     p2 = await _phase(
-        "You have ONLY the provided tools (kb_query_shared, risk_signals, reverse_whois, "
-        "domain_verdict) — no shell or filesystem. Ignore shell commands in the instructions.\n\n"
-        f"Case `{case}` (seeds: {seed_csv}). Collection is already ingested into the knowledge "
-        "base. Call kb_query_shared (min 2) and risk_signals for the case, then triage the shared "
-        "artifacts by tier and name the candidate same-operator cluster(s). Reason only.",
+        "You have ONLY the provided tools (kb_cluster, kb_entity, kb_query_shared, risk_signals, "
+        "reverse_whois, cert_overlap, reference_check, reference_add, which_cases, domain_verdict) "
+        "— no shell or filesystem. Ignore shell commands in the instructions.\n\n"
+        f"Case `{case}` (domains: {seed_csv}). Collection is already ingested. For EACH domain, call "
+        "kb_cluster(domain) for its peers and kb_entity(domain) for its facts — that focused subgraph "
+        "is your primary evidence. Call domain_verdict(domain) or which_cases(domain) so you know which "
+        "prior CASE(S) a domain/artifact already belongs to — a known artifact carries prior context, "
+        "and an indicator shared across MULTIPLE cases is a cross-case link to surface. "
+        "BEFORE trusting any shared hash/keyword as a same-operator link, reference_check it — a "
+        "BENIGN verdict means it's a common logo/CDN/CSS artifact (false positive, discard it); if "
+        "you confirm a NEW benign or a distinctive SIGNAL fingerprint, reference_add it so future "
+        "cases benefit. Call risk_signals for the case. Use kb_query_shared ONLY if you "
+        "genuinely need the KB-wide picture (it is large/expensive). "
+        "TLS CHECK (required when you have 2+ candidate same-operator domains): call "
+        "cert_overlap(domains=those domains) — a shared TLS cert / SAN cross-cover is near-decisive "
+        "same-operator proof, and a clean NO-CT-OVERLAP is itself evidence to weigh. "
+        "Then triage the shared artifacts by tier and name the candidate same-operator cluster(s). "
+        "Reason only.",
         label="correlate",
         system=_skill("IntelAnalysis"),
         tools=T.ANALYZE_TOOLS,
@@ -215,46 +257,332 @@ async def investigate(seeds: list[str], case: str, hostile: bool = False) -> Ass
     )
     session = p2.session_id if p2 else None
     if not session:
-        raise RuntimeError("correlate phase produced no session")
+        return None, {"correlate": p2}
 
     # PHASE 3 — ASSESS  (resume CORRELATE; schema-forced structured assessment)
-    p3 = await _phase(
+    assess_prompt = (
         "Produce the final assessment as JSON matching the schema: BLUF with an estimative word; "
         "the cluster and the artifacts binding it; the attribution level and the evidence for it; "
-        "gaps / competing explanation; prioritised next pivots.",
-        label="assess",
-        system=_skill("IntelAnalysis"),
-        tools=T.ANALYZE_TOOLS,
-        servers={"analyze": T.ANALYZE_SERVER},
-        resume=session,
-        model=JUDGE.model,
-        effort=JUDGE.effort,
-        output_schema=Assessment,
-    )
+        "gaps / competing explanation; prioritised next pivots.")
+    assess_kw = dict(system=_skill("IntelAnalysis"), tools=T.ANALYZE_TOOLS,
+                     servers={"analyze": T.ANALYZE_SERVER}, resume=session, output_schema=Assessment)
+    p3 = await _phase(assess_prompt, label="assess", model=JUDGE.model, effort=JUDGE.effort, **assess_kw)
+    phases = {"correlate": p2, "assess": p3}
 
-    _report_cost({"collect": p1, "correlate": p2, "assess": p3})
-
+    assessment = None
     if p3 and p3.subtype == "success" and p3.structured_output:
-        return Assessment.model_validate(p3.structured_output)
-    raise RuntimeError(f"assessment failed (subtype={getattr(p3, 'subtype', None)})")
+        assessment = Assessment.model_validate(p3.structured_output)
+
+    # CASCADE: escalate the assessment to the stronger model only if the cheap judge was unsure.
+    if (assessment is not None and ESCALATE_ON and assessment.confidence == "low"
+            and ESCALATE.model != JUDGE.model):
+        _log(f"low confidence — escalating assess to {ESCALATE.model}")
+        p3b = await _phase(assess_prompt, label="assess+", model=ESCALATE.model,
+                           effort=ESCALATE.effort, **assess_kw)
+        phases["assess+"] = p3b
+        if p3b and p3b.subtype == "success" and p3b.structured_output:
+            assessment = Assessment.model_validate(p3b.structured_output)
+    return assessment, phases
+
+
+# --------------------------------------------------------------- convergence loop (--continue)
+def _convergence_snapshot(case: str) -> str:
+    """Record this round in cases/<case>/rounds.jsonl via the convergence tool (its own authority
+    on what counts as a new host/indicator). Returns its one-line summary for the worklog."""
+    r = subprocess.run([sys.executable, os.path.join("tools", "kb", "convergence.py"),
+                        "snapshot", case], cwd=ROOT, capture_output=True, text=True)
+    return (r.stdout or r.stderr or "").strip()
+
+
+def _is_converged(case: str, stale: int) -> bool:
+    """CONVERGED = the last `stale` snapshot rounds each added ZERO new hosts and indicators —
+    the same rule convergence.py's `status` prints, read straight from rounds.jsonl."""
+    p = os.path.join(ROOT, "cases", case, "rounds.jsonl")
+    if not os.path.exists(p):
+        return False
+    rounds = [json.loads(l) for l in open(p, encoding="utf-8") if l.strip()]
+    if len(rounds) < stale:
+        return False
+    return all(r["new_hosts"] == 0 and r["new_indicators"] == 0 for r in rounds[-stale:])
+
+
+def _discover_new_seeds(case: str, known: list[str], max_new: int) -> list[str]:
+    """The next round's frontier: KB cluster-peers of the case's collected domains that are NOT
+    yet collected anywhere (genuinely new infrastructure). Uses --strong so peers linked only by
+    boilerplate (shared WP-Rocket CSS/comment/DOM template) are excluded — that noise otherwise
+    balloons the case into unrelated operators. Ranked by shared-indicator count, capped at
+    max_new. Peers already investigated in any case are excluded (known, not new frontier) —
+    cross-case links surface via which_cases instead."""
+    known_hosts = {T._host(s) for s in known}
+    raw = os.path.join(ROOT, "cases", case, "raw")
+    collected = [os.path.basename(p)[:-5] for p in glob.glob(os.path.join(raw, "*.json"))]
+    scores: dict[str, int] = {}
+    for dom in collected:
+        r = subprocess.run([sys.executable, os.path.join("tools", "kb", "query.py"),
+                            "--kb", T.KB_DIR, "--cluster", dom, "--strong"],
+                           cwd=ROOT, capture_output=True, text=True)
+        for line in (r.stdout or "").splitlines():
+            m = re.match(r"^\s+(\S+)\s+via\s+(\d+)\s+shared", line)
+            if not m:
+                continue
+            peer, nshared = m.group(1), int(m.group(2))
+            if peer in known_hosts or T._host(peer) != peer or T._find_cached_raw(peer):
+                continue
+            scores[peer] = max(scores.get(peer, 0), nshared)
+    return sorted(scores, key=lambda p: -scores[p])[:max_new]
+
+
+async def run_case(seeds: list[str], case: str, *, hostile: bool, depth: int,
+                   stale: int, max_new: int) -> Assessment:
+    """One or more Collect→Correlate→Assess rounds. Each round snapshots an immutable assessment
+    (r1, r2, …); between rounds it expands the seed set with newly-discovered cluster peers and
+    stops when convergence.py reports CONVERGED, the depth cap is hit, or nothing new is found."""
+    current, final = list(seeds), None
+    for rnd in range(1, depth + 1):
+        _log(f"\n===== ROUND {rnd}/{depth} · {len(current)} seed(s): {', '.join(current)} =====")
+        try:
+            final = await investigate(current, case, hostile=hostile)
+        except Exception as e:  # noqa: BLE001
+            _log(f"round {rnd} failed: {e}")
+            break
+        table_md = _domain_table(case)
+        render.render_terminal(final, table_md=table_md)
+        snap = _persist_assessment(final, case, table_md)
+        _log(f" saved · {snap['snapshot_md']} (round {snap['round']}) · head {snap['summary']}")
+        conv = _convergence_snapshot(case)
+        if conv:
+            _log("convergence · " + conv.splitlines()[0])
+        if depth == 1:
+            break
+        if _is_converged(case, stale):
+            _log(f"convergence: CONVERGED — last {stale} rounds added nothing new. Stopping.")
+            break
+        new = _discover_new_seeds(case, current, max_new)
+        if not new:
+            _log("no new uncollected cluster peers to pursue. Stopping.")
+            break
+        _log(f"→ round {rnd + 1}: expanding with {len(new)} new seed(s): {', '.join(new)}")
+        current = current + new
+    if final is None:
+        raise RuntimeError("no assessment produced")
+    return final
+
+
+# ------------------------------------------------------- Phase 3: parallel + cluster-level judge
+def _compute_components(case: str, domains: list[str]) -> list[list[str]]:
+    """Partition the case's collected domains into same-operator clusters via the KB's STRONG
+    connected components (boilerplate / benign / over-prevalent edges excluded). One cluster ==
+    one unit of LLM judgment, so cost scales with cluster count, not domain count."""
+    hosts = sorted({T._host(d) for d in domains})
+    r = subprocess.run([sys.executable, os.path.join("tools", "kb", "query.py"),
+                        "--kb", T.KB_DIR, "--components", "--domains", ",".join(hosts)],
+                       cwd=ROOT, capture_output=True, text=True)
+    comps = []
+    for line in (r.stdout or "").splitlines():
+        if line.startswith("COMPONENT"):
+            members = [d.strip() for d in line.partition("\t")[2].split(",") if d.strip()]
+            if members:
+                comps.append(members)
+    return comps or [hosts]      # fallback: treat everything as one cluster if the KB/parse failed
+
+
+def _persist_clusters(entries: list[tuple], case: str, table_md: str) -> None:
+    """Immutable snapshot per JUDGED cluster + a case roll-up SUMMARY.md listing every cluster.
+    Each entry is (members, assessment_or_None, resolved_note_or_None): a judged cluster carries an
+    Assessment; a cluster skipped because it was already attributed carries a resolved_note (its
+    prior registry verdict — no LLM was spent); a failed judge carries neither."""
+    case_dir = os.path.join(ROOT, "cases", case)
+    snap_dir = os.path.join(case_dir, "assessments")
+    os.makedirs(snap_dir, exist_ok=True)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    roll = [f"<!-- {stamp} · parallel run · {len(entries)} cluster(s) -->",
+            f"# Case roll-up — {case} — {len(entries)} cluster(s) · {stamp}\n"]
+    changelog = []
+    for i, (members, a, note) in enumerate(entries, 1):
+        base = f"{stamp}_c{i}"
+        if a is None and note:            # already-attributed cluster — verdict from the registry, no LLM
+            roll.append(f"## Cluster {i} — RESOLVED (prior attribution, not re-judged)\n{note}\n")
+            changelog.append(f"- {stamp} · c{i} · RESOLVED · {len(members)} domains · {note[:100]}")
+            continue
+        if a is None:                     # judge failed
+            roll.append(f"## Cluster {i} — JUDGMENT FAILED\n  domains: {', '.join(members)}\n")
+            changelog.append(f"- {stamp} · c{i} · FAILED · {len(members)} domains")
+            continue
+        with open(os.path.join(snap_dir, base + ".md"), "w", encoding="utf-8") as f:
+            f.write(render.render_markdown(a, table_md if i == 1 else ""))
+        with open(os.path.join(snap_dir, base + ".json"), "w", encoding="utf-8") as f:
+            f.write(a.model_dump_json(indent=2))
+        bluf = (a.bluf or "").replace("\n", " ")
+        roll.append(f"## Cluster {i} — {a.attribution_level}/{a.confidence} "
+                    f"({len(a.cluster or [])} domains) · [snapshot](assessments/{base}.md)\n{bluf}\n")
+        changelog.append(f"- {stamp} · c{i} · {a.attribution_level}/{a.confidence} · "
+                         f"{len(a.cluster or [])} in cluster · {bluf[:100]}")
+    with open(os.path.join(case_dir, "SUMMARY.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(roll))
+    with open(os.path.join(case_dir, "CHANGELOG.md"), "a", encoding="utf-8") as f:
+        f.write("\n".join(changelog) + "\n")
+    _log(f"\n saved · roll-up {case_dir}/SUMMARY.md ({len(entries)} clusters)")
+
+
+def _all_collected(case: str) -> list[str]:
+    raw = os.path.join(ROOT, "cases", case, "raw")
+    return sorted(os.path.basename(p)[:-5] for p in glob.glob(os.path.join(raw, "*.json")))
+
+
+def _cluster_prior_verdict(members: list[str]) -> str | None:
+    """If EVERY domain in the cluster is already attributed in the operator registry, return the
+    combined verdict text (so we can skip re-judging it — a token saving). If any member is
+    unattributed, return None (the cluster still needs LLM judgment)."""
+    verdicts = []
+    for d in members:
+        r = subprocess.run([sys.executable, os.path.join("tools", "kb", "operator_registry.py"),
+                            "find", d], cwd=ROOT, capture_output=True, text=True)
+        out = (r.stdout or "").strip()
+        if not out or "not attributed" in out.lower():
+            return None
+        verdicts.append(out)
+    return "; ".join(verdicts)
+
+
+async def run_case_parallel(seeds: list[str], case: str, *, hostile: bool, max_conc: int,
+                            judge_conc: int, depth: int = 1, stale: int = 2, max_new: int = 8) -> list:
+    """Phase 3 — scale. Collect concurrently (deterministic, no LLM). With depth>1 (--continue) keep
+    expanding the frontier and re-collecting CHEAPLY until the case converges — judgment does NOT run
+    per round. Then partition into same-operator clusters and judge each ONCE, in parallel; clusters
+    already fully attributed skip the LLM entirely (their prior verdict is reused)."""
+    _log(f"\n===== PARALLEL CASE · {len(seeds)} seeds · collect≤{max_conc} · judge≤{judge_conc}"
+         f"{' · continue depth ' + str(depth) if depth > 1 else ''} =====")
+    current = list(seeds)
+    for rnd in range(1, depth + 1):                                                  # 1. expand-collect loop
+        t0 = time.time()
+        res = T.collect_many(current, case, hostile=hostile, max_workers=max_conc)
+        ok = [r for r in res if r.get("ok")]
+        fails = [r["host"] for r in res if not r.get("ok")]
+        _log(f"round {rnd}: collected {len(ok)}/{len(res)} in {time.time() - t0:.0f}s "
+             f"({sum(1 for r in ok if r.get('reused'))} cached)"
+             + (f" · failures: {', '.join(fails)}" if fails else ""))
+        T.ingest(case)                                                               # ingest each round
+        conv = _convergence_snapshot(case)
+        if conv:
+            _log("convergence · " + conv.splitlines()[0])
+        if depth == 1:
+            break
+        if _is_converged(case, stale):
+            _log(f"CONVERGED — last {stale} rounds added nothing. Stopping expansion.")
+            break
+        new = _discover_new_seeds(case, _all_collected(case), max_new)
+        if not new:
+            _log("no new uncollected cluster peers. Stopping expansion.")
+            break
+        _log(f"→ round {rnd + 1}: +{len(new)} new seed(s): {', '.join(new)}")
+        current = new                                                                # only collect the frontier
+
+    clusters = _compute_components(case, _all_collected(case))                        # 2. cluster the whole graph
+    to_judge, resolved = [], []
+    for c in clusters:                                                               # 3. skip already-attributed
+        v = _cluster_prior_verdict(c)
+        (resolved.append((c, None, v)) if v else to_judge.append(c))
+    _log(f"{len(clusters)} cluster(s): {len(to_judge)} to judge, {len(resolved)} already attributed "
+         f"(LLM skipped)")
+    for i, c in enumerate(to_judge, 1):
+        _log(f"  judge {i} ({len(c)}): {', '.join(c[:8])}{' …' if len(c) > 8 else ''}")
+
+    sem = asyncio.Semaphore(judge_conc)                                              # 4. judge in parallel
+
+    async def _judge_cluster(members):
+        async with sem:
+            a, ph = await _judge(members, case)
+            return members, a, ph
+
+    outcomes = await asyncio.gather(*[_judge_cluster(c) for c in to_judge])
+    table_md = _domain_table(case)                                                   # 5. persist + cost
+    entries = [(m, a, None) for m, a, _ in outcomes] + resolved
+    _persist_clusters(entries, case, table_md)
+    allphases = {}
+    for i, (_m, _a, ph) in enumerate(outcomes, 1):
+        for k, v in ph.items():
+            allphases[f"c{i}:{k}"] = v
+    _report_cost(allphases)
+    return entries
+
+
+def _pop_val(argv: list[str], name: str, default: str) -> str:
+    if name in argv:
+        i = argv.index(name)
+        val = argv[i + 1]
+        del argv[i:i + 2]
+        return val
+    return default
 
 
 def _main() -> None:
     argv = sys.argv[1:]
     hostile = "--hostile" in argv
-    argv = [a for a in argv if a != "--hostile"]
+    cont = "--continue" in argv
+    parallel = "--parallel" in argv
+    argv = [a for a in argv if a not in ("--hostile", "--continue", "--parallel")]
+    depth = int(_pop_val(argv, "--depth", "4" if cont else "1"))
+    stale = int(_pop_val(argv, "--stale", "2"))
+    max_new = int(_pop_val(argv, "--max-new", "8"))
+    collect_conc = int(_pop_val(argv, "--collect-conc", "8"))
+    judge_conc = int(_pop_val(argv, "--judge-conc", "3"))
+    if depth > 1:
+        cont = True
     if len(argv) < 2:
-        sys.exit("usage: orchestrator.py <CASE-ID> [--hostile] <seed-url> [seed-url ...]")
+        sys.exit("usage: orchestrator.py <CASE-ID> [--hostile] [--continue [--depth N] [--stale N] "
+                 "[--max-new N]] [--parallel [--collect-conc N] [--judge-conc N]] <seed-url> ...")
     case, seeds = argv[0], argv[1:]
-    assessment = asyncio.run(investigate(seeds, case, hostile=hostile))
+    # Auto-parallel for large seed sets (a single collect session would blow context/turns).
+    auto_at = int(os.environ.get("HARNESS_PARALLEL_AT", "12"))
+    if not parallel and len(seeds) >= auto_at:
+        _log(f"auto-parallel: {len(seeds)} seeds ≥ {auto_at} (set HARNESS_PARALLEL_AT to change)")
+        parallel = True
+    if parallel:
+        # --continue → cheap expand-collect until convergence, then judge once (depth from --depth).
+        pdepth = depth if cont else 1
+        asyncio.run(run_case_parallel(seeds, case, hostile=hostile, max_conc=collect_conc,
+                                      judge_conc=judge_conc, depth=pdepth, stale=stale, max_new=max_new))
+    else:
+        asyncio.run(run_case(seeds, case, hostile=hostile, depth=depth, stale=stale, max_new=max_new))
 
-    table_md = _domain_table(case)                            # standard Domain Summary table
-    render.render_terminal(assessment, table_md=table_md)     # colored report -> stdout
-    md = render.save_markdown(assessment, case, ROOT, table_md=table_md)  # cases/<case>/assessment.md
-    json_path = os.path.join(ROOT, "cases", case, "assessment.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        f.write(assessment.model_dump_json(indent=2))
-    _log(f"\n saved · {md}\n saved · {json_path}")
+
+def _persist_assessment(assessment: Assessment, case: str, table_md: str) -> dict:
+    """Snapshot + living head. Every run writes an IMMUTABLE, timestamped snapshot under
+    assessments/ (append-only attribution history — nothing is ever overwritten), then refreshes
+    SUMMARY.md (the current view) and appends one line to CHANGELOG.md. assessment.json is kept as
+    a back-compat pointer to the latest. cases/ is git-ignored, so this IS the version history."""
+    case_dir = os.path.join(ROOT, "cases", case)
+    snap_dir = os.path.join(case_dir, "assessments")
+    os.makedirs(snap_dir, exist_ok=True)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    rnd = len([f for f in os.listdir(snap_dir) if f.endswith(".json")]) + 1
+    base = f"{stamp}_r{rnd}"
+    md_body = render.render_markdown(assessment, table_md)
+    js = assessment.model_dump_json(indent=2)
+
+    # immutable snapshot — the audit trail
+    snap_md = os.path.join(snap_dir, base + ".md")
+    with open(snap_md, "w", encoding="utf-8") as f:
+        f.write(md_body)
+    with open(os.path.join(snap_dir, base + ".json"), "w", encoding="utf-8") as f:
+        f.write(js)
+
+    # living head — overwritten each run so "current" is always one file
+    summary = os.path.join(case_dir, "SUMMARY.md")
+    with open(summary, "w", encoding="utf-8") as f:
+        f.write(f"<!-- round {rnd} · {stamp} · {assessment.attribution_level}/"
+                f"{assessment.confidence} · snapshot assessments/{base}.md -->\n\n" + md_body)
+    with open(os.path.join(case_dir, "assessment.json"), "w", encoding="utf-8") as f:
+        f.write(js)  # back-compat pointer to the latest
+
+    # changelog — one append-only line per round
+    n_dom = len(assessment.cluster or [])
+    bluf = (assessment.bluf or "").replace("\n", " ")[:140]
+    changelog = os.path.join(case_dir, "CHANGELOG.md")
+    with open(changelog, "a", encoding="utf-8") as f:
+        f.write(f"- {stamp} · r{rnd} · {assessment.attribution_level}/{assessment.confidence} · "
+                f"{n_dom} in cluster · {bluf}\n")
+    return {"round": rnd, "snapshot_md": snap_md, "summary": summary, "changelog": changelog}
 
 
 if __name__ == "__main__":
