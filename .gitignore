@@ -12,10 +12,12 @@
 
 # === per-investigation data (target data + your analysis) — keep private ===
 # Comment these out if you deliberately want to share example cases.
-# Anchored to repo root (leading /) so nested dirs like tools/eval/cases/ (the
-# shippable golden-set fixtures) are NOT swept up by these rules.
-/cases/
-/knowledge/
+# UNANCHORED so a stray cases/ or knowledge/ created anywhere (e.g. the harness run
+# from a subdir) is ALSO ignored — but re-include the shippable eval golden-set fixtures.
+cases/
+knowledge/
+!tools/eval/cases/
+!tools/eval/cases/**
 # stray per-investigation artifacts that live OUTSIDE cases/ (target lists, host dumps)
 # — the cases/ rule above does not match root-level files like cases_<x>_hosts.txt
 cases_*.txt

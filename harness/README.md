@@ -51,6 +51,21 @@ python3 harness/orchestrator.py CASE-0001 --hostile https://sketchy.example
 Prints the validated `Assessment` as JSON. Reads/writes the same `cases/` + `knowledge/`
 stores as the skills (both git-ignored).
 
+## Don't re-investigate what's already known
+Before collecting, the harness prints a **prior-knowledge** line per seed (already-collected / attributed / NEW), and `pivot_extract` **reuses the cached pivot JSON** if the domain was investigated in *any* prior case — no re-fetch, no API spend. Pass `force=true` (or `HARNESS_FORCE=1`) to refresh. The judgment phase also has a **`domain_verdict`** tool that returns a domain's prior verdict (operator-registry attribution + KB facts), so a resolved seed is *shown*, not re-worked.
+
+## Collection behavior & outputs
+Every `pivot_extract` call now, by default:
+- runs **full enrichment** — WHOIS + FOFA + urlscan (needs the API keys in `.env`); `HARNESS_NO_ENRICH=1` turns it off for cheap smoke runs only;
+- **saves the raw DOM** to `cases/<case>/dom/<host>.html` so you can manually analyze it or re-run a pivoting script over it;
+- **detects Cloudflare** (`meta.cloudflare`) and auto-retries the bypass — a real browser via `--render` (uses `WebPivot/.venv`), or FlareSolverr if `HARNESS_FLARESOLVERR=http://host:8191/v1` is set.
+
+The judgment phase also has a **`reverse_whois`** tool that returns only high-value pivots: it refuses privacy/registrar terms and flags a bulk registrant (`> max_domains` = reseller = noise) instead of dumping it.
+
+Every run prints/saves the standard **Domain Summary table** (`tools/domain_table.py`) — Domain · Status · Registered · Expires · Registrar · Nameservers · Registrant · IP·ASN · Attribution · Context — for the domains collected this run, above the assessment.
+
+New env knobs: `HARNESS_FLARESOLVERR` (CF solver URL) · `HARNESS_RENDER_PY` (playwright python, default `WebPivot/.venv`).
+
 ## The guardrail seam
 `tools.POLICY["hostile"]` is flipped by the orchestrator for `--hostile` runs; the
 `pivot_extract` tool then **refuses a live fetch** unless called with `passive=true`
