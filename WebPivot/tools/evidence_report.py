@@ -27,6 +27,7 @@ from __future__ import annotations
 import csv
 import datetime
 import hashlib
+import ipaddress
 import os
 import sys
 from typing import Optional
@@ -405,6 +406,102 @@ class _UF:
         return list(g.values())
 
 
+def _is_ipaddr(s):
+    try:
+        ipaddress.ip_address((s or "").strip())
+        return True
+    except ValueError:
+        return False
+
+
+def _epoch_day(v):
+    """passive-DNS time_first/time_last -> 'YYYY-MM-DD' (unix epoch int/str, or ISO)."""
+    if v in (None, ""):
+        return None
+    try:
+        return datetime.datetime.fromtimestamp(int(float(v)), datetime.timezone.utc).strftime("%Y-%m-%d")
+    except (ValueError, TypeError, OSError):
+        return str(v)[:10] or None
+
+
+def _origin_ip_groups(results):
+    """Group case domains by the ORIGIN IP they resolve to (CDN/cloud edges excluded), reading only
+    collected data — no live calls. Returns (groups, tenant_total, ip_meta):
+      groups[ip]       = {host: hosting_window_str}   (only IPs with >= 2 case hosts)
+      tenant_total[ip] = FOFA ip= reverse count (dedicated box vs shared hosting)
+      ip_meta[ip]      = {'asn','org'} when an IPPivot result for that IP is in the set."""
+    ip_hosts, tenant_total, ip_meta = {}, {}, {}
+    for r in results:
+        meta = r.get("meta") or {}
+        host = _norm(meta.get("host") or "")
+        if meta.get("kind") == "ip":                       # IPPivot result → ASN/org for that IP
+            ii = ((r.get("artifacts") or {}).get("ip_intel") or {}).get("ipinfo") or {}
+            if _is_ipaddr(host):
+                ip_meta[host] = {"asn": ii.get("asn"), "org": ii.get("org_name")}
+            continue
+        dp = next((p for p in r.get("pivots") or [] if p.get("kind") == "domain"), None)
+        if not dp:
+            continue
+        lr = dp.get("live_results") or {}
+        dns = lr.get("dns") or {}
+        cls = {c.get("ip"): c for c in dns.get("ip_classification") or []}
+        win = {}
+        for rec in (lr.get("pdns") or {}).get("records") or []:
+            if rec.get("rrtype") in ("A", "AAAA") and _is_ipaddr(rec.get("rdata")):
+                win[rec["rdata"].strip()] = (_epoch_day(rec.get("time_first")),
+                                             _epoch_day(rec.get("time_last")))
+        for ip in dns.get("ips") or []:
+            ip = (ip or "").strip()
+            if not _is_ipaddr(ip) or (cls.get(ip) or {}).get("cdn") is True:
+                continue
+            w = win.get(ip)
+            ip_hosts.setdefault(ip, {})[host] = (
+                f"{w[0]}..{w[1]}" if w and w[0] and w[1] else "current (live DNS)")
+        fr = lr.get("fofa_ip_reverse") or {}
+        q = fr.get("query") or ""
+        if 'ip="' in q and fr.get("total") is not None:
+            fip = q.split('ip="', 1)[1].split('"', 1)[0]
+            if _is_ipaddr(fip):
+                tenant_total[fip] = max(tenant_total.get(fip, 0), fr.get("total") or 0)
+    groups = {ip: hosts for ip, hosts in ip_hosts.items() if len(hosts) >= 2}
+    return groups, tenant_total, ip_meta
+
+
+def _origin_ip_section(results):
+    """Markdown for the origin-IP shared-hosting sub-clusters, gated by tenant count."""
+    groups, tenant_total, ip_meta = _origin_ip_groups(results)
+    if not groups:
+        return []
+    L = ["## Shared-Hosting (Origin-IP) Sub-Clusters", "",
+         "Case domains resolving to the same **origin IP** (CDN/cloud edges excluded). A "
+         "**dedicated** box (few other tenants) is a strong same-operator/deployment link; a "
+         "**shared** IP (many tenants) is common hosting — shown for completeness, low attribution "
+         "value. Hosting window from passive DNS when available.", ""]
+
+    def _rank(ip):
+        t = tenant_total.get(ip)
+        return (t if t is not None else 10 ** 9, -len(groups[ip]))
+
+    for ip in sorted(groups, key=_rank):
+        t = tenant_total.get(ip)
+        m = ip_meta.get(ip) or {}
+        asn = f" · {m['asn']} {m.get('org') or ''}".rstrip() if m.get("asn") else ""
+        if t is None:
+            note = "tenant count not collected — reverse `ip=\"%s\"` to judge dedicated vs shared" % ip
+        elif t <= 25:
+            note = f"**dedicated** (~{t} tenants) → strong same-operator link"
+        elif t <= 250:
+            note = f"small shared host (~{t} tenants) → moderate, corroborate"
+        else:
+            note = f"shared hosting (~{t:,} tenants) → low attribution / likely noise"
+        L.append(f"### {ip} — {len(groups[ip])} case domains{asn}")
+        L.append(f"_{note}_")
+        for host, w in sorted(groups[ip].items()):
+            L.append(f"- `{host}`  (hosted: {w})")
+        L.append("")
+    return L
+
+
 def render_cluster_report(results: list,
                           case: Optional[str] = None,
                           classification: str = "UNCLASSIFIED//FOR OFFICIAL USE ONLY",
@@ -567,6 +664,9 @@ def render_cluster_report(results: list,
             arts_str = "<br>".join(f"{k}=`{v}`" for (k, v, _h) in c["arts"][:5])
             L.append(f"| {', '.join(c['hosts'])} | {arts_str} | {len(c['types'])} | {verdict} |")
         L.append("")
+
+    # Shared-hosting (origin-IP) sub-clusters — domains on the same origin box, tenant-count gated
+    L += _origin_ip_section(results)
 
     # Discovered infrastructure
     if discovered:
