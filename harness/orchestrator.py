@@ -88,21 +88,40 @@ def _argpreview(inp: object) -> str:
     return ", ".join(f"{k}={str(v)[:36]}" for k, v in inp.items())
 
 
-def _report_cost(phases: dict[str, object]) -> None:
-    """Print the SDK's own per-run cost estimate (ResultMessage.total_cost_usd) to
-    stderr, so stdout stays clean for the assessment JSON. Values are per phase; the
-    total is their sum — sanity-check against the Console on your first few runs."""
-    print("\n--- run cost (SDK total_cost_usd) ---", file=sys.stderr)
+def _report_cost(phases: dict[str, object], case: str | None = None) -> None:
+    """Print the SDK's own per-run cost estimate (ResultMessage.total_cost_usd) to stderr, so stdout
+    stays clean for the assessment JSON, and (when `case` is given) append one line per run to
+    `cases/<case>/run_cost.jsonl` so cost is calculable over time. Values are per phase; the total
+    is their sum. NOTE: this is the ANTHROPIC model cost only — FOFA/WhoisXML/urlscan/IPinfo/Shodan
+    API credits are NOT included (track those in each provider's console)."""
+    print("\n--- run cost (SDK total_cost_usd; Anthropic only, excludes API credits) ---",
+          file=sys.stderr)
     total = 0.0
+    per_phase = {}
     for name, r in phases.items():
         c = getattr(r, "total_cost_usd", None)
         total += c or 0.0
+        per_phase[name] = c
         print(f"  {name:<10} {(f'${c:.4f}' if c is not None else 'n/a'):>10}", file=sys.stderr)
     print(
         f"  {'TOTAL':<10} {('$%.4f' % total):>10}   "
         f"(collect={COLLECT.model}/{COLLECT.effort}, judge={JUDGE.model}/{JUDGE.effort})",
         file=sys.stderr,
     )
+    if case:
+        rec = {"ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+               "case": case, "total_cost_usd": round(total, 6),
+               "phases": {k: (round(v, 6) if v is not None else None) for k, v in per_phase.items()},
+               "collect_model": COLLECT.model, "judge_model": JUDGE.model,
+               "note": "anthropic model cost only; excludes third-party API credits"}
+        try:
+            path = os.path.join(ROOT, "cases", case, "run_cost.jsonl")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            print(f"  (logged → cases/{case}/run_cost.jsonl)", file=sys.stderr)
+        except Exception as e:
+            print(f"  (run_cost log failed: {e})", file=sys.stderr)
 
 
 def _skill(name: str) -> str:
@@ -225,7 +244,7 @@ async def investigate(seeds: list[str], case: str, hostile: bool = False) -> Ass
 
     # PHASE 2+3 — judgment (Correlate → Assess) over the seeds, reading the ingested KB.
     assessment, jphases = await _judge(seeds, case)
-    _report_cost({"collect": p1, **jphases})
+    _report_cost({"collect": p1, **jphases}, case=case)
     if assessment is None:
         raise RuntimeError("assessment failed (correlate/assess produced nothing)")
     return assessment
@@ -490,7 +509,7 @@ async def run_case_parallel(seeds: list[str], case: str, *, hostile: bool, max_c
     for i, (_m, _a, ph) in enumerate(outcomes, 1):
         for k, v in ph.items():
             allphases[f"c{i}:{k}"] = v
-    _report_cost(allphases)
+    _report_cost(allphases, case=case)
     return entries
 
 

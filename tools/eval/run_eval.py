@@ -219,18 +219,25 @@ def main():
     # Offline unit gate for the urlscan resource-reverse logic (pure functions; the
     # live reverses themselves need network and are asserted in a separate smoke test).
     unit_total = unit_failed = 0
-    try:
-        import test_urlscan_reverse
-        up, uf, ulines = test_urlscan_reverse.check()
-        unit_total, unit_failed = up + uf, uf
-        mark = "\033[32m✔\033[0m" if not uf else "\033[31m✗\033[0m"
-        print(f"\n{mark} [UNIT] urlscan_reverse — distinctiveness + resource resolution")
-        for status, label in ulines:
-            if status != "ok" or args.verbose:
-                print(f"    {'  ok ' if status == 'ok' else '  ✗  '} {label}")
-    except Exception as e:
-        unit_total, unit_failed = 1, 1
-        print(f"\n\033[31m✗\033[0m [UNIT] urlscan_reverse — harness error: {e}")
+    unit_mods = [
+        ("test_urlscan_reverse", "urlscan_reverse — distinctiveness + resource resolution"),
+        ("test_ippivot", "ippivot — IP detect / noise classify / registry opsec / mail parse"),
+    ]
+    for modname, desc in unit_mods:
+        try:
+            mod = __import__(modname)
+            up, uf, ulines = mod.check()
+            unit_total += up + uf
+            unit_failed += uf
+            mark = "\033[32m✔\033[0m" if not uf else "\033[31m✗\033[0m"
+            print(f"\n{mark} [UNIT] {desc}")
+            for status, label in ulines:
+                if status != "ok" or args.verbose:
+                    print(f"    {'  ok ' if status == 'ok' else '  ✗  '} {label}")
+        except Exception as e:
+            unit_total += 1
+            unit_failed += 1
+            print(f"\n\033[31m✗\033[0m [UNIT] {desc} — harness error: {e}")
 
     npass = len(cases) - failed_cases
     total_failed = failed_cases + unit_failed

@@ -20,6 +20,35 @@ Investigation data lives ONLY in the git-ignored stores: `cases/`, `knowledge/`,
 `MEMORY/`, `.env`, and the operator registry. It is never committed and never referenced
 by identifier inside a skill.
 
+## RULE 2 — Register every new tool/skill with the MCP (so Claude Code can use it)
+
+When you add a **tool** or a **skill**, publish it through the one typed surface both front-ends
+share (`harness/tools.py` → the SDK `orchestrator.py` **and** the stdio `harness/mcp_server.py`,
+which auto-discovers every `@tool`). Do NOT leave a new capability reachable only as a raw
+`python3 …` bash line.
+
+- **New CLI tool** (`WebPivot/tools/*.py`, `tools/*.py`): wrap it as an `@tool(name, description,
+  {params})` in `harness/tools.py`. `mcp_server.py` discovers it automatically (no second edit) and
+  it appears to Claude Code via the repo-root `.mcp.json` server `intel`. Keep the description one
+  tight paragraph — it is context cost paid on every SDK phase (see below).
+- **New mode of an existing tool** (e.g. IPPivot is just `pivot_extract.py` with a bare-IP source):
+  no new `@tool` — extend the existing tool's description so the model knows the new input/flag.
+- **New skill** (`WebPivot`, `IntelAnalysis`, …): add its `SKILL.md`, symlink it into
+  `~/.claude/skills/`, and if it exposes a scriptable step, surface that step as an `@tool` too.
+- **Smoke-check registration:** `WebPivot/.venv/bin/python3 harness/mcp_server.py` then send a
+  `tools/list` JSON-RPC — the new tool must be listed. In Claude Code, confirm with `/mcp`.
+
+## Cost visibility
+
+- **Anthropic model cost** (the agent's reasoning): the **SDK harness** captures the SDK's own
+  `total_cost_usd` per phase and persists a per-run line to `cases/<case>/run_cost.jsonl`
+  (`orchestrator._report_cost`) — that is the ledger to sum for "what did this case cost". In
+  **interactive Claude Code** the model can't read its own `total_cost_usd`; run `/cost` to see it.
+- **Third-party API credits are NOT in `total_cost_usd`.** `pivot_extract.py` and friends spend
+  FOFA / WhoisXML / urlscan / IPinfo / Shodan credits (and make **zero** Anthropic calls
+  themselves) — track those in each provider's own console. State this split when reporting cost;
+  don't imply `total_cost_usd` covers the API credits.
+
 ## When a skill genuinely needs an example
 
 Use obvious, non-real placeholders — never a value lifted from a live case:

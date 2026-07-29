@@ -132,8 +132,11 @@ def _ok(text: str) -> dict[str, Any]:
 # ---------------------------------------------------------------- COLLECT tools
 @tool(
     "pivot_extract",
-    "Extract pivot artifacts (favicon hash, tracking/analytics IDs, wallets, emails, "
-    "third-party infra) from a URL and write the JSON into the case. If the domain was ALREADY "
+    "Extract pivot artifacts and write the JSON into the case. `url` may be a URL/host "
+    "(domainPivot: favicon hash, tracking/analytics IDs, wallets, emails, third-party infra) OR a "
+    "bare IP (IPPivot: passive IP recon — IPinfo ASN/abuse, FOFA ip= ports/services/co-hosted "
+    "domains, Shodan host, dig MX/NS/TXT/PTR; a shared CDN/hosting IP is marked information not a "
+    "same-operator pivot, and its ASN is banked to references/asn_registry.json). If ALREADY "
     "investigated (a pivot JSON exists in any case), it returns the cached data instead of "
     "re-collecting — pass force=true to refresh. For HOSTILE targets a direct live fetch is "
     "refused — pass proxy='<cidr>' to rotate egress, or passive=true with url set to an "

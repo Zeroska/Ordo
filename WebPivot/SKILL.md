@@ -19,7 +19,8 @@ If this directory exists, load and apply any PREFERENCES.md, API keys, or resour
 **API keys (optional — enables live pivoting).** `pivot_extract.py` reads keys from the
 environment first, then from a `chmod 600` `.env` in the customization dir (env wins).
 Recognized: `URLSCAN_API_KEY`, `FOFA_KEY` (or `FOFA_API_KEY`), `FOFA_EMAIL`, `WHOISXML_API_KEY`,
-`PDNS_USERNAME` + `PDNS_PASSWORD` (passive DNS, optional `PDNS_URL`).
+`PDNS_USERNAME` + `PDNS_PASSWORD` (passive DNS, optional `PDNS_URL`), and — for IPPivot —
+`IPINFO_TOKEN` (richer IPinfo ASN/abuse) and `SHODAN_KEY` (host ports/services). Both optional.
 With keys set, the tool runs the HIGH-confidence pivots live — FOFA reverses the favicon
 `icon_hash` and tracker/verification bodies, authenticated urlscan content-searches the same
 values, and WhoisXML adds current + historical registrant data plus reverse-WHOIS pivots — all
@@ -137,6 +138,37 @@ python3 "$WP/tools/pivot_extract.py" https://spa.example --render --leads
 python3 "$WP/tools/pivot_extract.py" saved_page.html --pretty
 curl -s https://x.example | python3 "$WP/tools/pivot_extract.py" -
 ```
+
+## Two pivot modes — domainPivot & IPPivot (exhaust both)
+`pivot_extract.py` auto-detects its input, so ONE engine covers both halves of the infrastructure:
+
+- **domainPivot** — a URL / hostname / HTML file → the page-content flow above (favicon, trackers,
+  wallets, WHOIS, TLS, FOFA `body=`/subdomain, …).
+- **IPPivot** — a **bare IP** (`1.2.3.4`, `[2001:db8::1]`) → a **passive** IP-recon flow
+  (`tools/wp_ippivot.py`). Never touches the target: everything is an index read or a
+  recursive-resolver query.
+
+```bash
+python3 "$WP/tools/pivot_extract.py" 203.0.113.7 --leads          # passive IP recon
+python3 "$WP/tools/pivot_extract.py" 203.0.113.7 --pretty -o "$CASE/raw/203.0.113.7.json"
+```
+Per IP it pulls: **IPinfo.io** (ASN, org, PTR hostname, geo, hosting flags, abuse contact);
+**classify_ip** (CDN/cloud edge vs origin candidate); **FOFA `ip="…"`** (open ports, service
+banners, co-hosted domains); **Shodan host** (only if `SHODAN_KEY` set); **dig/nslookup** for
+**PTR, MX, NS, TXT** (mail servers, mail domains, SPF/DMARC). It emits the same `pivots` schema
+(so `--report`/`--master`/`--misp` and KB ingest all work unchanged):
+- **origin-candidate IP** → a HIGH `ip` pivot; its co-hosted domains (FOFA reverse) are
+  same-operator leads. Plus `ip:ports`, `ip:asn`, `ip:ptr` (distinctive reverse-DNS),
+  `ip:mx` (self-hosted mail — not a managed provider).
+- **noise provider** (shared CDN/cloud edge, or an ASN flagged in
+  `references/asn_registry.json`) → **NOT** a same-operator pivot: recorded as `ip:information`,
+  and the provider's ASN + abuse contact is banked to `asn_registry.json` for later enrichment /
+  takedown routing. The registry stores **generic provider facts only** — never a target IP or case.
+
+Chain the two modes: a domain run's live IP → feed that IP back through IPPivot; an IPPivot
+co-hosted domain → feed it back through domainPivot. Optional keys: `IPINFO_TOKEN` (richer IPinfo:
+structured ASN + abuse), `SHODAN_KEY` (host ports/services). All optional — the flow degrades
+gracefully to keyless IPinfo + FOFA + system `dig`.
 
 **Crawl the site, not just the landing page — `--crawl`.** By default the tool analyzes a
 single page. Add `--crawl [MAXPAGES]` to also follow the site's **navigation / tabs / panels**

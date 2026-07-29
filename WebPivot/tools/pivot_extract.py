@@ -82,12 +82,91 @@ from wp_pivots import *  # noqa
 from wp_analyze import *  # noqa
 from wp_crawl import *  # noqa
 import wp_extract  # noqa  (for the QR toggle set in main)
+import wp_ippivot  # noqa  (IPPivot: bare-IP source runs passive IP recon instead of HTML)
 from wp_analyze import _is_distinctive_basename, _resource_filename_for  # noqa: kept for external tests
+
+
+def _emit_result(result, args, src):
+    """Shared output path for a finished result (domain OR IP): master ledger, ICD-203 report,
+    MISP bundle, and the JSON / --leads stdout. Kept identical across both modes so IP and domain
+    evidence land in one case with one schema."""
+    if args.report is not None or args.master is not None or args.misp is not None:
+        import evidence_report
+
+    # --- append this run's pivots to the master evidence ledger (for evidence folders) ---
+    if args.master is not None:
+        # Bare --master + --case → drop the ledger into that case's evidence folder,
+        # matching the project's cases/<case>/… convention. An explicit path is honored.
+        master_path = args.master
+        if args.case and master_path == "evidence/master_pivots.csv":
+            master_path = os.path.join("cases", args.case, "evidence", "master_pivots.csv")
+        try:
+            summ = evidence_report.append_master(
+                result, path=master_path, case=args.case, source_file=args.out or src)
+            tgt = summ.get("xlsx") or summ["csv"]
+            print(f"[+] master ledger: {tgt} "
+                  f"(+{summ['rows_added']} new, {summ['rows_updated']} updated, "
+                  f"{summ['rows_total']} total rows)", file=sys.stderr)
+            if summ["xlsx_requested"] and not summ["xlsx_written"]:
+                print("    (xlsx skipped: openpyxl not installed — wrote CSV instead: "
+                      f"{summ['csv']})", file=sys.stderr)
+        except Exception as e:
+            print(f"[!] master ledger failed: {e}", file=sys.stderr)
+
+    # --- finished-intelligence assessment (CIA analytic tradecraft) ---
+    # A bare --report (const True) prints to stdout; --report PATH writes a file.
+    report_md, print_report = None, (args.report is True)
+    if args.report is not None:
+        try:
+            report_md = evidence_report.render_cia_report(
+                result, case=args.case, classification=args.classification,
+                analyst=args.analyst)
+            if isinstance(args.report, str):
+                with open(args.report, "w", encoding="utf-8") as f:
+                    f.write(report_md)
+                print(f"[+] wrote intelligence assessment -> {args.report}", file=sys.stderr)
+        except Exception as e:
+            print(f"[!] report generation failed: {e}", file=sys.stderr)
+            print_report = False
+
+    # --- MISP IOC bundle (shareable) ---
+    if args.misp is not None:
+        misp_path = (args.misp if isinstance(args.misp, str)
+                     else (re.sub(r"\.json$", "", args.out) + ".misp.json" if args.out
+                           else (result["meta"].get("host") or "iocs") + ".misp.json"))
+        try:
+            event = evidence_report.render_misp_event(
+                result, event_info=(f"WebPivot IOCs — {args.case}" if args.case
+                                    else f"WebPivot IOCs — {result['meta'].get('host','')}"))
+            with open(misp_path, "w", encoding="utf-8") as f:
+                json.dump(event, f, indent=2, ensure_ascii=False)
+            result.setdefault("archives", {})["misp"] = misp_path
+            print(f"[+] wrote MISP IOC bundle ({len(event['Event']['Attribute'])} attributes) "
+                  f"-> {misp_path}", file=sys.stderr)
+        except Exception as e:
+            print(f"[!] MISP export failed: {e}", file=sys.stderr)
+
+    # Persist the JSON whenever -o is given — independent of --leads. (--leads used to return
+    # before this, silently dropping the -o file.)
+    out = None
+    if args.out or not (args.leads or print_report):
+        out = json.dumps(result, indent=2 if args.pretty else None, ensure_ascii=False)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write(out)
+        print(f"wrote {args.out} ({len(result['pivots'])} pivots)", file=sys.stderr)
+
+    if print_report:
+        print(report_md)
+    elif args.leads:
+        print(render_leads(result))
+    elif not args.out:
+        print(out)
 
 
 def main():
     ap = argparse.ArgumentParser(description="WebPivot — extract OSINT pivot artifacts from a page.")
-    ap.add_argument("source", help="URL, local HTML file, or '-' for stdin")
+    ap.add_argument("source", help="URL, IP address, local HTML file, or '-' for stdin")
     ap.add_argument("--render", action="store_true", help="render post-JS DOM via Playwright")
     ap.add_argument("--leads", action="store_true", help="print ranked pivot leads (markdown) instead of JSON")
     ap.add_argument("--pretty", action="store_true", help="pretty-print JSON")
@@ -208,6 +287,16 @@ def main():
     intel = None
     redirects = []  # redirect hops from the seed fetch (URL branch only)
     seed_ua, seed_proxy = DEFAULT_UA, None  # only used on the URL branch; reset there
+
+    # --- IPPivot: a bare IP source runs PASSIVE IP recon (IPinfo/FOFA/Shodan/dig), not HTML. ---
+    ip_target = wp_ippivot.ip_mode_target(src)
+    if ip_target:
+        print(f"[+] IPPivot mode: passive recon on {ip_target} "
+              f"(IPinfo · FOFA ip= · dig/nslookup{' · Shodan' if _secret('SHODAN_KEY','SHODAN_API_KEY') else ''})",
+              file=sys.stderr)
+        result = wp_ippivot.build_ip_result(ip_target, args, fofa_full=args.fofa_full)
+        _emit_result(result, args, ip_target)
+        return
 
     if src == "-":
         html = sys.stdin.read()
@@ -476,77 +565,7 @@ def main():
         print(f"    urlscan: {u.get('result') or u.get('error') or u.get('skipped')}", file=sys.stderr)
         result.setdefault("archives", {}).update(archives)   # keep any screenshot key
 
-    if args.report is not None or args.master is not None or args.misp is not None:
-        import evidence_report
-
-    # --- append this run's pivots to the master evidence ledger (for evidence folders) ---
-    if args.master is not None:
-        # Bare --master + --case → drop the ledger into that case's evidence folder,
-        # matching the project's cases/<case>/… convention. An explicit path is honored.
-        master_path = args.master
-        if args.case and master_path == "evidence/master_pivots.csv":
-            master_path = os.path.join("cases", args.case, "evidence", "master_pivots.csv")
-        try:
-            summ = evidence_report.append_master(
-                result, path=master_path, case=args.case, source_file=args.out or src)
-            tgt = summ.get("xlsx") or summ["csv"]
-            print(f"[+] master ledger: {tgt} "
-                  f"(+{summ['rows_added']} new, {summ['rows_updated']} updated, "
-                  f"{summ['rows_total']} total rows)", file=sys.stderr)
-            if summ["xlsx_requested"] and not summ["xlsx_written"]:
-                print("    (xlsx skipped: openpyxl not installed — wrote CSV instead: "
-                      f"{summ['csv']})", file=sys.stderr)
-        except Exception as e:
-            print(f"[!] master ledger failed: {e}", file=sys.stderr)
-
-    # --- finished-intelligence assessment (CIA analytic tradecraft) ---
-    # A bare --report (const True) prints to stdout; --report PATH writes a file.
-    report_md, print_report = None, (args.report is True)
-    if args.report is not None:
-        try:
-            report_md = evidence_report.render_cia_report(
-                result, case=args.case, classification=args.classification,
-                analyst=args.analyst)
-            if isinstance(args.report, str):
-                with open(args.report, "w", encoding="utf-8") as f:
-                    f.write(report_md)
-                print(f"[+] wrote intelligence assessment -> {args.report}", file=sys.stderr)
-        except Exception as e:
-            print(f"[!] report generation failed: {e}", file=sys.stderr)
-            print_report = False
-
-    # --- MISP IOC bundle (shareable) ---
-    if args.misp is not None:
-        misp_path = (args.misp if isinstance(args.misp, str)
-                     else (re.sub(r"\.json$", "", args.out) + ".misp.json" if args.out
-                           else (result["meta"].get("host") or "iocs") + ".misp.json"))
-        try:
-            event = evidence_report.render_misp_event(
-                result, event_info=(f"WebPivot IOCs — {args.case}" if args.case
-                                    else f"WebPivot IOCs — {result['meta'].get('host','')}"))
-            with open(misp_path, "w", encoding="utf-8") as f:
-                json.dump(event, f, indent=2, ensure_ascii=False)
-            result.setdefault("archives", {})["misp"] = misp_path
-            print(f"[+] wrote MISP IOC bundle ({len(event['Event']['Attribute'])} attributes) "
-                  f"-> {misp_path}", file=sys.stderr)
-        except Exception as e:
-            print(f"[!] MISP export failed: {e}", file=sys.stderr)
-
-    # Persist the JSON whenever -o is given — independent of --leads. (--leads used to return
-    # before this, silently dropping the -o file.)
-    if args.out or not (args.leads or print_report):
-        out = json.dumps(result, indent=2 if args.pretty else None, ensure_ascii=False)
-    if args.out:
-        with open(args.out, "w", encoding="utf-8") as f:
-            f.write(out)
-        print(f"wrote {args.out} ({len(result['pivots'])} pivots)", file=sys.stderr)
-
-    if print_report:
-        print(report_md)
-    elif args.leads:
-        print(render_leads(result))
-    elif not args.out:
-        print(out)
+    _emit_result(result, args, src)
 
 
 if __name__ == "__main__":

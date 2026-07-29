@@ -76,6 +76,9 @@ on cold seeds.
 ## 5. Passive DNS / shared IP / shared infra
 | Service | Cost | API |
 |---|---|---|
+| **IPinfo.io** — ASN, org, PTR hostname, geo, hosting/privacy flags, abuse contact | Free tier (richer with token) | REST, `IPINFO_TOKEN` |
+| **FOFA** `ip="<ip>"` — open ports, service banners, co-hosted domains (passive) | Freemium | REST, `FOFA_KEY` |
+| **Shodan** host — ports, services, hostnames | Paid (host API needs key) | REST, `SHODAN_KEY` |
 | **Validin** — DNS + certs + favicon + response-body hashes, one graph | **Free community + free API** | REST, free key ⭐ standout |
 | **SecurityTrails** — passive DNS, subdomains, reverse-IP, WHOIS history | Freemium (50/mo) | REST, key |
 | **DNSlytics** — reverse-IP, shared hosting, DNS history | Freemium | REST, key |
@@ -83,6 +86,13 @@ on cold seeds.
 | **Netlas** — DNS + host responses | Freemium | REST, key |
 | **Silent Push** — infra pivots, live scans, attack clustering | Mostly paid + community | REST, key |
 | **HackerTarget** — reverse IP / DNS | Free (limited) + paid | REST |
+
+**IPPivot noise control** — WebPivot's `wp_ippivot.py` classifies each IP as an *origin candidate*
+(reverse-IP co-tenants = same-operator leads) or *noise* (shared CDN/cloud edge / bulk hosting,
+where reverse-IP returns unrelated tenants). Noise providers are skipped as pivots but their ASN +
+abuse contact is banked to `references/asn_registry.json` (generic provider facts only) for later
+enrichment and takedown routing. A bare IP into `pivot_extract.py` runs this passive flow
+(IPinfo + FOFA `ip=` + Shodan + `dig` MX/NS/TXT/PTR) — never a packet to the target.
 
 ## 6. URL/page scan & historical DOM
 | Service | Cost | API |

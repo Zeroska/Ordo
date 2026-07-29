@@ -204,6 +204,18 @@ future collections that hit a `signal` fingerprint or an attributed domain resol
 
 ---
 
+## Cost per run
+
+- **Interactive (this skill / Claude Code):** the model can't read its own spend — run **`/cost`**
+  to see the Anthropic model cost of the session/run.
+- **Headless (`harness/orchestrator.py`, Agent SDK):** each run prints per-phase + total
+  `total_cost_usd` and appends a line to **`cases/<CASE>/run_cost.jsonl`** — sum that file for the
+  case's model cost over time.
+- **Not included either way:** FOFA / WhoisXML / urlscan / IPinfo / Shodan **API credits**.
+  `pivot_extract.py` and the other CLIs make **zero** Anthropic calls themselves (they're pure
+  Python + third-party APIs); their cost is provider credits, tracked in each provider's console —
+  never fold that into `total_cost_usd`.
+
 ## Phase ↔ tool map (parity with `harness/orchestrator.py`)
 
 | Phase / step | This skill runs | SDK-harness counterpart |
