@@ -16,6 +16,7 @@
 # from a subdir) is ALSO ignored — but re-include the shippable eval golden-set fixtures.
 cases/
 knowledge/
+knowledge_scratch/
 !tools/eval/cases/
 !tools/eval/cases/**
 # stray per-investigation artifacts that live OUTSIDE cases/ (target lists, host dumps)

@@ -17,6 +17,14 @@ Confidence = how strongly a shared value implies **same operator**.
 | **Yandex Metrika / Hotjar / Matomo / Mixpanel / Sentry DSN / Clarity / Intercom / Crisp / Segment** | vendor JS | Medium-High | PublicWWW / NerdyData source search; Sentry DSN reveals internal host | ✅ `trackers.*` |
 | **Crypto wallet (BTC/ETH/XMR/TRON/LTC)** | body text, JS, `href` | Medium | blockchain explorers, Chainabuse, Arkham/Breadcrumbs clustering, PublicWWW | ✅ `crypto.*` |
 | **Contact / registrant email** | mailto, body, JSON-LD | Medium | reverse-WHOIS (ViewDNS/WhoisXML), Epieos, hunter.io, urlscan | ✅ `emails` |
+| **Contact phone** | `tel:` href, footer/body text | Medium | PublicWWW/urlscan source search, reverse-WHOIS (phone), WhatsApp/Telegram/Zalo | ✅ `phones` |
+| **Telegram channel / group-invite** | `t.me/…`, `tg://` links | Medium-High | PublicWWW, urlscan, search; invite links (`t.me/+…`) are operator-run groups | ✅ `telegram[]` |
+| **Google Doc / Sheet / Form / Drive / Slides ID** | `docs.google.com/…`, `forms.gle`, `drive.google.com/…` | **High** | PublicWWW, urlscan, NerdyData — operator-owned backend; often publicly readable | ✅ `saas_ids.google_*` |
+| **Footer postal address** | `<footer>` text | Medium | PublicWWW/urlscan/Google verbatim source search — a distinctive registered address is copied across an operator's sites | ✅ `footer.addresses` |
+| **Footer copyright / company** | `<footer>` text | Low-Medium | source search a distinctive company string | ✅ `footer.copyright` |
+| **Page description** | `<meta description>` / `og:description` | Low | PublicWWW/NerdyData verbatim search → template/operator reuse | ✅ `description` |
+| **ETag** | response header | Low | strong ETag on the same asset path elsewhere → shared origin/kit (corroborate) | ✅ `etag` / `server_headers.etag` |
+| **Registrant phone / address** | WHOIS (current + history) | Medium | reverse-WHOIS by phone/address (WhoisXML/ViewDNS) — ties sites sharing no technical artifact | ✅ `whois.*` + `whois:registrant_phone/address` pivots |
 | **Social handles** | outbound links | Medium | platform search, cross-account correlation | ✅ `socials.*` |
 | **Third-party / non-CDN hosts** | script src, hrefs | Low-Medium | crt.sh, SecurityTrails, DNSlytics, Validin | ✅ `third_party_hosts` |
 | **Inline-script SHA-256** | `<script>` bodies | Medium | match identical inline scripts across scans (kit code) | ✅ `inline_script_sha256` |

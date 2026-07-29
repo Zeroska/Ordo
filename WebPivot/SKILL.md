@@ -1,6 +1,6 @@
 ---
 name: WebPivot
-description: Website content & DOM analysis for OSINT and cybercrime investigation — extracts pivot artifacts (favicon mmh3 hash, tracking/analytics IDs, crypto wallets, emails, third-party infra, template/DOM fingerprints) from a page's HTML/DOM and produces ready-to-run pivot queries (Shodan, PublicWWW, crt.sh, urlscan, Validin, Chainabuse). USE WHEN analyze website, analyze HTML, analyze DOM, page analysis, find pivot, pivoting point, pivot artifact, favicon hash, tracking ID, analytics ID, GA GTM pixel, reverse analytics, cluster sites, campaign clustering, phishing kit, scam site, infrastructure link, source code search, who owns this site, related domains, threat infrastructure.
+description: Website content & DOM analysis for OSINT and cybercrime investigation — extracts pivot artifacts (favicon mmh3 hash, tracking/analytics IDs, crypto wallets, emails, contact phones, Telegram channels/invites, Google Doc/Sheet/Form/Drive IDs, footer postal address, page description, ETag, WHOIS registrant name/org/phone/email/dates, third-party infra, template/DOM fingerprints) from a page's HTML/DOM and produces ready-to-run pivot queries (Shodan, PublicWWW, crt.sh, urlscan, Validin, Chainabuse). USE WHEN analyze website, analyze HTML, analyze DOM, page analysis, find pivot, pivoting point, pivot artifact, favicon hash, tracking ID, analytics ID, GA GTM pixel, reverse analytics, phone number, telegram channel, google sheet, google form, footer address, whois registrant, cluster sites, campaign clustering, phishing kit, scam site, infrastructure link, source code search, who owns this site, related domains, threat infrastructure.
 ---
 
 > **OPSEC — this skill is portable/shared. Never write case data into it.** No real operator
@@ -250,11 +250,15 @@ it falls back to an unverified read and still yields the fingerprint + DER-scann
   (`services.tls.certificates.leaf_data.fingerprint_sha256`), Validin, and crt.sh to find
   **every host serving the exact same certificate**.
 
-**crt.sh CT / SSL search — resilient, wildcard-aware.** Live enrichment runs a
-certificate-transparency search on the base domain via `crtsh_search()`. It queries **both**
-`%.<domain>` (subdomains) **and** the apex `identity`, and — because crt.sh's `?q=` endpoint
-frequently returns nginx **502s** — falls back to the more stable `?identity=` form
-(`_crtsh_fetch`) so a CT lookup no longer silently fails. The result carries, per logged
+**CT / SSL search — two indexes merged, resilient, wildcard-aware.** Live enrichment runs a
+certificate-transparency search on the base domain via `ct_search()`, which queries **both crt.sh
+and Shodan's keyless CTL mirror** (`ctl.shodan.io/api/v1/domain/<d>` + `/hostnames`) concurrently
+and unions the results. crt.sh queries **both** `%.<domain>` (subdomains) **and** the apex
+`identity`, and — because crt.sh's `?q=` endpoint frequently returns nginx **502s** — falls back to
+the more stable `?identity=` form (`_crtsh_fetch`); when crt.sh is down entirely, Shodan CTL still
+returns the subdomains + certs, so a CT lookup no longer silently fails. Shodan's `/hostnames`
+endpoint enumerates every logged hostname directly and each cert's `san_dns_names` exposes
+**SAN-sibling domains** (a different registrable domain on the same cert = strong same-owner link). The result carries, per logged
 certificate, the **issuer + validity window + serial**, and flags any **wildcard cert**
 (`*.<domain>`) separately (`wildcards` field) — one wildcard cert can cover many sibling hosts,
 so it's a broad-scope-reuse signal worth pivoting. Shown inline in `--leads` (cert timeline +
@@ -397,6 +401,6 @@ same state every time.
 ## Notes on artifact reliability (2025-2026)
 
 - **GA `UA-` IDs are historical** (Universal Analytics shut down Jul 2023). Live analytics artifacts are GA4 `G-` and `GTM-`.
-- **crt.sh is frequently overloaded** — keep Certspotter / Censys as CT fallbacks.
+- **crt.sh is frequently overloaded** — `ct_search` auto-covers it with the keyless **Shodan CTL** mirror (`ctl.shodan.io`); Certspotter / Censys remain further CT fallbacks.
 - **Validin** is the current standout free/low-cost infra-pivot engine (DNS + certs + favicon + response-body hashes in one graph).
 - **Chainabuse** (absorbed Bitcoinabuse) is the primary free crypto-scam reporting DB with a real public API.
