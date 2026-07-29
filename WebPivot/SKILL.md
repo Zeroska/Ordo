@@ -342,7 +342,8 @@ not raw JSON — plus evidence ledger (`--master`), IOC bundle (`--misp`), evide
 2. **Extract** — run `pivot_extract.py`; get structured artifacts + ranked pivots.
 3. **Pivot** — run the emitted queries against the services in `references/PivotServices.md`. Start with HIGH-confidence artifacts (favicon hash, shared tracker IDs) — they most reliably reveal same-operator infrastructure.
 4. **Corroborate** — a single shared artifact is a lead, not proof. Confirm a cluster with ≥2 independent artifacts (e.g. same favicon **and** same GA4 ID) before asserting common ownership.
-5. **Record** — capture artifact values + the confirming pivots for the graph (hand off to the `IntelGraph` skill for a relationship diagram).
+5. **Record** — capture artifact values + the confirming pivots for the graph (**invoke the `IntelGraph` skill** for a relationship diagram).
+6. **Correlate (hand off)** — for anything past a single host — a cluster, a "same operator?" question, an attribution call — **invoke the `IntelAnalysis` skill**. It reads the KB you just ingested and runs the judgment layer (triage → cluster → attribute → calibrate confidence → next pivot). A WebPivot run that stops at raw pivots is collection without judgment; the analysis is a separate skill and does not start unless you invoke it.
 
 ## Output contract — every run lands in the case (do not skip)
 
@@ -357,7 +358,8 @@ page analyzed, produce all three, in order:
    python3 tools/kb/ingest_webpivot.py --kb knowledge "$CASE"/raw/*.json
    ```
    This is what makes IntelAnalysis able to reason over the run. A run that isn't ingested
-   is invisible to correlation.
+   is invisible to correlation — **so once the seeds are ingested, invoke the `IntelAnalysis`
+   skill to correlate and attribute** (step 6 of the flow above). Don't end at raw pivots.
 3. **Confirmed** with `query.py --shared` so the cluster seeds are recorded, not just implied:
    ```bash
    python3 tools/kb/query.py --kb knowledge --shared --min 2

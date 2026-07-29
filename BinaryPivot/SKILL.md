@@ -102,8 +102,8 @@ a URL) so the artifact anchors onto the site that served it.
 2. **Acquire + extract.** Run `analyze_artifact.py <url>` from non-attributable egress. Save the
    file (`--keep`) and the JSON (`-o "$CASE/raw/<host>.json"`).
 3. **Pivot the identifiers.** Start with the signing cert (Koodous `cert:`), then package name,
-   Firebase project, then each embedded backend host — hand those hosts back to **WebPivot**
-   (`pivot_extract.py https://<backend-host> --leads`) to map their web infrastructure.
+   Firebase project, then each embedded backend host — **invoke the `WebPivot` skill** on those
+   hosts (`pivot_extract.py https://<backend-host> --leads`) to map their web infrastructure.
 4. **Corroborate + cluster.** Ingest into the KB; a shared signing cert **and** a shared backend host
    between two apps (or an app and a website) is high-confidence common ownership.
 5. **Report at the cluster level.** Roll the app + its web siblings into one assessment with WebPivot's

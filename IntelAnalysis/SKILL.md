@@ -44,8 +44,8 @@ they are not inside this skill folder, so `cd` to the project root first (`cd "$
      summarize it in the reply. Re-running an assessment overwrites the same path.
   2. When your judgment changes a rating, the **updated confidence back into the store** (so the
      next run inherits it), keeping provenance.
-  3. Optional but recommended: hand the `case_graph.json` to `IntelGraph` and drop the rendered
-     `network.html` beside the report in `knowledge/reports/<case>/`.
+  3. Optional but recommended: **invoke the `IntelGraph` skill** on the `case_graph.json` and drop
+     the rendered `network.html` beside the report in `knowledge/reports/<case>/`.
 
 ## Method
 
