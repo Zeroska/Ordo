@@ -126,6 +126,10 @@ def main():
                     help="run FOFA reverses over ALL historical data (full=true) instead of the "
                          "default ~1-year window — catches favicon/tracker assets later scrubbed. "
                          "Needs a FOFA tier that permits full/historical search.")
+    ap.add_argument("--fofa-keyword", action="append", default=None, metavar="STR",
+                    help="high-value HTML string/phrase (from IntelAnalysis) to reverse via FOFA "
+                         "body=\"...\" — repeatable; each becomes a HIGH keyword pivot and, with a "
+                         "FOFA key, is searched live. The IntelAnalysis → WebPivot HTML-search chain.")
     ap.add_argument("--no-whois", action="store_true",
                     help="do NOT run WhoisXML enrichment even if WHOISXML_API_KEY is set")
     ap.add_argument("--whois-reverse", action="store_true",
@@ -160,7 +164,8 @@ def main():
     ap.add_argument("--classification", default="UNCLASSIFIED//FOR OFFICIAL USE ONLY",
                     help="classification banner printed at the top and bottom of the report")
     ap.add_argument("--analyst", default=None,
-                    help="analyst name/handle stamped on the intelligence assessment header")
+                    help="accepted for backward compat but IGNORED — the analyst name is never "
+                         "stamped on a deliverable (opsec / attribution leak)")
     ap.add_argument("--decode-qr", action="store_true",
                     help="decode QR-code IMAGES from pixels (fetches candidate <img>/data-URIs; "
                          "needs pyzbar+Pillow or OpenCV). The zero-dep decode of QR-generator-service "
@@ -356,6 +361,13 @@ def main():
         result.setdefault("artifacts", {})["affiliate_codes"] = codes
         result["pivots"].extend(build_affiliate_pivots(codes))
         sort_pivots(result["pivots"])
+
+    # Analyst-supplied high-value HTML strings → FOFA body-search pivots (the IntelAnalysis chain).
+    if args.fofa_keyword:
+        kw_pivots = build_keyword_pivots(args.fofa_keyword)
+        if kw_pivots:
+            result["pivots"].extend(kw_pivots)
+            sort_pivots(result["pivots"])
 
     if live_error:
         result["meta"]["live_error"] = live_error

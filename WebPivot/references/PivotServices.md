@@ -31,11 +31,25 @@ Helper tools that build cross-engine queries: `favihunter`, `favihash`, osint.sh
 ⚠️ GA `UA-` shut down Jul 2023 — historical only. Live: `G-` (GA4), `GTM-`. FB Pixel has no dedicated reverse service → use PublicWWW / urlscan.
 
 ## 3. Source-code / HTML string search
-| Service | Cost | API |
-|---|---|---|
-| **PublicWWW** — literal HTML/JS/CSS string | Freemium | REST, key |
-| **NerdyData** — source + company data | Paid (trial) | REST, key |
-| **Intelligence X** (intelx.io) — code/tracker selectors, bundles AnalyzeID GA/AdSense tabs | Freemium | REST, key |
+| Service | Query | Cost | API |
+|---|---|---|---|
+| **FOFA** — served-HTML body | `body="<literal string>"` | Freemium | REST, key |
+| **PublicWWW** — literal HTML/JS/CSS string | the string | Freemium | REST, key |
+| **NerdyData** — source + company data | the string | Paid (trial) | REST, key |
+| **Intelligence X** (intelx.io) — code/tracker selectors, bundles AnalyzeID GA/AdSense tabs | the string | Freemium | REST, key |
+
+**FOFA `body=` is the HTML-search pivot** — when IntelAnalysis flags a high-value keyword/phrase
+(a slogan, brand string, distinctive class/template literal), reverse it with `body="<phrase>"`
+(combine with `&&`, e.g. `body="a" && body="b"`) to find every host serving that HTML. It often
+beats PublicWWW on freshly-registered domains FOFA has crawled but PublicWWW hasn't indexed.
+`pivot_extract` auto-emits a FOFA `body=` query for every HTML-string artifact (verification /
+tracker / description / footer / SaaS id) and takes analyst keywords via `--fofa-keyword "<phrase>"`
+(repeatable) — searched live when a `FOFA_KEY` is set.
+
+**Unique subdomain label** (e.g. `svc-a.site-a.example`) — a distinctive, non-generic leftmost label is
+an operator naming convention. Reverse it across other apexes: FOFA `host="<label>."`, crt.sh
+`<label>.%`, Shodan `ssl.cert.subject.CN:"<label>"` / `hostname:"<label>"`, Shodan CTL / Censys
+`names: <label>.*`. `pivot_extract` emits this as a `subdomain` pivot automatically.
 
 ## 4. Certificate Transparency
 | Service | Query | Cost | API |

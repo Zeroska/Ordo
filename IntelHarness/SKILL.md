@@ -117,6 +117,23 @@ python3 tools/kb/reference.py --kb "${HARNESS_KB:-knowledge}" check <hash-or-key
 4. **A cert whose SAN list covers two otherwise-unrelated domains is near-decisive same-owner.**
 5. **State the competing explanation you ruled out** — that's what makes an attribution defensible.
 
+### Chain further: high-value HTML string / unique subdomain → FOFA body & CT
+When correlation surfaces a **distinctive HTML string** (a slogan, brand phrase, unique class or
+template literal — the kind of thing `IntelAnalysis` calls out as high-value) or a **unique
+subdomain label**, feed it straight back into collection as a new search — this is how a case grows
+past its seed set:
+```bash
+# HTML-string pivot — FOFA body-searches the served HTML for every host running the same page
+python3 WebPivot/tools/pivot_extract.py <url> --fofa-keyword "<distinctive phrase>" \
+    --fofa-keyword "<second phrase>" --pretty -o cases/<CASE>/raw/<host>.json
+# unique subdomain label (e.g. svc-a.site-a.example) is auto-emitted as a `subdomain` pivot with
+#   FOFA host="<label>." · crt.sh <label>.% · Shodan ssl.cert.subject.CN/hostname · Censys names:<label>.*
+```
+`pivot_extract` already auto-emits a FOFA `body=` query for every HTML-string artifact and runs the
+keyword/subdomain reverse **live** when a `FOFA_KEY` is set. Collect the new hosts (Phase 1),
+re-ingest, and re-correlate — repeat until convergence. Prefer FOFA `body=` / CT over PublicWWW on
+**freshly-registered** domains PublicWWW hasn't indexed yet.
+
 ---
 
 ## Phase 3 — ASSESS  (write it, then version it)

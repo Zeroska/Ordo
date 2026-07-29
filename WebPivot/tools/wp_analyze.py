@@ -475,8 +475,12 @@ def enrich_live(result: dict, fofa_full: bool = False) -> dict:
             fofa_q = None
             if kind == "favicon_hash":
                 fofa_q = f'icon_hash="{val}"'
-            elif kind.startswith(("tracker:", "verification:")):
-                fofa_q = f'body="{val}"'
+            elif kind.startswith(("tracker:", "verification:")) or kind == "keyword":
+                # keyword = analyst-flagged high-value HTML string (the IntelAnalysis chain)
+                fofa_q = _fofa_body(str(val))
+            elif kind == "subdomain":
+                # distinctive subdomain label — reverse the same label across other apexes
+                fofa_q = _fofa_host(str(val))
             if fofa_q and have_fofa:
                 f = fofa_search(fofa_q, full=fofa_full)
                 if f is not None:

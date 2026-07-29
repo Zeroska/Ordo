@@ -16,7 +16,7 @@ operator's real identity. Run this, and lead with its BLUF + Key Judgments + Con
 
 ```bash
 # THE cluster deliverable — every host + binary in the case, one ICD-203 assessment
-python3 tools/evidence_report.py cases/<case>/raw/*.json --case <name> --analyst <you> \
+python3 tools/evidence_report.py cases/<case>/raw/*.json --case <name> \
     -o cases/<case>/assessment.md
 # share-ready IOC bundle for the whole cluster
 python3 tools/evidence_report.py cases/<case>/raw/*.json --case <name> \
@@ -35,16 +35,17 @@ intelligence-gaps section.
 
 ### Per host — `--report`
 ```bash
-python3 tools/pivot_extract.py <host> --report [PATH] --case <name> --analyst <you>
+python3 tools/pivot_extract.py <host> --report [PATH] --case <name>
 ```
-Bare `--report` prints to stdout; `--report PATH` writes a file. Registrar-privacy emails, CDN
+Bare `--report` prints to stdout; `--report PATH` writes a file. **Reports never carry an analyst
+name** (opsec — that's an attribution leak); the header stamps only Subject / Case / **Date (UTC)**. Registrar-privacy emails, CDN
 edge IPs and boilerplate are **suppressed before any Key Judgment** (disclosed in a
 "suppressed as noise" line); when the host is CDN/cloud-fronted the BLUF caveats that the hosting
 IP has low attribution value.
 
 ### Whole case (cluster) — the campaign deliverable
 ```bash
-python3 tools/evidence_report.py cases/<case>/raw/*.json --case <name> --analyst <you> \
+python3 tools/evidence_report.py cases/<case>/raw/*.json --case <name> \
     -o cases/<case>/assessment.md
 ```
 Rolls ALL hosts into **one** ICD-203 assessment: BLUF verdict, cluster **Key Judgments** (hosts
@@ -56,7 +57,8 @@ PDNS — not in the input set; DNS-provider nameservers and verification tokens 
 per-host facts table, and a **Suppressed-as-Noise** transparency block.
 
 `intel.py open` writes this to `cases/<case>/assessment.md` automatically (`--no-report` to skip;
-`--analyst` / `--classification` to stamp it). Present the BLUF + Key Judgments to the user (table
+`--classification` to set the banner). The report header shows **Date (UTC)** and never an analyst
+name. Present the BLUF + Key Judgments to the user (table
 / verdict / estimative wording) — never end a run by pasting raw pivot JSON.
 
 ## Court-ready evidence ledger — `--master`

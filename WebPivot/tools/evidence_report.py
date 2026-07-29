@@ -153,8 +153,7 @@ def render_cia_report(result: dict,
     if case:
         subject.append(f"**Case:** {case}")
     subject.append(f"**Date (UTC):** {_utc_now()}")
-    if analyst:
-        subject.append(f"**Analyst:** {analyst}")
+    # OPSEC: the analyst name is deliberately NOT stamped on the deliverable (attribution leak).
     L.append("  |  ".join(subject))
     L.append("")
 
@@ -501,8 +500,7 @@ def render_cluster_report(results: list,
     if case:
         subj.append(f"**Case:** {case}")
     subj.append(f"**Date (UTC):** {_utc_now()}")
-    if analyst:
-        subj.append(f"**Analyst:** {analyst}")
+    # OPSEC: the analyst name is deliberately NOT stamped on the deliverable (attribution leak).
     L += ["  |  ".join(subj), ""]
 
     confirmed = [c for c in subclusters if len(c["types"]) >= 2]
@@ -831,7 +829,9 @@ def main():
     ap.add_argument("--misp", metavar="PATH",
                     help="write a MISP-event IOC bundle (JSON) instead of a Markdown report")
     ap.add_argument("--case", default=None)
-    ap.add_argument("--analyst", default=None)
+    ap.add_argument("--analyst", default=None,
+                    help="accepted for backward compat but IGNORED — the analyst name is never "
+                         "stamped on a deliverable (opsec / attribution leak)")
     ap.add_argument("--classification", default="UNCLASSIFIED//FOR OFFICIAL USE ONLY")
     ap.add_argument("-o", "--out", help="write the Markdown assessment here (else stdout)")
     a = ap.parse_args()

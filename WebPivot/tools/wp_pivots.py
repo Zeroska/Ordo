@@ -115,11 +115,93 @@ def build_affiliate_pivots(codes):
         })
     return pivots
 
+def _fofa_body(s: str) -> str:
+    """Build a FOFA HTML-body query for a literal string: `body="<s>"`.
+
+    FOFA indexes served HTML, so a distinctive HTML/JS/CSS string (verification token, footer
+    copy, page description, SaaS id, a slogan the analyst flagged) reverses to every host serving
+    it — often a better index than PublicWWW for freshly-stood-up NRDs. Embedded double quotes are
+    escaped so the query stays well-formed."""
+    return 'body="%s"' % s.replace('"', '\\"')
+
+
+def _fofa_host(label: str) -> str:
+    """Build a FOFA hostname query for a subdomain label: `host="<label>."`.
+
+    The trailing dot biases the match toward the label being a subdomain boundary (`<label>.apex`)
+    rather than an arbitrary substring. Embedded double quotes are escaped."""
+    return 'host="%s."' % label.replace('"', '\\"')
+
+
+def build_keyword_pivots(keywords):
+    """Turn analyst-supplied high-value keywords/phrases into FOFA-body HTML-search pivots.
+
+    This is the IntelAnalysis → WebPivot handoff: when the analyst flags a distinctive HTML
+    string (a slogan, brand phrase, unique class/template literal), each one becomes a HIGH
+    `keyword` pivot whose primary query is FOFA `body="..."` — reverse the served HTML to find
+    every other host running the same page — corroborated by PublicWWW / urlscan / NerdyData.
+    """
+    pivots, seen = [], set()
+    for kw in keywords or []:
+        kw = (kw or "").strip()
+        if not kw or kw.lower() in seen:
+            continue
+        seen.add(kw.lower())
+        pivots.append({
+            "kind": "keyword", "value": kw, "confidence": "high",
+            "note": ("High-value HTML string flagged by the analyst. FOFA body-searches the served "
+                     "HTML for every host running the same page — chain: new hosts → re-extract."),
+            "queries": [
+                {"service": "FOFA", "query": _fofa_body(kw)},
+                {"service": "PublicWWW", "query": f'"{kw}"'},
+                {"service": "urlscan.io", "query": f'"{kw}"'},
+                {"service": "NerdyData", "query": f'"{kw}"'},
+            ],
+        })
+    return pivots
+
+
 def sort_pivots(pivots: list) -> list:
     """Sort pivots high→medium→low confidence in place, returning the same list."""
     order = {"high": 0, "medium": 1, "low": 2}
     pivots.sort(key=lambda p: order.get(p.get("confidence"), 3))
     return pivots
+
+
+# Subdomain labels that are generic infrastructure/service names — a shared one clusters nothing,
+# so they are NOT treated as a distinctive same-operator signal.
+_GENERIC_SUBLABELS = {
+    "www", "www2", "www3", "web", "m", "mobile", "wap", "amp", "api", "api2", "app", "apps",
+    "mail", "email", "webmail", "smtp", "imap", "pop", "pop3", "mx", "mx1", "mx2", "autodiscover",
+    "autoconfig", "ns", "ns1", "ns2", "ns3", "ns4", "dns", "cpanel", "whm", "webdisk", "ftp",
+    "sftp", "cdn", "cdn1", "cdn2", "static", "assets", "img", "images", "media", "js", "css",
+    "files", "download", "downloads", "dl", "admin", "portal", "dashboard", "panel", "my",
+    "account", "accounts", "login", "signin", "sso", "auth", "secure", "vpn", "remote", "gw",
+    "gateway", "proxy", "blog", "news", "shop", "store", "support", "help", "docs", "wiki",
+    "status", "stats", "test", "dev", "staging", "stage", "uat", "demo", "beta", "sandbox",
+    "local", "localhost", "go", "link", "links", "l", "t", "track", "click", "e", "c", "s",
+    "server", "host", "vps", "cloud", "edge", "origin",
+}
+
+
+def _distinctive_subdomain(host: str):
+    """Return the leftmost subdomain LABEL of `host` when it's a distinctive (non-generic) name.
+
+    A distinctive subdomain label (e.g. `svc-a` in `svc-a.site-a.example`) is reused across an
+    operator's apexes as a naming convention — its own reverse-lookup pivot. Returns None for a
+    bare apex, a `www.`/generic-service host, a purely-numeric label, or a very short label.
+    """
+    h = strip_www(host or "").strip(".").lower()
+    if not h:
+        return None
+    labels = h.split(".")
+    # need at least sub.apex.tld (or sub.apex for a ccSLD-agnostic best effort)
+    if len(labels) < 3:
+        return None
+    label = labels[0]
+    if len(label) < 4 or label.isdigit() or label in _GENERIC_SUBLABELS:
+        return None
+    return label
 
 def build_pivots(art: dict, base_host: str):
     """Turn artifacts into ranked, ready-to-run pivot leads."""
@@ -222,6 +304,7 @@ def build_pivots(art: dict, base_host: str):
     for label, token in art.get("verifications", {}).items():
         add(f"verification:{label}", token, "high", [
             {"service": "PublicWWW", "query": f'"{token}"'},
+            {"service": "FOFA", "query": _fofa_body(token)},
             {"service": "urlscan.io", "query": f'"{token}"'},
             {"service": "NerdyData", "query": f'"{token}"'},
         ], "Ownership-verification token reused across the owner's other domains.")
@@ -230,6 +313,7 @@ def build_pivots(art: dict, base_host: str):
         for v in vals:
             add(f"tracker:{label}", v, "high", [
                 {"service": "PublicWWW", "query": f'"{v}"'},
+                {"service": "FOFA", "query": _fofa_body(v)},
                 {"service": "SpyOnWeb", "query": v},
                 {"service": "DNSlytics reverse-analytics", "query": v},
                 {"service": "urlscan.io", "query": f'page.url:* AND "{v}"'},
@@ -244,6 +328,7 @@ def build_pivots(art: dict, base_host: str):
         for v in vals:
             add(f"saas:{label}", v, conf, [
                 {"service": "PublicWWW", "query": f'"{v}"'},
+                {"service": "FOFA", "query": _fofa_body(v)},
                 {"service": "urlscan.io", "query": f'"{v}"'},
                 {"service": "NerdyData", "query": f'"{v}"'},
                 {"service": "Google/Bing", "query": f'"{v}"'},
@@ -340,6 +425,7 @@ def build_pivots(art: dict, base_host: str):
     for addr in footer.get("addresses", []):
         add("footer:address", addr, "medium", [
             {"service": "PublicWWW", "query": f'"{addr}"'},
+            {"service": "FOFA", "query": _fofa_body(addr)},
             {"service": "urlscan.io", "query": f'"{addr}"'},
             {"service": "Google/Bing", "query": f'"{addr}"'},
         ], "Postal address in the footer. A distinctive registered address is copied verbatim "
@@ -348,6 +434,7 @@ def build_pivots(art: dict, base_host: str):
         co = footer["copyright"]
         add("footer:copyright", co, "low", [
             {"service": "PublicWWW", "query": f'"{co}"'},
+            {"service": "FOFA", "query": _fofa_body(co)},
             {"service": "Google/Bing", "query": f'"{co}"'},
         ], "Footer copyright / company string — a distinctive name can tie sibling sites.")
 
@@ -356,6 +443,7 @@ def build_pivots(art: dict, base_host: str):
         snippet = desc[:80]
         add("description", snippet, "low", [
             {"service": "PublicWWW", "query": f'"{snippet}"'},
+            {"service": "FOFA", "query": _fofa_body(snippet)},
             {"service": "NerdyData", "query": f'"{snippet}"'},
             {"service": "Google/Bing", "query": f'"{snippet}"'},
         ], "Page description copy. Verbatim reuse across domains = shared template/operator.")
@@ -383,6 +471,19 @@ def build_pivots(art: dict, base_host: str):
             {"service": "Wayback CDX", "query": f"http://web.archive.org/cdx/search/cdx?url={base_host}*&output=json&collapse=urlkey"},
             {"service": "ViewDNS reverse-IP", "query": base_host},
         ], "Certificate transparency + passive DNS for related hosts.")
+
+        # A distinctive subdomain LABEL (e.g. `svc-a` in svc-a.site-a.example) is an operator naming
+        # convention reused across their apexes — its own reverse pivot via FOFA host / CT logs.
+        sub = _distinctive_subdomain(base_host)
+        if sub:
+            add("subdomain", sub, "medium", [
+                {"service": "FOFA", "query": _fofa_host(sub)},
+                {"service": "crt.sh", "query": f"https://crt.sh/?q={sub}.%25"},
+                {"service": "Shodan (CT)", "query": f'ssl.cert.subject.CN:"{sub}" OR hostname:"{sub}"'},
+                {"service": "Shodan CTL / Censys", "query": f"names: {sub}.*"},
+            ], f"Distinctive subdomain label '{sub}' — an operator's naming convention. The same "
+               f"label under other apexes (FOFA host / crt.sh label search / Shodan CT logs) is a "
+               f"same-operator lead; corroborate with a second artifact before clustering.")
 
     return sort_pivots(pivots)
 
