@@ -247,6 +247,19 @@ def urlscan_intel(host: str, ua: str = DEFAULT_UA, limit: int = 20):
     out["asns"] = sorted(asns)[:20]
     out["servers"] = sorted(servers)[:20]
     out["recent_scans"] = out["recent_scans"][:limit]
+    # urlscan verdict/brand (Pro returns richer data; best-effort from the most recent scan) →
+    # feeds risk_signals triage. Absent on results without a verdict.
+    for res in data.get("results", []):
+        ver = res.get("verdicts") or {}
+        ov = ver.get("overall") or {}
+        brands = [b.get("name") for b in (res.get("brands") or ver.get("brands") or [])
+                  if isinstance(b, dict) and b.get("name")]
+        if ov or brands:
+            out["verdict"] = {"score": ov.get("score"), "malicious": ov.get("malicious"),
+                              "brands": brands,
+                              "categories": ov.get("categories") or res.get("categories") or [],
+                              "result": f"https://urlscan.io/result/{res.get('_id')}/"}
+            break
     return out
 
 def urlscan_dom(intel: dict, ua: str = DEFAULT_UA, timeout: int = 30):
@@ -305,13 +318,20 @@ def wayback_save(url: str, ua: str = DEFAULT_UA, timeout: int = 40):
     except Exception as e:
         return {"error": str(e)}
 
-def urlscan_submit(url: str, timeout: int = 30, visibility: str = "unlisted"):
+def urlscan_submit(url: str, timeout: int = 30, visibility: str = None):
     """Submit a URL to urlscan.io for a fresh scan (needs URLSCAN_API_KEY). Returns the
     api/result URLs + scan UUID, or an error/'no key'. This actively enqueues a new scan
-    (vs urlscan_search/urlscan_intel which only read existing scans)."""
+    (vs urlscan_search/urlscan_intel which only read existing scans).
+
+    OPSEC: visibility defaults to `URLSCAN_VISIBILITY` env if set, else 'unlisted'. On a **Pro**
+    key set `URLSCAN_VISIBILITY=private` — a private scan of hostile infra is team-only and never
+    appears in the public feed, so the operator can't discover that you scanned them. (On the free
+    tier 'private' is rejected; 'unlisted' is the safe default.)"""
     key = _secret("URLSCAN_API_KEY")
     if not key:
         return {"skipped": "no URLSCAN_API_KEY"}
+    if visibility is None:
+        visibility = _secret("URLSCAN_VISIBILITY") or "unlisted"
     try:
         payload = json.dumps({"url": url, "visibility": visibility}).encode()
         if HAVE_REQUESTS:

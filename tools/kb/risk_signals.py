@@ -118,6 +118,17 @@ def _money(whois, artifacts, ref):
     return trail
 
 
+def _verdict(raw):
+    """urlscan verdict/brand (from urlscan_intel; richer on a Pro key) as a triage signal.
+    Returns {'present','malicious','score','brands'} — a LEAD (external scanner opinion), not proof."""
+    v = (raw.get("related_urlscan") or {}).get("verdict") or {}
+    if not v:
+        return {"present": False, "malicious": False, "score": None, "brands": []}
+    return {"present": True, "malicious": bool(v.get("malicious")),
+            "score": v.get("score"), "brands": v.get("brands") or [],
+            "categories": v.get("categories") or []}
+
+
 def score_domain(raw, today=None, ref=None):
     """Score one pivot-extract JSON dict. Returns structured flags (no exceptions)."""
     ref = ref or _load_ref()
@@ -129,6 +140,7 @@ def score_domain(raw, today=None, ref=None):
     nrd = _nrd(whois, ref, today)
     bph = _bph(whois, artifacts, pivots, ref)
     money = _money(whois, artifacts, ref)
+    verdict = _verdict(raw)
     # a compact escalation verdict
     escalate = []
     if nrd["tier"] in ("critical", "high"):
@@ -137,12 +149,17 @@ def score_domain(raw, today=None, ref=None):
         escalate.append("BPH")
     if money["payment_funnel"]:
         escalate.append("payment-funnel")
+    if verdict["malicious"] or (isinstance(verdict["score"], (int, float)) and verdict["score"]):
+        escalate.append("urlscan-malicious")
+    if verdict["brands"]:
+        escalate.append("brand:" + ",".join(verdict["brands"][:2]))
     return {"host": host, "nrd": nrd, "bph": bph, "money": money,
-            "escalate": escalate}
+            "verdict": verdict, "escalate": escalate}
 
 
 def _fmt(s):
     n, b, m = s["nrd"], s["bph"], s["money"]
+    v = s.get("verdict") or {}
     age = f"{n['age_days']}d" if n["age_days"] is not None else "age?"
     line = [f"  {s['host']}"]
     line.append(f"NRD={n['tier']}({age})")
@@ -154,6 +171,10 @@ def _fmt(s):
         line.append(f"contact={','.join(m['contact_channels'])}")
     if m["payment_funnel"]:
         line.append("⚠PAYMENT-FUNNEL")
+    if v.get("malicious") or v.get("score"):
+        line.append(f"urlscan={v.get('score') if v.get('score') is not None else 'malicious'}")
+    if v.get("brands"):
+        line.append(f"brand={','.join(v['brands'][:2])}")
     return "  ".join(line)
 
 

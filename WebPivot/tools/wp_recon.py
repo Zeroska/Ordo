@@ -66,30 +66,94 @@ def fofa_search(query: str, size: int = 100,
     rows = [dict(zip(cols, row)) for row in data.get("results", [])]
     return {"query": query, "total": data.get("size", len(rows)), "results": rows}
 
-def urlscan_search(query: str, limit: int = 100, timeout: int = 30):
+def urlscan_search(query: str, limit: int = 100, timeout: int = 30, max_results: int = None):
     """Authenticated urlscan.io search for an arbitrary query (content/tracker/token).
 
-    Sends the API-Key header when URLSCAN_API_KEY is set — that unlocks the
-    content-index searches that anonymous search returns empty. Returns
-    {'query','total','domains':[...]} or {'error':...}.
-    """
+    Sends the API-Key header when URLSCAN_API_KEY is set — that unlocks the content-index searches
+    anonymous search returns empty, higher rate limits, and (on Pro) the full result window. With a
+    key this **paginates via `search_after`** to pull far more than one page — free/keyless returns
+    a single page. Returns {'query','total','domains':[...],'pages'} or {'error':...}.
+
+    max_results caps how many domains to accumulate (default 1000 with a key, 100 keyless)."""
     headers = {"User-Agent": DEFAULT_UA}
     key = _secret("URLSCAN_API_KEY")
     if key:
         headers["API-Key"] = key
-    api = f"https://urlscan.io/api/v1/search/?q={quote(query)}&size={limit}"
+    if max_results is None:
+        max_results = 1000 if key else limit
+    doms, seen, total, search_after, pages = [], set(), None, None, 0
+    while len(doms) < max_results and pages < 20:
+        pages += 1
+        size = min(100, max_results - len(doms))
+        api = f"https://urlscan.io/api/v1/search/?q={quote(query)}&size={size}"
+        if search_after:
+            api += f"&search_after={quote(search_after)}"
+        try:
+            req = urllib.request.Request(api, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = json.load(r)
+        except Exception as e:
+            if doms:
+                break                       # keep the partial page(s) already gathered
+            return {"query": query, "error": str(e)}
+        results = data.get("results", []) or []
+        if not results:
+            break
+        total = data.get("total", total)
+        for res in results:
+            d = res.get("page", {}).get("domain")
+            if d and d not in seen:
+                seen.add(d)
+                doms.append(d)
+        if not data.get("has_more"):
+            break
+        sort = results[-1].get("sort")         # cursor for the next page
+        if not sort:
+            break
+        search_after = ",".join(str(x) for x in sort)
+    return {"query": query, "total": total if total is not None else len(doms),
+            "domains": doms[:max_results], "pages": pages}
+
+
+def urlscan_similar(host: str, timeout: int = 30, limit: int = 60):
+    """urlscan **Pro** 'Similar' — pages structurally like the host's latest scan (DOM structure),
+    clustering re-skinned kits even when favicon/analytics/wallet all differ.
+
+    Needs a Pro URLSCAN_API_KEY (the /pro/ endpoint 402/403s on the free tier). Returns
+    {'uuid','similar_domains':[...]} or {'skipped':...}/{'error':...} — always safe to call; a
+    non-Pro key just degrades to skipped. Two steps: find the host's most recent scan UUID, then
+    ask urlscan for structurally-similar results."""
+    key = _secret("URLSCAN_API_KEY")
+    if not key:
+        return {"skipped": "no URLSCAN_API_KEY"}
+    headers = {"User-Agent": DEFAULT_UA, "API-Key": key}
+    # 1) most-recent scan uuid for the host
     try:
-        req = urllib.request.Request(api, headers=headers)
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            data = json.load(r)
+        api = f"https://urlscan.io/api/v1/search/?q=page.domain:{quote(host)}&size=1"
+        with urllib.request.urlopen(urllib.request.Request(api, headers=headers), timeout=timeout) as r:
+            hits = (json.load(r).get("results") or [])
     except Exception as e:
-        return {"query": query, "error": str(e)}
+        return {"error": str(e)}
+    uuid = (hits[0].get("_id") if hits else None)
+    if not uuid:
+        return {"skipped": "no prior urlscan scan for host"}
+    # 2) structurally-similar pages (Pro-only endpoint)
+    try:
+        api = f"https://urlscan.io/api/v1/pro/result/{uuid}/similar/"
+        with urllib.request.urlopen(urllib.request.Request(api, headers=headers), timeout=timeout) as r:
+            data = json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 402, 403):
+            return {"skipped": "urlscan similarity needs a Pro key", "uuid": uuid}
+        return {"error": f"HTTP {e.code}", "uuid": uuid}
+    except Exception as e:
+        return {"error": str(e), "uuid": uuid}
     doms = []
-    for res in data.get("results", []):
-        d = res.get("page", {}).get("domain")
-        if d and d not in doms:
+    for res in (data.get("results") or data.get("similar") or []):
+        d = (res.get("page") or {}).get("domain") if isinstance(res, dict) else None
+        if d and d != host and d not in doms:
             doms.append(d)
-    return {"query": query, "total": data.get("total", len(doms)), "domains": doms[:60]}
+    return {"uuid": uuid, "similar_domains": doms[:limit]}
 
 
 # --- SAN extension OID (2.5.29.17) as DER: OBJECT IDENTIFIER, len 3, 55 1D 11 ------

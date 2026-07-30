@@ -21,6 +21,10 @@ environment first, then from a `chmod 600` `.env` in the customization dir (env 
 Recognized: `URLSCAN_API_KEY`, `FOFA_KEY` (or `FOFA_API_KEY`), `FOFA_EMAIL`, `WHOISXML_API_KEY`,
 `PDNS_USERNAME` + `PDNS_PASSWORD` (passive DNS, optional `PDNS_URL`), and — for IPPivot —
 `IPINFO_TOKEN` (richer IPinfo ASN/abuse) and `SHODAN_KEY` (host ports/services). Both optional.
+`URLSCAN_VISIBILITY` — set to `private` with a **urlscan Pro** key so submitted scans of hostile
+infra stay team-only (never in the public feed); defaults to `unlisted`. A Pro key also auto-enables
+`search_after` pagination (far more siblings per reverse), the **structure-similarity** pivot
+(clusters re-skinned kits), and urlscan **verdict/brand** capture (feeds `risk_signals`).
 With keys set, the tool runs the HIGH-confidence pivots live — FOFA reverses the favicon
 `icon_hash` and tracker/verification bodies, authenticated urlscan content-searches the same
 values, and WhoisXML adds current + historical registrant data plus reverse-WHOIS pivots — all

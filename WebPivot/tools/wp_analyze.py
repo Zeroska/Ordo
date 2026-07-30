@@ -433,7 +433,10 @@ def enrich_live(result: dict, fofa_full: bool = False) -> dict:
                     "urlscan": lambda: urlscan_search(f"domain:{val}")}
             if have_pdns:
                 jobs["pdns"] = lambda: pdns_search(val)   # CIRCL-COF passive DNS (historical IPs + co-hosted names)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+            if have_urlscan:
+                # urlscan Pro structure-similarity: clusters re-skinned kits (no-op/skipped on free)
+                jobs["urlscan_similar"] = lambda: urlscan_similar(val)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
                 futures = {k: ex.submit(fn) for k, fn in jobs.items()}
                 lr = {k: fu.result() for k, fu in futures.items()}
             # Anchor pivots to the LIVE IP: reverse-search FOFA on what DNS resolves to

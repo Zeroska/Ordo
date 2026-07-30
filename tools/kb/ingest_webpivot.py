@@ -465,7 +465,20 @@ def ingest_file(kb, path):
     # --- resolved IPs: domain hosted_on ip:<ip> (+ hosting time window) — links domain ↔ IP box ---
     for piv in d.get("pivots") or []:
         if piv.get("kind") == "domain":
-            n += _resolved_ip_edges(kb, host, piv.get("live_results") or {}, observed, ev)
+            lr = piv.get("live_results") or {}
+            n += _resolved_ip_edges(kb, host, lr, observed, ev)
+            # urlscan Pro structure-similarity → cluster re-skinned kits on a structure:<host> anchor
+            sim = (lr.get("urlscan_similar") or {}).get("similar_domains") or []
+            if sim:
+                ind = f"structure:{host}"
+                kb.add_edge("domain", host, "similar_structure", "indicator", ind,
+                            "urlscan", "webpivot/urlscan", observed, "medium", ev)
+                for sd in sim:
+                    nd = _norm_domain(sd)
+                    if nd and nd != host and not _is_ip_host(nd):
+                        kb.add_edge("domain", nd, "similar_structure", "indicator", ind,
+                                    "urlscan", "webpivot/urlscan", observed, "medium", ev)
+                        n += 1
             break
     return n
 
