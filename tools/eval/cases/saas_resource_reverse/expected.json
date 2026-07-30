@@ -3,12 +3,12 @@
   "input": "input.html",
   "expect_artifacts": {
     "script_srcs": [
-      "https://plugin-code.salesmartly.com/js/project_767893_793428_1783053448.js",
+      "https://plugin-code.salesmartly.com/js/project_100000000_200000000_300000000.js",
       "https://www.googletagmanager.com/gtm.js?id=GTM-TEST"
     ]
   },
   "expect_pivots": [
     {"kind": "tracker:google_tag_manager", "value": "GTM-TEST"},
-    {"kind": "email", "value": "hotro@momo.vn"}
+    {"kind": "email", "value": "support@example.com"}
   ]
 }

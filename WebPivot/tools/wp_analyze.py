@@ -440,7 +440,7 @@ _GENERIC_SEGMENTS = {
 
 def _is_distinctive_basename(base: str) -> bool:
     """A resource basename worth a urlscan filename: reverse — one carrying a build
-    hash or long token in ANY dot-segment (project_767893_793428_1783053448.js,
+    hash or long token in ANY dot-segment (project_100000000_200000000_300000000.js,
     index-B3GD2NjP.js, app.7f3c9a2b.chunk.js), not a generic library/entrypoint
     name (gtm.js, app.js, jquery.min.js, bootstrap.bundle.min.js, style.css).
 

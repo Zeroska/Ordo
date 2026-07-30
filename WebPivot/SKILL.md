@@ -39,7 +39,7 @@ often the better index than FOFA for freshly-stood-up domains FOFA hasn't crawle
 - **saas token / third-party host** → resource-**filename** search (`filename:<basename>`). SaaS
   tokens and 3rd-party infra live inside a loaded resource URL, not page text, so urlscan indexes
   them by filename. The tool picks the **distinctive** external script tied to that host/token
-  (a build-hash/long-token basename like `project_767893_793428_1783053448.js` — never a generic
+  (a build-hash/long-token basename like `project_100000000_200000000_300000000.js` — never a generic
   `gtm.js`/`jquery.min.js` or the seed's own asset) and records it as `live_results.urlscan.reversed_resource`.
   *(Inline-script SHA-256s are intentionally NOT reversed — inline scripts aren't fetched resources,
   so urlscan doesn't index them.)* This is what clusters siblings sharing one chat/SaaS account.
