@@ -419,6 +419,7 @@ def _persist_clusters(entries: list[tuple], case: str, table_md: str) -> None:
             f.write(render.render_markdown(a, table_md if i == 1 else ""))
         with open(os.path.join(snap_dir, base + ".json"), "w", encoding="utf-8") as f:
             f.write(a.model_dump_json(indent=2))
+        _render_deliverables(case, os.path.join(snap_dir, base + ".md"), a)  # figure built once, reused
         bluf = (a.bluf or "").replace("\n", " ")
         roll.append(f"## Cluster {i} — {a.attribution_level}/{a.confidence} "
                     f"({len(a.cluster or [])} domains) · [snapshot](assessments/{base}.md)\n{bluf}\n")
@@ -589,7 +590,84 @@ def _persist_assessment(assessment: Assessment, case: str, table_md: str) -> dic
     with open(changelog, "a", encoding="utf-8") as f:
         f.write(f"- {stamp} · r{rnd} · {assessment.attribution_level}/{assessment.confidence} · "
                 f"{n_dom} in cluster · {bluf}\n")
-    return {"round": rnd, "snapshot_md": snap_md, "summary": summary, "changelog": changelog}
+    deliv = _render_deliverables(case, snap_md, assessment)
+    return {"round": rnd, "snapshot_md": snap_md, "summary": summary, "changelog": changelog, **deliv}
+
+
+# --------------------------------------------------------------- deliverables (figure + PDF/DOCX)
+def _ensure_case_diagram(case: str, title: str) -> str | None:
+    """Best-effort editable relationship diagram for the case. Builds
+    cases/<case>/report/case_graph.json from the case's raw pivot JSON, then renders an
+    editable Mermaid PNG/SVG via IntelGraph. Staleness-guarded so the parallel path doesn't
+    rebuild it once per cluster. Returns the hi-res PNG path, or None if there's nothing to
+    graph or the render is unavailable (missing mmdc/headless Chrome). Never raises."""
+    case_dir = os.path.join(ROOT, "cases", case)
+    rep_dir = os.path.join(case_dir, "report")
+    os.makedirs(rep_dir, exist_ok=True)
+    fig = os.path.join(rep_dir, "case_diagram_hires.png")
+    raw = glob.glob(os.path.join(case_dir, "raw", "*.json"))
+    if not raw:
+        return None
+    # reuse if the figure is newer than the newest collected pivot
+    if os.path.exists(fig) and os.path.getmtime(fig) >= max(os.path.getmtime(p) for p in raw):
+        return fig
+    graph_json = os.path.join(rep_dir, "case_graph.json")
+    gb = subprocess.run([sys.executable, os.path.join("WebPivot", "tools", "graph_build.py"),
+                         *raw, "-o", graph_json], cwd=ROOT, capture_output=True, text=True)
+    if gb.returncode != 0 or not os.path.exists(graph_json):
+        _log(f" deliverables: graph build skipped ({(gb.stderr or gb.stdout or '').strip()[:120]})")
+        return None
+    gd = subprocess.run([sys.executable, os.path.join("IntelGraph", "scripts", "graph_to_diagram.py"),
+                         graph_json, os.path.join(rep_dir, "case_diagram"),
+                         "--title", (title or case)[:80], "--legend"],
+                        cwd=ROOT, capture_output=True, text=True)
+    if gd.returncode != 0 or not os.path.exists(fig):
+        _log(f" deliverables: diagram skipped ({(gd.stderr or gd.stdout or '').strip()[:120]})")
+        return None
+    return fig
+
+
+def _render_deliverables(case: str, snap_md: str, assessment: Assessment) -> dict:
+    """After an assessment snapshot is written, auto-emit the case deliverables: an editable
+    relationship diagram (PNG/SVG) and a polished PDF+DOCX (IntelReport). Best-effort — a
+    missing browser (mmdc) or pandoc only logs a warning; the case never fails on it. Set
+    HARNESS_DELIVERABLES=0 to skip, HARNESS_TLP to set the classification (default TLP:AMBER)."""
+    if os.environ.get("HARNESS_DELIVERABLES") == "0":
+        return {}
+    case_dir = os.path.join(ROOT, "cases", case)
+    rep_dir = os.path.join(case_dir, "report")
+    base = os.path.splitext(os.path.basename(snap_md))[0]
+    title = (assessment.bluf or case).replace("\n", " ").strip()
+    out: dict = {}
+
+    fig = _ensure_case_diagram(case, title)
+    if fig:
+        out["diagram"] = fig
+
+    # report markdown = frontmatter (title/case/classification) + assessment body + figure
+    os.makedirs(rep_dir, exist_ok=True)
+    report_md = os.path.join(rep_dir, base + ".md")
+    tlp = os.environ.get("HARNESS_TLP", "TLP:AMBER")
+    fm = ["---", 'title: "%s"' % title[:120].replace('"', "'"),
+          "case_id: %s" % case, "classification: %s" % tlp, "---", ""]
+    parts = ["\n".join(fm), render.render_markdown(assessment, "")]
+    if fig:
+        parts += ["\n## Relationship graph\n",
+                  "![%s — clustered relationship graph](%s)\n" % (case, os.path.basename(fig))]
+    with open(report_md, "w", encoding="utf-8") as f:
+        f.write("\n".join(parts) + "\n")
+
+    stem = os.path.join(rep_dir, base)
+    rr = subprocess.run([sys.executable, os.path.join("IntelReport", "scripts", "render_report.py"),
+                         report_md, stem, "--case-id", case], cwd=ROOT, capture_output=True, text=True)
+    if rr.returncode == 0:
+        for ext in ("pdf", "docx"):
+            if os.path.exists(f"{stem}.{ext}"):
+                out[ext] = f"{stem}.{ext}"
+        _log(f" deliverables · {rep_dir}/{base}.pdf + .docx" + (" + diagram" if fig else " (no diagram)"))
+    else:
+        _log(f" deliverables: report skipped ({(rr.stderr or rr.stdout or '').strip()[:120]})")
+    return out
 
 
 if __name__ == "__main__":

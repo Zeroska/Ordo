@@ -159,6 +159,28 @@ python3 tools/case_store.py snapshot <CASE> --assessment /tmp/<CASE>_assessment.
 Every run appends `assessments/<UTC>_r<n>.{md,json}` — **nothing is overwritten**; `SUMMARY.md` is the
 current head. Show the BLUF + attribution/confidence + the evidence trail (full, unshortened URLs).
 
+### Deliverables — auto-emit the figure + PDF/DOCX
+
+Right after the snapshot, produce the shareable deliverables so a finished case ships with a
+relationship figure and a polished report (the SDK's `_render_deliverables` does this
+deterministically; here you call the two MCP tools). Both are best-effort — skip on a missing
+`mmdc`/headless Chrome or `pandoc`, don't fail the case:
+
+1. **Editable relationship diagram** — build the case graph, then `render_diagram`:
+   ```bash
+   python3 WebPivot/tools/graph_build.py cases/<CASE>/raw/*.json -o cases/<CASE>/report/case_graph.json
+   ```
+   then call the **`render_diagram`** MCP tool (`graph_json=cases/<CASE>/report/case_graph.json`,
+   `stem=cases/<CASE>/report/case_diagram`, `legend=true`) → editable `.mmd` + PNG/SVG.
+2. **Report PDF + DOCX** — reference the figure from the snapshot markdown (add a
+   `## Relationship graph` + `![...](case_diagram_hires.png)` section, and a YAML frontmatter
+   block with `title` / `case_id: <CASE>` / `classification`), then call the **`render_report`**
+   MCP tool (`markdown=<that md>`, `stem=cases/<CASE>/report/<UTC>_r<n>`, `case_id=<CASE>`) →
+   `report/<...>.pdf` + `.docx`. No analyst name is stamped; the date defaults to UTC today.
+
+Deliverables land in `cases/<CASE>/report/` (figure + report md + PDF/DOCX in one dir so the
+image path resolves). See the **IntelGraph** and **IntelReport** skills for detail.
+
 ---
 
 ## Iterate to convergence (optional, for expanding cases)
@@ -233,6 +255,7 @@ future collections that hit a `signal` fingerprint or an attributed domain resol
 | correlate | `query.py --cluster --strong`/`--entity`, `cert_overlap.py`, `reference.py check`, `risk_signals.py` | Correlate phase tools |
 | cross-case | `case_index.py` | `which_cases` |
 | assess + version | write JSON → `case_store.py snapshot` | schema-forced `Assessment` + `_persist_assessment` |
+| deliverables | `graph_build.py` → `render_diagram` + `render_report` tools | `_render_deliverables` (auto, best-effort) |
 | evidence manifest | `case_store.py manifest` | `_append_manifest` |
 | converge | `convergence.py snapshot/status` | `--continue` loop |
 | scale | `query.py --components` + per-cluster judge | `--parallel` / `run_case_parallel` |
