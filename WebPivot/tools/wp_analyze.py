@@ -41,7 +41,8 @@ except Exception:
     HAVE_WHOIS = False
 
 def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
-            extra_cookies=None, proxy: str = None, probe_tls: bool = True):
+            extra_cookies=None, proxy: str = None, probe_tls: bool = True,
+            probe_http: bool = True):
     # Unwrap Wayback/archive wrappers so the *original* site is treated as the origin.
     effective_url = unwrap_wayback(base_url) if base_url else ""
     is_archived = bool(base_url) and effective_url != base_url
@@ -145,6 +146,18 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
             else:
                 tls_cert = fetch_tls_cert(parsed.hostname, parsed.port or 443, timeout=8)
 
+    # --- CORS policy (which origins/backends the server trusts) ---
+    # Passive read of any ACAO already on the fetched response, then — for a live origin —
+    # an active preflight+GET carrying a foreign Origin to see what the server reflects.
+    # Unlike the raw-socket TLS probe this routes through fetch(), so a --proxy is honored;
+    # still gated to live http(s) (never archived/offline) and only on the primary page
+    # (probe_http=False on crawled sub-pages) to avoid an extra request per page.
+    cors = extract_cors(headers)
+    if probe_http and effective_url and not is_archived:
+        parsed = urlparse(effective_url)
+        if parsed.scheme in ("http", "https") and parsed.hostname:
+            cors = merge_cors(cors, probe_cors(effective_url, ua=ua, proxy=proxy, timeout=12))
+
     # --- app-download artifacts (scam trading-app / APK funnels) ---
     app_downloads = extract_app_downloads(html, base_url)
     # Android App Links: /.well-known/assetlinks.json → package + APK signing-cert sha256
@@ -217,6 +230,15 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
                            ("server", "x-powered-by", "via", "x-served-by", "etag",
                             "content-security-policy", "strict-transport-security")
                            if k in headers},
+        "cors": cors,
+        # Full HTTP request/response for the fetched page — the request headers we sent
+        # (UA + client hints) and every response header (minus the synthetic _status),
+        # so the analyst can read the raw exchange and spot CORS/backend tells directly.
+        "http": {
+            "status": headers.get("_status"),
+            "request_headers": _browser_headers(ua),
+            "response_headers": {k: v for k, v in headers.items() if k != "_status"},
+        },
     }
 
     pivots = build_pivots(artifacts, self_host)
@@ -252,6 +274,18 @@ def render_leads(result: dict) -> str:
         lines.append(f"> 🔳 QR images detected but not decoded: {len(qr['undecoded_images'])} "
                      f"(re-run with --decode-qr).")
     if qr.get("payloads") or qr.get("undecoded_images"):
+        lines.append("")
+    cors = (result.get("artifacts") or {}).get("cors") or {}
+    if cors.get("acao"):
+        _hosts = cors.get("allowed_origin_hosts") or []
+        _verdict = ("reflects any Origin" if cors.get("reflects_origin")
+                    else "public (*)" if cors.get("wildcard")
+                    else f"trusts {', '.join(_hosts)}" if _hosts else cors["acao"])
+        _cred = " +credentials" if cors.get("credentials") else ""
+        lines.append(f"> 🔗 CORS: ACAO {_verdict}{_cred}"
+                     + (" — trusted origins become cors_allowed_origin pivots below." if _hosts else "")
+                     + (" ⚠️ reflect-any + credentials misconfig." if cors.get("reflects_origin")
+                        and cors.get("credentials") else ""))
         lines.append("")
     if m.get("cloudflare"):
         lines.append(f"> 🛡️ Cloudflare {m['cloudflare']} detected — a UA swap won't pass a managed "

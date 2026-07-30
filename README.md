@@ -18,7 +18,7 @@ You can drive it three ways — a **one-command CLI**, **conversationally inside
 > 🔒 **Shared tool — keep it clean (OPSEC).** More than one analyst uses this kit. The committed
 > skills contain **only synthetic placeholders** (`site-a.example`, `com.example.app`, `CASE-0001`) —
 > never real case names, domains, operators, IPs, wallets, or tokens. Your investigation data lives
-> in `cases/` and `knowledge/`, which are **git-ignored** and must never be committed. See **§8**.
+> in `cases/` and `knowledge/`, which are **git-ignored** and must never be committed. See **§9**.
 
 ---
 
@@ -26,13 +26,14 @@ You can drive it three ways — a **one-command CLI**, **conversationally inside
 
 ### The skills (type `/<name>` in Claude Code once registered)
 
-| Skill | Folder | What it does |
-|---|---|---|
-| **WebPivot** | `WebPivot/` | **Web collector.** Pulls pivot artifacts from a page — favicon hash, tracking/analytics IDs, WHOIS, crypto wallets, TLS cert, SaaS/no-code operator tokens, contact phone, Telegram, footer address — and emits ready-to-run pivot queries (Shodan, PublicWWW, crt.sh, urlscan…). Flags APK / desktop-installer download funnels. |
-| **BinaryPivot** | `BinaryPivot/` | **File collector.** Static IOC extraction from the binary a scam site serves (APK / `.exe` / `.dmg` / `.msi`): file hash, APK signing-cert, package, embedded backend/C2 hosts, Firebase tenant, wallets. Emits WebPivot-shaped JSON so the app clusters with the web infra. |
-| **IntelAnalysis** | `IntelAnalysis/` | **Analyst.** Correlates, attributes (same-kit / same-operator / same-actor), calibrates confidence, and decides the next pivot. Reasons over the KB — it does not collect. |
-| **IntelGraph** | `IntelGraph/` | **Visualizer.** Charts, timelines, Gantt, and clustered interactive network graphs from the case data. |
-| **IntelHarness** | `IntelHarness/` | **Case runner (in Claude Code).** Drives the whole Collect → Correlate → Assess pipeline over one or many seeds from your subscription — evidence archiving, versioned assessments, convergence, cluster-level judgment. The conversational front-end to the harness. |
+| Skill | Folder | Role | What it does |
+|---|---|---|---|
+| **WebPivot** | `WebPivot/` | **Web collector** | Pulls pivot artifacts from a page — favicon hash, tracking/analytics IDs, WHOIS, crypto wallets, TLS cert, **CORS-trusted backend/API origins**, full HTTP request/response, SaaS/no-code operator tokens, contact phone, Telegram, footer address — and emits ready-to-run pivot queries (Shodan, PublicWWW, crt.sh, urlscan…). Flags APK / desktop-installer download funnels. |
+| **BinaryPivot** | `BinaryPivot/` | **File collector** | Static IOC extraction from the binary a scam site serves (APK / `.exe` / `.dmg` / `.msi`): file hash, APK signing-cert, package, embedded backend/C2 hosts, Firebase tenant, wallets. Emits **WebPivot-shaped JSON** so the app clusters with the web infra. |
+| **IntelAnalysis** | `IntelAnalysis/` | **Analyst** | Correlates, attributes (same-kit / same-operator / same-actor), calibrates confidence, and decides the next pivot. Reasons over the KB — it does **not** collect. |
+| **IntelGraph** | `IntelGraph/` | **Visualizer** | Charts, timelines, Gantt, and clustered interactive network graphs from the case data. |
+| **IntelReport** | `IntelReport/` | **Publisher** | Renders a finished assessment markdown into a polished PDF + editable DOCX (editorial house style, embedded figures, Vietnamese-safe typography). |
+| **IntelHarness** | `IntelHarness/` | **Case runner (in Claude Code)** | Drives the whole Collect → Correlate → Assess pipeline over one or many seeds from your subscription — evidence archiving, versioned assessments, convergence, cluster-level judgment. The conversational front-end to the harness. |
 
 ### The harness (two front-ends, one core)
 
@@ -45,13 +46,128 @@ and produce the **same** versioned assessments + evidence — pick by how you wa
 | Mode | interactive, agent-in-the-loop | headless / scriptable / cron |
 | Best for | exploring one case, mid-case judgment | batch, unattended, reproducible pipelines |
 
+Both front-ends reach the tools through **one typed surface** — `harness/tools.py` — which the SDK
+`orchestrator.py` and the stdio `harness/mcp_server.py` both import. Registering a capability there
+once exposes it to the SDK harness **and** to interactive Claude Code (via the repo-root `.mcp.json`
+server `intel`). That's why a new tool never has to be a raw `python3 …` line.
+
 ### Shared plumbing
 `tools/intel.py` (the one-command pipeline) · `tools/kb/` (the attributed knowledge base) ·
 `knowledge/` (the store) · `cases/` (per-investigation working dirs). Data stores are git-ignored.
 
 ---
 
-## 2. Install once
+## 2. How the skills chain together
+
+The kit is a **pipeline**, not a pile of tools. Each stage hands the next a well-defined artifact,
+and the join point is a **shared JSON contract** plus the **knowledge base**. Understand these two
+and the whole chain follows.
+
+### The stages and what flows between them
+
+```
+ seed (domain / URL / IP / binary)
+      │
+      ▼
+ ┌─ COLLECT ─────────────────────────────────────────────┐
+ │  WebPivot  (pivot_extract.py) — a web page → pivot-JSON │
+ │  BinaryPivot (analyze_artifact.py) — a file → pivot-JSON│   ← same JSON shape
+ └────────────────────────────────────────────────────────┘
+      │  cases/<case>/raw/<host>.json     (one file per host or binary)
+      ▼
+ ┌─ INGEST ──────────────────────────────────────────────┐
+ │  tools/kb/ingest_webpivot.py — pivot-JSON → typed facts │
+ │  every artifact becomes a NODE; the host it came from   │
+ │  becomes an EDGE to it. Shared artifacts = shared nodes.│
+ └────────────────────────────────────────────────────────┘
+      │  knowledge/ (entities, edges, reports)
+      ▼
+ ┌─ CORRELATE / ATTRIBUTE ───────────────────────────────┐
+ │  IntelAnalysis — reasons over the KB: which hosts share │
+ │  which artifacts, is it same-kit / same-operator, how   │
+ │  confident, and what to pivot on next.                  │
+ └────────────────────────────────────────────────────────┘
+      │  a cited, versioned assessment (markdown) + cluster seeds
+      ├─────────────▶ IntelGraph  — case_graph.json → interactive network.html / figures
+      └─────────────▶ IntelReport — assessment.md → PDF + DOCX deliverable
+```
+
+### The contract that makes it chain — one pivot-JSON shape
+
+WebPivot **and** BinaryPivot emit the **same** JSON shape: a `meta` block (host, final URL,
+collection time), an `artifacts` block (every identifier found), and a `pivots` array (ranked,
+copy-paste queries). Because a downloaded APK's backend host / signing cert land in the *same*
+fields a website's TLS cert / third-party host land in, **one ingester, one correlation pass, and
+one cluster report cover a website and its app together.** A shared indicator — a favicon hash, a
+GA4 ID, a wallet, a signing cert, a CORS-trusted backend — becomes the **same node** in the KB no
+matter which collector found it, so the app and the site converge automatically.
+
+### The join point — the KB is a graph of *shared* artifacts
+
+Ingest turns every artifact into a typed node and links the source host to it. The **clustering**
+falls out of the graph: two domains that both point at node `favicon:123456789` are a lead; two that
+share `favicon:123456789` **and** `ga:G-XXXXXXXXXX` are a cluster. IntelAnalysis reads this graph;
+it never re-collects. This is also why **corroboration** is a first-class rule (see §4): a single
+shared node is a lead, not proof.
+
+### A collect step can chain into itself
+
+Collection is not one-shot. A WebPivot run emits pivot *queries*; running them surfaces new hosts;
+those hosts get collected and ingested — the **analyze → pivot → re-extract** loop. The harness
+automates this: `--continue` loops to convergence, and it judges **clusters, not individual
+domains**, so the case stops growing when no new shared artifact appears (see §5, convergence).
+
+---
+
+## 3. How it works under the hood
+
+### Why each artifact is a pivot
+
+Collection isn't scraping for its own sake — every extracted artifact is chosen because it **survives
+re-skinning**: an operator can change a domain's name, logo, and copy in minutes, but the
+infrastructure and account-level identifiers underneath are expensive to rotate. A few of the load-
+bearing ones WebPivot pulls:
+
+- **Favicon hash (mmh3/md5/sha256)** — the same icon across unrelated domains = shared kit/operator.
+  Emitted per engine with the right algorithm (Shodan/FOFA = mmh3, Censys = md5, Netlas = sha256).
+- **Analytics / operator tokens** — GA4 `G-`, `GTM-`, AdSense `pub-`, plus SaaS/no-code account IDs
+  (GoHighLevel location, backend Google Sheet, automation webhooks). An account ID ties every
+  property the operator ever wired to that account, even scrubbed ones (mine history with
+  `wayback_ga.py`).
+- **Live TLS certificate** — SANs on a *different registrable domain* than the seed (`tls_cert:co_san`)
+  are a cross-brand operator link; the cert fingerprint finds every host serving the exact same cert.
+- **CORS policy** *(new)* — an active probe sends a foreign `Origin` and reads the server's
+  `Access-Control-Allow-Origin`. A **literal** allowed origin (e.g. `https://api.backend.example`)
+  names a **backend/API/staging/sibling host the app trusts that never appears in the page HTML** →
+  a `cors_allowed_origin` pivot. A reflect-any + `Allow-Credentials:true` reply is flagged as a
+  `cors_misconfig` (a live credential-bearing API to enumerate). The full HTTP request/response is
+  kept under `artifacts.http`. The probe routes through the normal fetch path, so `--proxy` is honored.
+- **Redirect chain + affiliate codes, crypto wallets (incl. QR-hidden), Telegram, WHOIS registrant** —
+  each an independent thread back to the operator.
+
+Every pivot carries a **confidence** (high/medium/low) reflecting how uniquely it identifies an
+operator, and the ranked list is what you actually run.
+
+### Live vs passive, and OPSEC-aware collection
+
+WebPivot fetches live by default but **always** also pulls the Wayback CDX timeline — a parked page
+today may have been a live scam funnel last year. When a target is hostile or Cloudflare-challenged
+it escalates (UA rotation → `--proxy` residential egress → `--render` a real browser → FlareSolverr)
+and, failing that, falls back to passive sources (Wayback snapshot, urlscan stored DOM) so a cold
+seed never ends on silence. Raw-socket probes (TLS) are suppressed when a proxy is set so they can't
+leak your real IP; header-based probes (CORS/HTTP) go through the proxy and are safe.
+
+### Cost accounting — two separate meters
+
+- **Anthropic model cost** (the agent's reasoning) is captured per run by the SDK harness and
+  written to `cases/<case>/run_cost.jsonl`. In interactive Claude Code, run `/cost`.
+- **Third-party API credits** (FOFA / WhoisXML / urlscan / IPinfo / Shodan) are **not** in the model
+  cost. They're logged to `MEMORY/api_usage.jsonl` and summarized per run ("API usage this run").
+  When you report what a case cost, state the split — the model bill does not cover the API credits.
+
+---
+
+## 4. Install once
 
 ### Prerequisites
 - **Claude Code** (`claude --version`) and **Python 3.8+** (`python3 --version`).
@@ -63,12 +179,13 @@ everywhere):
 
 ```bash
 # from the repo root after you clone/copy it
-for s in WebPivot BinaryPivot IntelAnalysis IntelGraph IntelHarness; do
+for s in WebPivot BinaryPivot IntelAnalysis IntelGraph IntelReport IntelHarness; do
   ln -s "$PWD/$s" ~/.claude/skills/$s
 done
 ```
 (Or copy instead: `cp -R WebPivot ~/.claude/skills/WebPivot`, etc.) Restart Claude Code, then verify
-each is registered: `/WebPivot`, `/BinaryPivot`, `/IntelAnalysis`, `/IntelGraph`, `/IntelHarness`.
+each is registered: `/WebPivot`, `/BinaryPivot`, `/IntelAnalysis`, `/IntelGraph`, `/IntelReport`,
+`/IntelHarness`. Confirm the shared tool surface with `/mcp` (server `intel`).
 
 ### Optional dependencies (install only what you use)
 ```bash
@@ -84,7 +201,10 @@ pip install matplotlib graphviz          # graphviz also needs the `dot` binary:
 npm i -g @mermaid-js/mermaid-cli         # only for Mermaid flows/kill-chains
 # render_network.py (clustered interactive graphs) is ZERO-dependency — JS libs are vendored.
 
-# Agent-SDK harness — only if you use harness/orchestrator.py (§3c)
+# IntelReport — PDF/DOCX rendering
+#   pandoc + a LaTeX engine (xelatex, e.g. via TeX Live / MacTeX) for PDF; pandoc alone for DOCX.
+
+# Agent-SDK harness — only if you use harness/orchestrator.py (§5c)
 python3 -m venv harness/.venv && source harness/.venv/bin/activate && pip install -r harness/requirements.txt
 ```
 
@@ -101,7 +221,7 @@ passive Wayback/urlscan); WHOIS columns just come back blank without `WHOISXML_A
 
 ---
 
-## 3. Run a case — pick how you want to drive it
+## 5. Run a case — pick how you want to drive it
 
 Three front-ends, same result. Start with **(a)** if you just want output; use **(b)** to think
 through a case; use **(c)** to batch many cases unattended.
@@ -128,19 +248,24 @@ Best for exploring, mid-case judgment, and letting the agent decide the next piv
 evidence), never ends a cold seed on silence (falls back to crt.sh / Wayback / dorks), correlates
 with IntelAnalysis, and writes a **versioned, cited assessment** to `cases/mycase/`. Follow-ups that
 work: *"converge the case"*, *"cluster these 40 domains"*, *"render the network graph"*,
-*"output the full cluster report"*.
+*"output the full cluster report"*, *"make it a PDF"*.
 
 ### (c) Unattended / batch — the Agent-SDK driver
 Headless, scriptable, schema-forced JSON output. Needs `ANTHROPIC_API_KEY` (not the subscription).
 ```bash
-source harness/.venv/bin/activate            # set up in §2
+source harness/.venv/bin/activate            # set up in §4
 export ANTHROPIC_API_KEY=...
 python3 harness/orchestrator.py CASE-0001 https://site-a.example https://site-b.example
 python3 harness/orchestrator.py CASE-0001 --parallel --continue --depth 4 seed1.example seed2.example …
 ```
-Prints a validated `Assessment` JSON and prints its **cost breakdown** to stderr. `--continue` loops
-to convergence; `--parallel` scales to many domains by judging **clusters, not domains**. Full knobs
+Prints a validated `Assessment` JSON and its **cost breakdown** to stderr. `--continue` loops to
+convergence; `--parallel` scales to many domains by judging **clusters, not domains**. Full knobs
 (model cascade, cost levers, evidence, guardrail) in **`harness/README.md`**.
+
+**Convergence** — the case is *done* when a collect/pivot round adds no new shared artifact to the
+cluster (`--continue` detects `CONVERGED` vs `EXPANDING`). That's the stop condition, not a fixed
+depth: a tight cluster converges in a couple of rounds, a sprawling ring keeps expanding until the
+shared indicators dry up.
 
 ### Sub-tasks you'll reach for in any mode
 
@@ -170,7 +295,7 @@ python3 tools/kb/ingest_webpivot.py --kb knowledge cases/mycase/raw/*.json   # s
 
 ---
 
-## 4. A worked example, start to finish
+## 6. A worked example, start to finish
 
 ```bash
 cd <repo root>
@@ -191,10 +316,11 @@ Then, **inside Claude Code**:
 - *"Render the acme network graph."* → interactive `network.html` beside the report.
 - *"Output the full report for that cluster."* → one whole-case ICD-203 rollup over every domain
   **and** binary in `cases/acme/raw/`.
+- *"Make it a PDF and a Word doc."* → IntelReport renders `assessment.md` to PDF + DOCX.
 
 ---
 
-## 5. Where things live
+## 7. Where things live
 
 ```
 cases/<case>/
@@ -202,7 +328,9 @@ cases/<case>/
   shared.txt             cluster seeds (fast path)       dom/<host>.html   collected DOM
   SUMMARY.md             current assessment (harness)    screenshots/<host>.png
   assessments/<UTC>_*    immutable snapshots (audit)     evidence/manifest.jsonl + master_pivots.csv
+  run_cost.jsonl         per-run Anthropic model cost    report/           rendered PDF/DOCX (IntelReport)
 knowledge/               the attributed KB (facts, entities, edges, reports/)
+MEMORY/api_usage.jsonl   third-party API credit ledger (FOFA/urlscan/WhoisXML/…)
 ```
 Both collectors write the **same** pivot-JSON shape, so one ingester, one correlation pass, and one
 cluster report cover websites and their apps together. Everything under `cases/` and `knowledge/` is
@@ -210,7 +338,7 @@ git-ignored.
 
 ---
 
-## 6. Port to another machine — keep it clean
+## 8. Port to another machine — keep it clean
 
 The included `.gitignore` already excludes secrets and private data: `.env`,
 `.claude/settings.local.json`, `MEMORY/`, `cases/`, `knowledge/`, `knowledge_scratch/`, `.DS_Store`,
@@ -221,11 +349,20 @@ The included `.gitignore` already excludes secrets and private data: `.env`,
 
 On the target, set its **own** keys (env vars or a fresh `chmod 600 ./.env`) — never ship keys in the repo.
 
+### Adding a new tool or skill — register it once
+Per the repo `CLAUDE.md` (RULE 2): wrap a new CLI tool as an `@tool(...)` in `harness/tools.py`. That
+single edit exposes it to the SDK `orchestrator.py` **and** the stdio `mcp_server.py` (auto-discovered)
+**and** interactive Claude Code (via `.mcp.json` → server `intel`). A new *mode* of an existing tool
+needs no new `@tool` — extend that tool's description so the model knows the new flag. Smoke-check:
+```bash
+WebPivot/.venv/bin/python3 harness/mcp_server.py   # then send a tools/list JSON-RPC; the tool must appear
+```
+
 ---
 
-## 7. Verify the install
+## 9. Verify the install
 ```bash
-# skills registered? — in Claude Code: /WebPivot /BinaryPivot /IntelAnalysis /IntelGraph /IntelHarness
+# skills registered? — in Claude Code: /WebPivot /BinaryPivot /IntelAnalysis /IntelGraph /IntelReport /IntelHarness
 python3 ~/.claude/skills/WebPivot/tools/pivot_extract.py --help           # tool runs
 echo '<html><head><link rel=icon href=/favicon.ico></head></html>' \
   | python3 ~/.claude/skills/WebPivot/tools/pivot_extract.py - --leads    # offline smoke test
@@ -236,7 +373,7 @@ python3 tools/eval/run_eval.py                                            # regr
 
 ---
 
-## 8. OPSEC — this is a shared tool
+## 10. OPSEC — this is a shared tool
 
 Multiple analysts use this kit. The skills are the shared, portable part; **your investigation data
 is not.** Keep the two strictly separate so nobody's targets, sources, or identity leak through a commit.
@@ -260,13 +397,14 @@ structure). See the repo-root `CLAUDE.md` for the full rule.
 
 ---
 
-## 9. Where to go deeper
+## 11. Where to go deeper
 
 | Doc | What it covers |
 |---|---|
 | **`PIPELINE.md`** | Step-by-step runbook for collect → correlate → visualize (CLI + in-Claude), a flags cheat-sheet, and a worked example. |
 | **`harness/README.md`** | The Agent-SDK driver in depth — model cascade, cost levers, convergence, parallel cluster judgment, evidence, the egress guardrail, auth & billing. |
 | **`WebPivot/INSTALL.md`** | Deeper WebPivot setup — API-key management (keychain, Linux/Windows), rendering, proxies. |
+| **`WebPivot/SKILL.md`** + `references/` | The full pivot-artifact catalogue (incl. TLS, CORS/HTTP), per-engine query syntax, and reliability notes. |
 | **`IntelHarness/SKILL.md`** | The in-Claude case-runner playbook (phases, when to reject, when to stop). |
 | each **`SKILL.md`** + `Workflows/` | Per-skill tradecraft and worked flows. |
 

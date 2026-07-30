@@ -43,7 +43,7 @@ class _RecordingRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 def fetch(url: str, timeout: int = 20, ua: str = DEFAULT_UA, proxy: str = None,
-          redirects_out: list = None):
+          redirects_out: list = None, origin: str = None):
     """Return (final_url, status, headers_dict, body_bytes). Follows redirects.
 
     When `proxy` is given (e.g. 'http://10.0.0.5:8080'), the request is routed through it
@@ -51,17 +51,22 @@ def fetch(url: str, timeout: int = 20, ua: str = DEFAULT_UA, proxy: str = None,
     Sends a full browser header profile so basic bot filters don't reset the connection.
     If `redirects_out` (a list) is passed, each redirect hop is appended to it as
     {from,status,to}; callers that don't need the chain simply omit it (unchanged behavior).
+    When `origin` is given, an `Origin:` request header is added — used to observe the
+    server's CORS response (which origins/backends it trusts); None → omit it (unchanged).
     """
+    reqh = _browser_headers(ua)
+    if origin:
+        reqh["Origin"] = origin
     if HAVE_REQUESTS:
         proxies = {"http": proxy, "https": proxy} if proxy else None
-        r = requests.get(url, headers=_browser_headers(ua), timeout=timeout,
+        r = requests.get(url, headers=reqh, timeout=timeout,
                          allow_redirects=True, verify=True, proxies=proxies)
         if redirects_out is not None:
             for h in r.history:
                 redirects_out.append({"from": h.url, "status": h.status_code,
                                       "to": h.headers.get("Location", "")})
         return r.url, r.status_code, {k.lower(): v for k, v in r.headers.items()}, r.content
-    req = urllib.request.Request(url, headers=_browser_headers(ua))
+    req = urllib.request.Request(url, headers=reqh)
     handlers = []
     if redirects_out is not None:
         handlers.append(_RecordingRedirectHandler(redirects_out))
@@ -76,6 +81,128 @@ def fetch(url: str, timeout: int = 20, ua: str = DEFAULT_UA, proxy: str = None,
     except urllib.error.HTTPError as e:
         eh = {k.lower(): v for k, v in (e.headers or {}).items()}
         return url, e.code, eh, _decode_body(e.read(), eh.get("content-encoding"))
+
+
+# --- CORS configuration probe ------------------------------------------------------
+# A site's CORS policy is a first-class OSINT pivot. When a browser sends a cross-origin
+# request it includes an `Origin:` header; the server answers with `Access-Control-Allow-
+# Origin` (ACAO) and friends, naming the origins it trusts. Three outcomes matter:
+#   * ACAO is a LITERAL origin (e.g. https://api.backend.example) → that host is a pivot
+#     (a backend/API/staging/sibling the app trusts) EVEN IF it never appears in the HTML.
+#   * ACAO ECHOES back whatever Origin we send, +Allow-Credentials:true → a reflect-any
+#     misconfig; names no host but confirms a live credential-bearing API worth probing.
+#   * ACAO is "*" → public asset host, no operator pivot.
+# We learn this by sending a foreign Origin on both a GET (simple request) and an OPTIONS
+# preflight and reading what the server echoes. This routes through the same fetch path as
+# everything else, so `--proxy` is honored (no IP leak — unlike the raw-socket TLS probe).
+# ⚠️ Authorized OSINT only. The probe is a benign, standards-defined browser request.
+
+_CORS_PROBE_ORIGIN = "https://osint-cors-probe.example"
+
+def _cors_absorb(out: dict, headers: dict, probe_origin: str):
+    """Fold one response's Access-Control-* headers into the running CORS summary `out`."""
+    h = {k.lower(): v for k, v in (headers or {}).items()}
+    acao = (h.get("access-control-allow-origin") or "").strip()
+    if acao:
+        out["acao"] = acao
+        if acao == "*":
+            out["wildcard"] = True
+        elif acao.lower() == probe_origin.lower():
+            out["reflects_origin"] = True
+        else:
+            for tok in re.split(r"[,\s]+", acao):
+                if not tok:
+                    continue
+                host = strip_www(urlparse(tok).netloc if "://" in tok else tok).strip("/")
+                if host and "." in host and host.lower() != probe_origin.split("//")[-1]:
+                    out["allowed_origin_hosts"].append(host.lower())
+    if str(h.get("access-control-allow-credentials", "")).strip().lower() == "true":
+        out["credentials"] = True
+    for key, hdr in (("methods", "access-control-allow-methods"),
+                     ("request_headers", "access-control-allow-headers"),
+                     ("expose_headers", "access-control-expose-headers"),
+                     ("max_age", "access-control-max-age")):
+        if h.get(hdr) and not out.get(key):
+            out[key] = h[hdr]
+    if "origin" in (h.get("vary", "").lower()):
+        out["vary_origin"] = True
+    out["allowed_origin_hosts"] = uniq(out["allowed_origin_hosts"])
+
+def _cors_options(url: str, ua: str, proxy: str, timeout: int, origin: str):
+    """Send a CORS preflight (OPTIONS + Origin + Access-Control-Request-*); return headers."""
+    reqh = _browser_headers(ua)
+    reqh["Origin"] = origin
+    reqh["Access-Control-Request-Method"] = "GET"
+    reqh["Access-Control-Request-Headers"] = "authorization,content-type"
+    if HAVE_REQUESTS:
+        proxies = {"http": proxy, "https": proxy} if proxy else None
+        r = requests.options(url, headers=reqh, timeout=timeout, allow_redirects=True,
+                             verify=True, proxies=proxies)
+        return r.status_code, {k.lower(): v for k, v in r.headers.items()}
+    handlers = [urllib.request.ProxyHandler({"http": proxy, "https": proxy})] if proxy else []
+    opener = urllib.request.build_opener(*handlers).open if handlers else urllib.request.urlopen
+    req = urllib.request.Request(url, headers=reqh, method="OPTIONS")
+    try:
+        with opener(req, timeout=timeout) as resp:
+            return resp.status, {k.lower(): v for k, v in resp.headers.items()}
+    except urllib.error.HTTPError as e:
+        return e.code, {k.lower(): v for k, v in (e.headers or {}).items()}
+
+def probe_cors(url: str, ua: str = DEFAULT_UA, proxy: str = None, timeout: int = 12):
+    """Actively probe a URL's CORS policy; return a structured summary or None.
+
+    `allowed_origin_hosts` are the LITERAL origins the server named — the pivotable
+    ones (backend/API/sibling hosts). `reflects_origin`+`credentials` flag the classic
+    reflect-any credential misconfig. Returns None if the server exposes no CORS policy.
+    """
+    origin = _CORS_PROBE_ORIGIN
+    out = {"probe_origin": origin, "preflight_status": None, "acao": None,
+           "credentials": False, "wildcard": False, "reflects_origin": False,
+           "vary_origin": False, "methods": None, "request_headers": None,
+           "expose_headers": None, "max_age": None, "allowed_origin_hosts": []}
+    saw = False
+    try:
+        st, ph = _cors_options(url, ua, proxy, timeout, origin)
+        out["preflight_status"] = st
+        _cors_absorb(out, ph, origin)
+        saw = saw or any(k.lower().startswith("access-control-") for k in ph)
+    except Exception:
+        pass
+    try:
+        _, _, gh, _ = fetch(url, timeout=timeout, ua=ua, proxy=proxy, origin=origin)
+        _cors_absorb(out, gh, origin)
+        saw = saw or bool(out["acao"])
+    except Exception:
+        pass
+    return out if saw else None
+
+def extract_cors(headers: dict):
+    """Passively read Access-Control-* already present on a normal response (no probe).
+
+    Most servers only emit ACAO when an Origin is sent, so this is usually empty — but a
+    site that returns ACAO:* or a literal origin unconditionally still gets captured.
+    """
+    out = {"probe_origin": None, "preflight_status": None, "acao": None,
+           "credentials": False, "wildcard": False, "reflects_origin": False,
+           "vary_origin": False, "methods": None, "request_headers": None,
+           "expose_headers": None, "max_age": None, "allowed_origin_hosts": []}
+    _cors_absorb(out, headers, "\x00none\x00")  # sentinel origin → nothing "reflects" it
+    return out if out["acao"] or out["vary_origin"] else None
+
+def merge_cors(passive, active):
+    """Prefer the active-probe result (it carries the reflection verdict); fold in any
+    unconditional ACAO the passive read saw. Either arg may be None."""
+    if not active:
+        return passive
+    if not passive:
+        return active
+    active["allowed_origin_hosts"] = uniq(active["allowed_origin_hosts"]
+                                          + passive.get("allowed_origin_hosts", []))
+    if passive.get("acao") and not active.get("acao"):
+        active["acao"] = passive["acao"]
+    active["wildcard"] = active["wildcard"] or passive.get("wildcard", False)
+    active["vary_origin"] = active["vary_origin"] or passive.get("vary_origin", False)
+    return active
 
 
 # --- Cloudflare challenge handling -------------------------------------------------

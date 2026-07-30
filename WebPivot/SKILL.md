@@ -286,6 +286,28 @@ it falls back to an unverified read and still yields the fingerprint + DER-scann
   (`services.tls.certificates.leaf_data.fingerprint_sha256`), Validin, and crt.sh to find
   **every host serving the exact same certificate**.
 
+**CORS policy — the backends/siblings the server admits it trusts.** When the seed is fetched
+live over http(s) (never for archived/offline input, and only on the primary page — not on
+crawled sub-pages), the tool actively probes the origin's cross-origin policy: it sends a
+**foreign `Origin`** on both a GET (a "simple" request) and an **OPTIONS preflight**, then reads
+what the server echoes in `Access-Control-Allow-Origin` (ACAO) and friends. This routes through
+the normal `fetch()` path, so a `--proxy` is honored (unlike the raw-socket TLS probe, it never
+leaks the analyst's IP). The full request/response of the exchange is kept under `artifacts.http`
+(`request_headers` sent + every `response_headers` received + `status`), and the parsed verdict
+under `artifacts.cors`. Three outcomes matter, and only the first is a host pivot:
+- **Literal origin** (e.g. `Access-Control-Allow-Origin: https://api.backend.example`) → each named
+  host becomes a **`cors_allowed_origin`** pivot. This is the point of the probe: it reveals
+  **backend/API/staging/sibling origins the app trusts that never appear in the page HTML**. A
+  named host on a **different registrable domain** than the seed is `medium` confidence (a
+  cross-brand operator link → crt.sh `%.host` / urlscan `domain:host` / reverse-IP); a host under
+  the seed's own apex is `low` (it still *confirms* a live backend subdomain worth resolving).
+- **Reflect-any + credentials** (ACAO echoes back whatever `Origin` we send **and**
+  `Access-Control-Allow-Credentials: true`) → a **`cors_misconfig`** lead. It names no host, but
+  confirms a live, credential-bearing API; feed it candidate Origins to enumerate more trusted hosts.
+- **`*` (wildcard)** → a public asset host, recorded but **not** treated as an operator pivot.
+Corroborate a `cors_allowed_origin` link with a second artifact (favicon / cert / tracker) before
+asserting common ownership — a shared backend can also just be a shared SaaS vendor.
+
 **CT / SSL search — two indexes merged, resilient, wildcard-aware.** Live enrichment runs a
 certificate-transparency search on the base domain via `ct_search()`, which queries **both crt.sh
 and Shodan's keyless CTL mirror** (`ctl.shodan.io/api/v1/domain/<d>` + `/hostnames`) concurrently
@@ -313,7 +335,7 @@ degrades gracefully (old behaviour). Refresh ranges with `python3 tools/cdn_rang
 **What it extracts** (see `references/PivotArtifacts.md`): favicon mmh3/md5/sha256, analytics & ad IDs (GA4 `G-`, `GTM-`, AdSense `pub-`, FB Pixel, Yandex, Hotjar, Matomo, Sentry DSN, …), crypto wallets (BTC/ETH/XMR/TRON/LTC), **app-download artifacts** (direct `.apk`/`.aab`/`.ipa`
 URLs + the backend host serving them, **desktop "trading terminal" installers** — `.exe`/`.msi`/`.dmg`/`.pkg`/`.appimage`/`.deb` — Android package ids, iOS app ids, smart-app-banner meta,
 `intent://` deep links, and the APK **signing-cert SHA-256** + package from `/.well-known/assetlinks.json`). Each detected file emits an `app:apk` / `app:desktop_installer` pivot whose first query is the exact **BinaryPivot** command to statically extract the file's own IOCs (signing cert, embedded C2/backend hosts, wallets) — those become shared indicators that cluster the app with the web infra,
-emails, social handles, third-party hosts, inline-script SHA-256, form actions + input names (phishing-kit tell), HTML comments, DOM-skeleton hash (template reuse), tech fingerprints, cookie names, server headers, **SaaS / no-code operator tokens** (GoHighLevel `msgsndr` location ID, backend Google Sheet ID, Make/Zapier/Apps-Script automation webhooks, TrustedForm lead-cert) — attribution-grade for hosted-builder funnels, and only fully present in the `--render` DOM.
+emails, social handles, third-party hosts, inline-script SHA-256, form actions + input names (phishing-kit tell), HTML comments, DOM-skeleton hash (template reuse), tech fingerprints, cookie names, server headers, the **full HTTP request/response headers and an active CORS probe** (`artifacts.http` + `artifacts.cors` — see the CORS section above; trusted backend/sibling origins the HTML never names), **SaaS / no-code operator tokens** (GoHighLevel `msgsndr` location ID, backend Google Sheet ID, Make/Zapier/Apps-Script automation webhooks, TrustedForm lead-cert) — attribution-grade for hosted-builder funnels, and only fully present in the `--render` DOM.
 
 **QR codes — the money is often hidden in the QR (`qr:*` pivots).** Scam funnels put the
 deposit wallet, a Telegram invite, or a WhatsApp/affiliate link inside a QR image instead of
@@ -334,7 +356,7 @@ fed to the KB as `qr_wallet_*` so a reused deposit address clusters operators), 
 first-class**: the tool already records the seed's full `meta.redirect_chain` + affiliate/referral
 codes, and every URL-bearing pivot keeps the **full, unshortened URL** so you can resolve it.
 
-**What it emits:** a `pivots` array, ranked high→low confidence, each with copy-paste queries for the right engine (with the correct hash algorithm per engine — Shodan/FOFA=mmh3, Censys=MD5, Netlas=SHA-256), plus redirect-chain / affiliate-code pivots for tracker links, live-TLS-cert pivots (`tls_cert:co_san` cross-apex + `tls_cert:fingerprint_sha256`), and reverse-WHOIS (email + name, current + historic) under `--whois-reverse`.
+**What it emits:** a `pivots` array, ranked high→low confidence, each with copy-paste queries for the right engine (with the correct hash algorithm per engine — Shodan/FOFA=mmh3, Censys=MD5, Netlas=SHA-256), plus redirect-chain / affiliate-code pivots for tracker links, live-TLS-cert pivots (`tls_cert:co_san` cross-apex + `tls_cert:fingerprint_sha256`), CORS-trusted-origin pivots (`cors_allowed_origin` backend/sibling hosts + a `cors_misconfig` flag), and reverse-WHOIS (email + name, current + historic) under `--whois-reverse`.
 
 **Case graph — `tools/graph_build.py`.** Merges many `pivot_extract` JSONs into one
 normalized, **clustered** graph model: typed nodes (domains + shared artifacts as hub

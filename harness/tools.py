@@ -133,7 +133,11 @@ def _ok(text: str) -> dict[str, Any]:
 @tool(
     "pivot_extract",
     "Extract pivot artifacts and write the JSON into the case. `url` may be a URL/host "
-    "(domainPivot: favicon hash, tracking/analytics IDs, wallets, emails, third-party infra) OR a "
+    "(domainPivot: favicon hash, tracking/analytics IDs, wallets, emails, third-party infra, plus "
+    "the full HTTP request/response headers and an active CORS probe — a foreign-Origin GET+preflight "
+    "that reads Access-Control-Allow-Origin: any LITERAL origin the server trusts becomes a "
+    "cors_allowed_origin pivot exposing backend/API/sibling hosts absent from the HTML, and a "
+    "reflect-any + Allow-Credentials misconfig is flagged) OR a "
     "bare IP (IPPivot: passive IP recon — IPinfo ASN/abuse, FOFA ip= ports/services/co-hosted "
     "domains, Shodan host, dig MX/NS/TXT/PTR; a shared CDN/hosting IP is marked information not a "
     "same-operator pivot, and its ASN is banked to references/asn_registry.json). If ALREADY "

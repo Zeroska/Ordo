@@ -457,6 +457,26 @@ def build_pivots(art: dict, base_host: str):
         ], "Strong ETag on a served asset — an identical ETag on the same path elsewhere points "
            "to a shared origin/kit. Corroborate with another artifact before clustering.")
 
+    # --- CORS-revealed origins — the backends/siblings the server explicitly trusts ---
+    cors = art.get("cors") or {}
+    seed_reg = _registrable(base_host) if base_host else ""
+    for host in cors.get("allowed_origin_hosts", [])[:20]:
+        same_apex = bool(seed_reg) and _registrable(host) == seed_reg
+        add("cors_allowed_origin", host, "low" if same_apex else "medium", [
+            {"service": "crt.sh", "query": f"%.{host}"},
+            {"service": "urlscan.io", "query": f"domain:{host}"},
+            {"service": "ViewDNS reverse-IP", "query": host},
+        ], "Named in the server's Access-Control-Allow-Origin — an origin the app explicitly "
+           "trusts" + (" (a subdomain of the seed apex — confirms a backend/API host that "
+                       "the page HTML may never mention)." if same_apex else
+                       " on a DIFFERENT apex — a backend/sibling brand and a strong "
+                       "cross-domain operator link; corroborate with a second artifact."))
+    if cors.get("reflects_origin") and cors.get("credentials"):
+        add("cors_misconfig", cors.get("acao") or "reflected-origin", "low", [],
+            "ACAO reflects any Origin WITH Access-Control-Allow-Credentials:true — a "
+            "reflect-any credential misconfig. It names no host, but confirms a live "
+            "authenticated API; probe it with candidate Origins to enumerate trusted hosts.")
+
     for host in art.get("third_party_hosts", [])[:15]:
         add("third_party_host", host, "low", [
             {"service": "crt.sh", "query": f"%.{host}"},

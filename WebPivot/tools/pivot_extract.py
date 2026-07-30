@@ -525,7 +525,8 @@ def main():
                 print(f"[!] crawl skip {url} ({e})", file=sys.stderr)
                 continue
             sub = analyze(url, c_html, c_base or url, c_headers, c_ua,
-                          extra_cookies=c_cookies, proxy=c_proxy, probe_tls=False)
+                          extra_cookies=c_cookies, proxy=c_proxy, probe_tls=False,
+                          probe_http=False)
             merge_result(result, sub)
             crawled.append(url)
             print(f"[+] crawled ({len(crawled)}/{max_pages}) {url}", file=sys.stderr)
