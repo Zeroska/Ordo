@@ -156,8 +156,12 @@ def _address(contact):
     return ", ".join(parts) or None
 
 
-def whois_current(domain, timeout=30):
-    """Current WHOIS for a domain. Returns a normalized dict or {'error':...} / None."""
+def whois_current(domain, timeout=30, keep_raw=True):
+    """Current WHOIS for a domain. Returns a normalized dict or {'error':...} / None.
+
+    With keep_raw (default), the FULL unmodified WhoisXML response is retained under
+    the '_raw' key so the complete record is archived for later reference, not just
+    the normalized fields we happen to surface today."""
     key = _key()
     if not key:
         return None
@@ -169,7 +173,7 @@ def whois_current(domain, timeout=30):
         return {"error": str(e), "domain": domain}
     rec = data.get("WhoisRecord") or {}
     if not rec:
-        return {"error": "no WhoisRecord", "domain": domain}
+        return {"error": "no WhoisRecord", "domain": domain, "_raw": data if keep_raw else None}
     # Many registrars (e.g. Hostinger/thin registries) populate dates + name servers
     # ONLY under the nested registryData, leaving the top-level fields empty. Read
     # each field from rec, then fall back to registryData so they aren't dropped.
@@ -185,7 +189,7 @@ def whois_current(domain, timeout=30):
         or _contact(reg_data, "registrantContact", "registrant") or {}
     ns = ((rec.get("nameServers") or {}).get("hostNames")
           or (reg_data.get("nameServers") or {}).get("hostNames") or [])
-    return {
+    res = {
         "domain": domain,
         "registrant_email": (reg.get("email") or rec.get("contactEmail")
                              or reg_data.get("contactEmail") or "").lower() or None,
@@ -200,12 +204,16 @@ def whois_current(domain, timeout=30):
         "expires": _f("expiresDateNormalized", "expiresDate"),
         "name_servers": sorted({n.lower() for n in ns if n}),
     }
+    if keep_raw:
+        res["_raw"] = data   # full unmodified WhoisXML record, archived for later ref
+    return res
 
 
-def whois_history(domain, mode="purchase", timeout=40):
+def whois_history(domain, mode="purchase", timeout=40, keep_raw=True):
     """Historical WHOIS records. mode=preview (count only) or purchase (full).
 
     Returns {'count','registrant_emails','registrant_names','registrars','records'}.
+    With keep_raw (default), the full unmodified history response is kept under '_raw'.
     """
     key = _key()
     if not key:
@@ -244,7 +252,7 @@ def whois_history(domain, mode="purchase", timeout=40):
             "updated": rec.get("updatedDateNormalized"),
             "expires": rec.get("expiresDateNormalized"),
         })
-    return {
+    res = {
         "count": data.get("recordsCount", len(recs)),
         "registrant_emails": sorted(emails),
         "registrant_names": sorted(names),
@@ -253,6 +261,9 @@ def whois_history(domain, mode="purchase", timeout=40):
         "registrars": sorted(registrars),
         "records": out if mode == "purchase" else [],
     }
+    if keep_raw:
+        res["_raw"] = data   # full unmodified history response, archived for later ref
+    return res
 
 
 def reverse_whois(term, kind="email", search_type="current", mode="purchase", timeout=40):
@@ -287,18 +298,26 @@ def reverse_whois(term, kind="email", search_type="current", mode="purchase", ti
             "domains": [d for d in domains if d][:200]}
 
 
-def whois_summary(domain, history_mode="purchase", timeout=40):
-    """Combined current + history block, ready to attach to a pivot_extract result."""
+def whois_summary(domain, history_mode="purchase", timeout=40, keep_raw=True):
+    """Combined current + history block, ready to attach to a pivot_extract result.
+
+    Always fetches the FULL current + history WHOIS. With keep_raw (default) the
+    complete unmodified API responses are archived under out['raw'] = {current, history}
+    so later analysis can mine fields we don't normalize today."""
     if not _key():
         return None
-    cur = whois_current(domain, timeout=timeout) or {}
-    hist = whois_history(domain, mode=history_mode, timeout=timeout) or {}
+    cur = whois_current(domain, timeout=timeout, keep_raw=keep_raw) or {}
+    hist = whois_history(domain, mode=history_mode, timeout=timeout, keep_raw=keep_raw) or {}
+    cur_raw = cur.pop("_raw", None)
+    hist_raw = hist.pop("_raw", None)
     out = dict(cur)
     out["history"] = {k: hist.get(k) for k in
                       ("count", "registrant_emails", "registrant_names",
                        "registrant_phones", "registrant_addresses", "registrars")}
     if hist.get("error"):
         out["history"]["error"] = hist["error"]
+    if keep_raw:
+        out["raw"] = {"current": cur_raw, "history": hist_raw}
     return out
 
 

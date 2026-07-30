@@ -108,8 +108,9 @@ def build_mermaid(graph, title, direction, legend):
     out = []
     if title:
         out += ["---", f"title: {esc(title, 120)}", "---"]
-    out.append(r"%%{init: {'theme':'neutral', 'flowchart':{'curve':'basis'}, "
-               r"'themeVariables':{'fontFamily':'DejaVu Sans, Arial, sans-serif'}}}%%")
+    out.append(r"%%{init: {'theme':'neutral', "
+               r"'flowchart':{'curve':'basis','nodeSpacing':60,'rankSpacing':75,'padding':18}, "
+               r"'themeVariables':{'fontFamily':'DejaVu Sans, Arial, sans-serif','fontSize':'28px'}}}%%")
     out.append(f"flowchart {direction}")
 
     # nodes grouped into one subgraph per cluster
@@ -194,11 +195,22 @@ def main():
     ap.add_argument("--direction", default="LR", choices=["LR", "TB", "RL", "BT"],
                     help="flow direction (default LR)")
     ap.add_argument("--legend", action="store_true", help="append an edge legend box")
+    ap.add_argument("--drop-types", default="",
+                    help="comma-list of node TYPES to prune before rendering (declutters a report "
+                         "figure so the meaningful nodes render large), e.g. "
+                         "nameserver,registrar,template,theme,email")
     ap.add_argument("--no-render", action="store_true",
                     help="write only the .mmd source; skip PNG/SVG rendering")
     args = ap.parse_args()
 
     graph = json.load(open(args.graph_json, encoding="utf-8"))
+    if args.drop_types:
+        drop = {t.strip() for t in args.drop_types.split(",") if t.strip()}
+        keep = [n for n in graph.get("nodes", []) if n.get("type") not in drop]
+        ids = {n["id"] for n in keep}
+        graph["nodes"] = keep
+        graph["edges"] = [e for e in graph.get("edges", [])
+                          if e.get("source") in ids and e.get("target") in ids]
     os.makedirs(os.path.dirname(os.path.abspath(args.stem)), exist_ok=True)
     mmd = build_mermaid(graph, args.title, args.direction, args.legend)
     mmd_path = f"{args.stem}.mmd"

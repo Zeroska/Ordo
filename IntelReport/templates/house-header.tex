@@ -13,6 +13,8 @@
 \usepackage{caption}
 \usepackage{enumitem}
 \usepackage{parskip}
+\usepackage{etoolbox}
+\usepackage{fvextra}  % line-wrapping for code / verbatim (no page overflow)
 
 % palette — from IntelGraph theme.py (slate / steel / ochre / brick)
 \definecolor{ink}{HTML}{1F1D1A}
@@ -33,6 +35,8 @@
 \titleformat{\subsubsection}{\headingfont\normalsize\bfseries\color{steel}}{\thesubsubsection}{0.6em}{}
 \titlespacing*{\section}{0pt}{1.5em}{0.6em}
 \titlespacing*{\subsection}{0pt}{1.1em}{0.4em}
+% Each top-level section starts on a fresh page (cleaner, one topic per page).
+\newcommand{\sectionbreak}{\clearpage}
 
 % header / footer — classification banner + case id + page numbers
 \pagestyle{fancy}
@@ -55,8 +59,34 @@
 \captionsetup{font=small,labelfont={sf,bf,color=slate},textfont={color=muted},skip=6pt}
 
 % tables + lists breathe a little
-\renewcommand{\arraystretch}{1.15}
+\renewcommand{\arraystretch}{1.12}
 \setlist{itemsep=2pt,topsep=3pt,parsep=0pt}
 
 % keep wide images from overflowing the text block
 \setkeys{Gin}{width=\linewidth,keepaspectratio}
+
+% --- house rules (see SKILL.md "Report structure") -----------------------------
+% Roman numerals for top-level sections (I, II, ...); sub-sections number as
+% arabic <section>.<sub> (1.1, 2.1) — NOT I.1 — per house style.
+\renewcommand{\thesection}{\Roman{section}}
+\renewcommand{\thesubsection}{\arabic{section}.\arabic{subsection}}
+\renewcommand{\thesubsubsection}{\arabic{section}.\arabic{subsection}.\arabic{subsubsection}}
+% Appendices switch to letters (Appendix A, B, ...). Pandoc has no \appendix hook,
+% so a report emits a raw-LaTeX \appendix before its first appendix heading.
+\gappto\appendix{\renewcommand{\thesection}{\Alph{section}}%
+  \titleformat{\section}{\headingfont\Large\bfseries\color{slate}}{Appendix~\thesection}{0.6em}{}[{\color{grid}\titlerule[0.8pt]}]}
+
+% Text-heavy tables must stay compact — shrink the font + padding inside every
+% table environment (pandoc pipe/grid tables become longtable or tabular).
+\AtBeginEnvironment{longtable}{\footnotesize}
+\AtBeginEnvironment{tabular}{\small}
+\setlength{\tabcolsep}{4pt}
+
+% Code / verbatim blocks wrap instead of running off the page.
+\fvset{breaklines=true,breakanywhere=true,fontsize=\small}
+
+% Long INLINE code / URLs (domains, hashes, endpoints) must break inside narrow
+% table cells instead of overflowing into the next column.
+\usepackage{seqsplit}
+\let\oldtexttt\texttt
+\renewcommand{\texttt}[1]{\oldtexttt{\seqsplit{#1}}}

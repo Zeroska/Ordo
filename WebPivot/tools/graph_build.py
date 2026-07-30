@@ -433,8 +433,8 @@ def betweenness(adj):
                 bc[w] += delta[w]
     n = len(nodes)
     scale = 1.0 / ((n - 1) * (n - 2)) if n > 2 else 1.0
-    mx = max(bc.values()) or 1.0
-    return {k: v * scale / (max(bc.values()) * scale or 1) if False else v / mx for k, v in bc.items()}
+    mx = (max(bc.values()) if bc else 0.0) or 1.0   # tiny/edgeless graph → no crash
+    return {k: v / mx for k, v in bc.items()}
 
 
 def assemble(g, algo="louvain"):

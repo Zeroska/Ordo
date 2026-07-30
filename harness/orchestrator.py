@@ -595,6 +595,31 @@ def _persist_assessment(assessment: Assessment, case: str, table_md: str) -> dic
 
 
 # --------------------------------------------------------------- deliverables (figure + PDF/DOCX)
+# Node types pruned from a report figure so the meaningful nodes render large.
+FIGURE_DROP_TYPES = ["nameserver", "registrar", "template", "theme", "email"]
+
+
+def _write_figures_recipe(rep_dir: str, title: str) -> None:
+    """At assess-time, drop a figures.json beside the report so a later
+    `render_report.py` regenerates the chart from current raw data (IntelReport ⇄
+    IntelGraph chain). Written only if absent — never clobbers a hand-curated recipe."""
+    recipe = os.path.join(rep_dir, "figures.json")
+    if os.path.exists(recipe):
+        return
+    spec = {"figures": [{
+        "raw_glob": "../raw/*.json",          # picks up every domain collected into the case
+        "graph": "case_graph.json", "stem": "case_diagram",
+        "title": (title or "")[:80], "direction": "LR", "legend": True,
+        "drop_types": FIGURE_DROP_TYPES,
+    }]}
+    try:
+        with open(recipe, "w", encoding="utf-8") as f:
+            json.dump(spec, f, indent=2)
+        _log(f" deliverables: wrote figures.json ({recipe})")
+    except OSError:
+        pass
+
+
 def _ensure_case_diagram(case: str, title: str) -> str | None:
     """Best-effort editable relationship diagram for the case. Builds
     cases/<case>/report/case_graph.json from the case's raw pivot JSON, then renders an
@@ -604,6 +629,7 @@ def _ensure_case_diagram(case: str, title: str) -> str | None:
     case_dir = os.path.join(ROOT, "cases", case)
     rep_dir = os.path.join(case_dir, "report")
     os.makedirs(rep_dir, exist_ok=True)
+    _write_figures_recipe(rep_dir, title or case)   # wire the report⇄chart chain from assess-time
     fig = os.path.join(rep_dir, "case_diagram_hires.png")
     raw = glob.glob(os.path.join(case_dir, "raw", "*.json"))
     if not raw:
@@ -619,7 +645,8 @@ def _ensure_case_diagram(case: str, title: str) -> str | None:
         return None
     gd = subprocess.run([sys.executable, os.path.join("IntelGraph", "scripts", "graph_to_diagram.py"),
                          graph_json, os.path.join(rep_dir, "case_diagram"),
-                         "--title", (title or case)[:80], "--legend"],
+                         "--title", (title or case)[:80], "--legend",
+                         "--drop-types", ",".join(FIGURE_DROP_TYPES)],
                         cwd=ROOT, capture_output=True, text=True)
     if gd.returncode != 0 or not os.path.exists(fig):
         _log(f" deliverables: diagram skipped ({(gd.stderr or gd.stdout or '').strip()[:120]})")

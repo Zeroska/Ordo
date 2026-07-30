@@ -166,12 +166,23 @@ relationship figure and a polished report (the SDK's `_render_deliverables` does
 deterministically; here you call the two MCP tools). Both are best-effort — skip on a missing
 `mmdc`/headless Chrome or `pandoc`, don't fail the case:
 
+0. **Write the figure recipe (`figures.json`) so the report ⇄ chart stay chained.** At assess-time,
+   drop `cases/<CASE>/report/figures.json` (only if absent — don't clobber a curated one) so a later
+   `render_report.py` rebuilds the chart from current raw data automatically:
+   ```json
+   {"figures": [{"raw_glob": "../raw/*.json", "graph": "case_graph.json", "stem": "case_diagram",
+     "title": "<case title>", "direction": "LR", "legend": true,
+     "drop_types": ["nameserver","registrar","template","theme","email"]}]}
+   ```
+   (The SDK's `_ensure_case_diagram` writes this automatically; do the same on the Claude-Code path.)
 1. **Editable relationship diagram** — build the case graph, then `render_diagram`:
    ```bash
    python3 WebPivot/tools/graph_build.py cases/<CASE>/raw/*.json -o cases/<CASE>/report/case_graph.json
    ```
    then call the **`render_diagram`** MCP tool (`graph_json=cases/<CASE>/report/case_graph.json`,
-   `stem=cases/<CASE>/report/case_diagram`, `legend=true`) → editable `.mmd` + PNG/SVG.
+   `stem=cases/<CASE>/report/case_diagram`, `legend=true`, `drop_types` to prune noise nodes) →
+   editable `.mmd` + PNG/SVG. From here on, `render_report.py` refreshes this figure on every render
+   (via `figures.json`), so you don't rebuild it by hand after edits.
 2. **Report PDF + DOCX** — reference the figure from the snapshot markdown (add a
    `## Relationship graph` + `![...](case_diagram_hires.png)` section, and a YAML frontmatter
    block with `title` / `case_id: <CASE>` / `classification`), then call the **`render_report`**
