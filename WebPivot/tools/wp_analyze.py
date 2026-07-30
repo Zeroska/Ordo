@@ -316,6 +316,20 @@ def render_leads(result: dict) -> str:
                 bits.append(("self-hosted" if mail.get("self_hosted") else "custom") +
                             f" MX {', '.join(mail['custom_mx_hosts'])} → mail_server pivot")
             lines.append("> 📧 Mail (MX): " + "; ".join(bits or [", ".join(mail["mx_hosts"])]) + ".")
+        spf, dmarc = mail.get("spf") or {}, mail.get("dmarc") or {}
+        sd = []
+        if spf:
+            _snd = spf.get("custom_includes", []) + spf.get("ip4", []) + spf.get("ip6", [])
+            sd.append(f"SPF `{spf.get('all') or '?all'}`"
+                      + (f", {len(_snd)} custom sender(s) → pivots" if _snd else ""))
+        if dmarc:
+            sd.append(f"DMARC p={dmarc.get('p') or 'none'}"
+                      + (f", contact {', '.join(dmarc['custom_contacts'])} → dmarc_contact pivot"
+                         if dmarc.get("custom_contacts") else ""))
+        elif spf is not None and mail.get("mx_hosts"):
+            sd.append("no DMARC (unprotected — spoofable)")
+        if sd:
+            lines.append("> ✉️ " + "; ".join(sd) + ".")
         lines.append("")
     if m.get("cloudflare"):
         lines.append(f"> 🛡️ Cloudflare {m['cloudflare']} detected — a UA swap won't pass a managed "

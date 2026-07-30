@@ -328,7 +328,18 @@ it answers three investigation-shaping questions up front:
   other domains pointing their MX here — reverse-MX — can be a same-operator link).
 - **No MX at all** — the domain isn't configured to receive mail: a common **throwaway / parked-scam**
   tell (they only need to serve a page, not run a mailbox). Surfaced in `--leads` (`📭 Mail: no MX`).
-The provider / tenant / custom-MX verdict is shown as a banner in `--leads`; the pivots rank inline.
+
+The same pass also reads the domain's **SPF** (apex TXT) and **DMARC** (`_dmarc.<domain>` TXT) into
+`artifacts.mail.spf` / `.dmarc` — the other half of a domain's mail posture, and a rich seam of pivots:
+- **SPF custom `include:`** — an authorized-sender domain matching no major ESP is the operator's own
+  or a bespoke mailer → **`spf_include`** pivot (major ESPs like `_spf.google.com` / `spf.protection.outlook.com`
+  are suppressed as context). **SPF `ip4:`/`ip6:`** single hosts are the actual sending servers →
+  **`mail_sender_ip`** pivots (reverse-IP / FOFA `ip=`); a whole netblock is skipped as an ESP range.
+- **DMARC `rua`/`ruf`** reporting addresses NOT at a monitoring vendor (dmarcian, Postmark, Valimail…)
+  are **operator-controlled** mailboxes → **`dmarc_contact`** pivots (a strong attribution + reverse-WHOIS
+  seam; e.g. `dmarc@<their-own-domain>`). The DMARC **policy** (`p=none/quarantine/reject`) is surfaced,
+  and a domain with SPF but **no DMARC** is flagged as spoofable.
+The provider / tenant / custom-MX / SPF / DMARC verdict shows as a banner in `--leads`; pivots rank inline.
 
 **CT / SSL search — two indexes merged, resilient, wildcard-aware.** Live enrichment runs a
 certificate-transparency search on the base domain via `ct_search()`, which queries **both crt.sh

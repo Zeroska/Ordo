@@ -14,6 +14,7 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))), "WebPivot", "tools"))
 import wp_ippivot as ip  # noqa: E402
+import wp_recon as rec  # noqa: E402
 
 
 def check():
@@ -83,6 +84,20 @@ def check():
         ok(ip.mail_intel("victim.example")["managed"] is True, "managed provider MX flagged")
     finally:
         ip.dns_records = _orig
+
+    # --- SPF / DMARC parsers (wp_recon, pure — no network) ---
+    spf = rec.parse_spf(["v=spf1 include:_spf.google.com include:mail.op.example "
+                         "ip4:203.0.113.5 ip4:198.51.100.0/24 -all"])
+    ok(bool(spf) and "mail.op.example" in spf["includes"] and "203.0.113.5" in spf["ip4"]
+       and spf["all"] == "-all", "SPF include/ip4/all parsed")
+    ok(rec._classify_spf_include("_spf.google.com") == "ESP"
+       and rec._classify_spf_include("mail.op.example") is None, "SPF ESP vs custom include")
+    dm = rec.parse_dmarc(["v=DMARC1; p=reject; "
+                          "rua=mailto:dmarc@op.example,mailto:x@dmarc.postmarkapp.com"])
+    ok(bool(dm) and dm["p"] == "reject" and "dmarc@op.example" in dm["rua"],
+       "DMARC policy + rua parsed")
+    ok(rec.parse_spf(["not spf here"]) is None and rec.parse_dmarc([]) is None,
+       "no SPF/DMARC record → None")
 
     # --- build_ip_result end-to-end (network fully mocked): origin vs noise ---
     saved = {n: getattr(ip, n) for n in ("ipinfo_lookup", "classify_ip", "asn_registry_load",

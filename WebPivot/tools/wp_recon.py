@@ -730,6 +730,90 @@ def _classify_mx(exchange: str):
                 return name
     return None
 
+# SPF include hosts that belong to a big ESP / mail SaaS — context, not an operator pivot.
+SPF_ESP = (
+    "_spf.google.com", ".google.com", "spf.protection.outlook.com", ".protection.outlook.com",
+    ".outlook.com", "sendgrid.net", ".sendgrid.net", "mailgun.org", "mailgun.net", "amazonses.com",
+    ".amazonses.com", "spf.mandrillapp.com", ".mcsv.net", ".mailchimp.com", "spf.mailjet.com", "mail.zendesk.com",
+    "_spf.salesforce.com", "spf.mtasv.net", "sparkpostmail.com", "_spf.qq.com", ".zoho.com", ".zoho.eu",
+    "_spf.mailspamprotection.com", "spf.constantcontact.com", "mktomail.com", "_spf.hubspotemail.net",
+    "_spf.firebasemail.com", ".secureserver.net", ".forwardemail.net", ".improvmx.com", ".pphosted.com",
+    ".mimecast.com", "_spf.yandex.net", "_spf.mail.ru", "spf.messagingengine.com", "_spf.protonmail.ch",
+)
+
+# DMARC aggregate/forensic report SINKS (rua/ruf) run by monitoring vendors — noise, not a pivot.
+DMARC_VENDORS = (
+    "dmarc.postmarkapp.com", "dmarcanalyzer.com", "dmarcian.com", "agari.com", "returnpath.net",
+    "valimail.com", "redsift.com", "ondmarc.com", "uriports.com", "fraudmarc.com", "easydmarc.com",
+    "easydmarc.us", "dmarcadvisor.com", "mxtoolbox.com", "cyber.dhs.gov", "google.com", "proofpoint.com",
+    "mimecast.com", "barracudanetworks.com", "sophos.com", "250ok.com", "ondmarc.redsift.com",
+)
+
+def _txt_records(name: str, timeout: int = 8):
+    """TXT records for `name` via dig then nslookup (255-char chunks re-joined)."""
+    out = []
+    dig = shutil.which("dig")
+    if dig:
+        try:
+            txt = subprocess.run([dig, "+short", "TXT", name], capture_output=True,
+                                 text=True, timeout=timeout).stdout
+            for ln in txt.splitlines():
+                s = re.sub(r'"\s+"', "", ln.strip()).strip().strip('"')  # join split chunks
+                if s:
+                    out.append(s)
+        except Exception:
+            pass
+    if not out and shutil.which("nslookup"):
+        try:
+            txt = subprocess.run([shutil.which("nslookup"), "-type=TXT", name],
+                                 capture_output=True, text=True, timeout=timeout).stdout
+            out += [m.group(1) for m in re.finditer(r'text\s*=\s*"(.*)"', txt)]
+        except Exception:
+            pass
+    return uniq(out)
+
+def parse_spf(records):
+    """Parse the v=spf1 record out of a TXT record list → dict, or None if absent."""
+    spf = next((r for r in records if r.lower().startswith("v=spf1")), None)
+    if not spf:
+        return None
+    inc, ip4, ip6, redirect = [], [], [], None
+    all_mech = None
+    for tok in spf.split():
+        low = tok.lower()
+        if low.startswith("include:"):
+            inc.append(tok[8:])
+        elif low.startswith("ip4:"):
+            ip4.append(tok[4:])
+        elif low.startswith("ip6:"):
+            ip6.append(tok[4:])
+        elif low.startswith("redirect="):
+            redirect = tok.split("=", 1)[1]
+        elif low.endswith("all"):
+            all_mech = tok[-4:]  # -all / ~all / ?all / +all
+    return {"raw": spf, "includes": uniq(inc), "ip4": uniq(ip4), "ip6": uniq(ip6),
+            "redirect": redirect, "all": all_mech}
+
+def parse_dmarc(records):
+    """Parse the v=DMARC1 record out of a TXT record list → dict, or None if absent."""
+    d = next((r for r in records if r.lower().startswith("v=dmarc1")), None)
+    if not d:
+        return None
+    tags = {k.lower(): v.strip() for k, v in re.findall(r'(\w+)\s*=\s*([^;]+)', d)}
+    def _addrs(k):
+        return uniq([a.strip().lower() for a in re.findall(r'mailto:([^,\s;]+)',
+                                                           tags.get(k, ""), re.I)])
+    return {"raw": d, "p": tags.get("p") or None, "sp": tags.get("sp") or None,
+            "rua": _addrs("rua"), "ruf": _addrs("ruf")}
+
+def _classify_spf_include(host: str):
+    """Return an ESP name (via the MX map) for a known SPF include, else None (=custom)."""
+    h = host.lower().rstrip(".")
+    for s in SPF_ESP:
+        if (h.endswith(s) if s.startswith(".") else (h == s or h.endswith("." + s))):
+            return "ESP"
+    return _classify_mx(h)  # reuse the MX provider map (google/m365/zoho/…)
+
 def detect_mail_provider(host: str, timeout: int = 8):
     """Resolve a domain's MX and classify its mail provider. Returns a dict or None.
 
@@ -754,6 +838,21 @@ def detect_mail_provider(host: str, timeout: int = 8):
         if ex.endswith(".mail.protection.outlook.com"):
             m365_tenant = ex[: -len(".mail.protection.outlook.com")] or None
             break
+    # --- SPF (apex TXT) + DMARC (_dmarc TXT): authorized senders + reporting contacts ---
+    spf = parse_spf(_txt_records(host, timeout=timeout))
+    if spf:
+        # an include matching no big ESP is the operator's own / bespoke sending infra
+        spf["custom_includes"] = [i for i in spf["includes"] if not _classify_spf_include(i)]
+        spf["esp"] = uniq([_classify_spf_include(i) for i in spf["includes"]
+                           if _classify_spf_include(i) not in (None, "ESP")]) or None
+    dmarc = parse_dmarc(_txt_records("_dmarc." + host, timeout=timeout))
+    if dmarc:
+        # rua/ruf addresses NOT at a monitoring vendor are operator-controlled attribution
+        contacts = uniq(dmarc["rua"] + dmarc["ruf"])
+        dmarc["custom_contacts"] = [
+            a for a in contacts
+            if (dom := a.split("@")[-1]) and not any(dom == v or dom.endswith("." + v)
+                                                     for v in DMARC_VENDORS)]
     return {
         "mx": [f"{p} {ex}" for p, ex in recs],
         "mx_hosts": mx_hosts,
@@ -762,6 +861,8 @@ def detect_mail_provider(host: str, timeout: int = 8):
         "self_hosted": self_hosted,
         "m365_tenant": m365_tenant,
         "no_mx": not mx_hosts,
+        "spf": spf,
+        "dmarc": dmarc,
     }
 
 

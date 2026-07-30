@@ -500,6 +500,39 @@ def build_pivots(art: dict, base_host: str):
            "(dashes stand in for dots), revealing the primary domain behind the site and other "
            "domains sharing the same M365 tenant.")
 
+    # SPF (apex TXT) — custom sender includes + bare sending IPs are operator mail infra.
+    spf = mail.get("spf") or {}
+    for inc in (spf.get("custom_includes") or [])[:8]:
+        inc_reg = _registrable(inc)
+        same_apex = bool(seed_reg) and inc_reg == seed_reg
+        add("spf_include", inc, "low" if same_apex else "medium", [
+            {"service": "crt.sh", "query": f"%.{inc_reg}"},
+            {"service": "SPF TXT", "query": f"dig +short TXT {inc}"},
+            {"service": "ViewDNS reverse-IP", "query": inc},
+        ], "SPF `include:` matching no major ESP — a bespoke authorized-sender domain (the operator's "
+           "own or a shared niche mailer)" + (" under the seed apex." if same_apex else
+           "; other domains that include the same host in their SPF can be an operator link."))
+    for sip in (spf.get("ip4", []) + spf.get("ip6", []))[:8]:
+        if "/" in sip and sip.split("/")[-1] not in ("32", "128"):
+            continue  # a whole netblock in SPF is usually an ESP range, not one sender box
+        ip = sip.split("/")[0]
+        add("mail_sender_ip", ip, "medium", [
+            {"service": "FOFA", "query": f'ip="{ip}"'},
+            {"service": "Shodan", "query": f"ip:{ip}"},
+            {"service": "ViewDNS reverse-IP", "query": ip},
+        ], "IP authorized to send mail for this domain (SPF ip4/ip6) — a real sending server; "
+           "reverse it for co-hosted domains and other senders on the same box.")
+
+    # DMARC (_dmarc TXT) — rua/ruf contacts not at a monitoring vendor are operator-controlled.
+    dmarc = mail.get("dmarc") or {}
+    for addr in (dmarc.get("custom_contacts") or [])[:6]:
+        add("dmarc_contact", addr, "medium", [
+            {"service": "Chainabuse / breach search", "query": addr},
+            {"service": "crt.sh", "query": f"%.{_registrable(addr.split('@')[-1])}"},
+            {"service": "reverse-WHOIS (email)", "query": addr},
+        ], "DMARC rua/ruf reporting address NOT at a monitoring vendor — an operator-controlled "
+           "mailbox/domain; a strong attribution + reverse-WHOIS pivot.")
+
     for host in art.get("third_party_hosts", [])[:15]:
         add("third_party_host", host, "low", [
             {"service": "crt.sh", "query": f"%.{host}"},
