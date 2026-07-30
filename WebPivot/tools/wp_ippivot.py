@@ -285,10 +285,18 @@ def asn_registry_upsert(asn: str, name=None, abuse=None, noise=None, kind=None, 
     return e
 
 
-def is_noise_provider(classified: dict, ipinfo: dict, registry: dict):
+# Above this many sites on one IP, a reverse-IP returns unrelated tenants — the IP is a shared
+# host / load balancer (CF, AWS ELB, cPanel reseller…), not a same-operator origin. A dedicated
+# operator box is well under this even for a prolific actor.
+SHARED_TENANT_MAX = 200
+
+
+def is_noise_provider(classified: dict, ipinfo: dict, registry: dict, tenant_total=None):
     """(is_noise, reason) — an IP whose reverse-search returns unrelated tenants, so it is NOT a
-    same-operator pivot. Noise when: classify_ip says CDN/cloud edge, IPinfo flags hosting/relay,
-    or the ASN is flagged noise in the registry."""
+    same-operator origin. Noise when: classify_ip says CDN/cloud edge; the ASN is flagged noise in
+    the registry (AWS/GCP/Azure/DO/OVH/…); IPinfo flags hosting/relay; OR many sites resolve to it
+    (shared host / load balancer). The last check is provider-agnostic — it catches an AWS ELB or a
+    shared cPanel box even when the range/ASN isn't in our lists."""
     if classified.get("cdn") is True:
         return True, "CDN/cloud edge (%s) — shared, reverse-IP returns unrelated tenants" % (
             classified.get("provider") or "shared edge")
@@ -298,6 +306,9 @@ def is_noise_provider(classified: dict, ipinfo: dict, registry: dict):
         return True, "ASN %s flagged noise in asn_registry (%s)" % (asn, entry.get("name") or "")
     if ipinfo.get("is_hosting"):
         return True, "IPinfo flags hosting/relay infrastructure (%s)" % (ipinfo.get("org_name") or "")
+    if tenant_total and tenant_total > SHARED_TENANT_MAX:
+        return True, ("~%d sites resolve to this IP — shared host / load balancer, not a "
+                      "same-operator origin" % tenant_total)
     return False, ""
 
 
@@ -340,7 +351,8 @@ def build_ip_result(ip: str, args=None, fofa_full: bool = False) -> dict:
     ptr_reg = _registrable(ptr) if ptr else None
     classified = classify_ip(ip)                    # local (cached CDN ranges) — no network
     registry = asn_registry_load()
-    noise, noise_reason = is_noise_provider(classified, ipinfo, registry)
+    noise, noise_reason = is_noise_provider(classified, ipinfo, registry,
+                                            tenant_total=(fofa or {}).get("total"))
 
     f, s = fofa or {}, shodan or {}
     ports = sorted(set(f.get("ports", []) + s.get("ports", [])),

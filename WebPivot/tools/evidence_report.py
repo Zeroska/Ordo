@@ -41,6 +41,14 @@ try:
 except Exception:                                  # degrade gracefully if unavailable
     render_domain_table = None
 
+# CDN/cloud classifier — so the origin-IP section can label a shared edge (Cloudflare, CloudFront,
+# GCP LB) and never call it a high-value origin. Fail-open (unknown) if unavailable.
+try:
+    from wp_analyze import classify_ip as _classify_ip  # type: ignore
+except Exception:
+    def _classify_ip(ip):
+        return {"ip": ip, "cdn": None, "provider": None, "kind": "unknown"}
+
 # --------------------------------------------------------------------------- estimative language
 # ICD 203 mandates a standard lexicon for likelihood ("words of estimative probability")
 # and requires it be kept distinct from analytic CONFIDENCE (how solid the sourcing is).
@@ -485,8 +493,16 @@ def _origin_ip_section(results):
     for ip in sorted(groups, key=_rank):
         t = tenant_total.get(ip)
         m = ip_meta.get(ip) or {}
-        asn = f" · {m['asn']} {m.get('org') or ''}".rstrip() if m.get("asn") else ""
-        if t is None:
+        cl = _classify_ip(ip) or {}
+        prov = cl.get("provider") or (m.get("org") if m.get("asn") else None)
+        asn = f" · {m['asn']} {m.get('org') or ''}".rstrip() if m.get("asn") else (
+            f" · {prov}" if prov else "")
+        # A CDN/managed-edge or known cloud provider IP is NOT the operator's origin — never "strong",
+        # regardless of how few tenants FOFA happens to index for it.
+        if cl.get("cdn") is True or cl.get("kind") in ("cdn", "cloud"):
+            note = (f"shared CDN/cloud edge ({prov or cl.get('kind')}) → NOT an origin, low "
+                    f"attribution" + (f"; ~{t:,} tenants" if t else ""))
+        elif t is None:
             note = "tenant count not collected — reverse `ip=\"%s\"` to judge dedicated vs shared" % ip
         elif t <= 25:
             note = f"**dedicated** (~{t} tenants) → strong same-operator link"

@@ -47,6 +47,10 @@ def check():
     ok(ip.is_noise_provider({"cdn": False}, {"asn": "AS1", "is_hosting": True}, reg)[0] is True,
        "IPinfo hosting flag = noise")
     ok(ip.is_noise_provider({"cdn": False}, {"asn": "AS1"}, reg)[0] is False, "origin candidate")
+    ok(ip.is_noise_provider({"cdn": False}, {"asn": "AS1"}, reg, tenant_total=5000)[0] is True,
+       "shared host / LB (high tenant count) = noise")
+    ok(ip.is_noise_provider({"cdn": False}, {"asn": "AS1"}, reg, tenant_total=8)[0] is False,
+       "dedicated origin (few tenants) stays origin")
 
     # --- ASN registry upsert writes generic facts only, never target/case ---
     tf = tempfile.mktemp(suffix=".json")
