@@ -211,10 +211,16 @@ future collections that hit a `signal` fingerprint or an attributed domain resol
 - **Headless (`harness/orchestrator.py`, Agent SDK):** each run prints per-phase + total
   `total_cost_usd` and appends a line to **`cases/<CASE>/run_cost.jsonl`** — sum that file for the
   case's model cost over time.
-- **Not included either way:** FOFA / WhoisXML / urlscan / IPinfo / Shodan **API credits**.
-  `pivot_extract.py` and the other CLIs make **zero** Anthropic calls themselves (they're pure
-  Python + third-party APIs); their cost is provider credits, tracked in each provider's console —
-  never fold that into `total_cost_usd`.
+- **API credits (FOFA / urlscan / WhoisXML / IPinfo / Shodan)** are separate from `total_cost_usd`
+  and now **logged locally** every collection: each licensed call appends to
+  `MEMORY/api_usage.jsonl` (git-ignored, tagged with case + skill), and every `pivot_extract` run
+  prints an "API usage this run" summary. See totals with:
+  ```bash
+  python3 WebPivot/tools/api_usage.py report [--case <CASE>] [--since YYYY-MM-DD] [--last 20]
+  ```
+  or the `api_usage` MCP tool. Credits are best-effort **unit counts** (1 = one query/request;
+  urlscan_search = 1 per page), plus the provider's reported quota-remaining where exposed (urlscan
+  headers) — a usage log, not an invoice. `pivot_extract.py` makes **zero** Anthropic calls.
 
 ## Phase ↔ tool map (parity with `harness/orchestrator.py`)
 

@@ -46,8 +46,10 @@ which auto-discovers every `@tool`). Do NOT leave a new capability reachable onl
   **interactive Claude Code** the model can't read its own `total_cost_usd`; run `/cost` to see it.
 - **Third-party API credits are NOT in `total_cost_usd`.** `pivot_extract.py` and friends spend
   FOFA / WhoisXML / urlscan / IPinfo / Shodan credits (and make **zero** Anthropic calls
-  themselves) — track those in each provider's own console. State this split when reporting cost;
-  don't imply `total_cost_usd` covers the API credits.
+  themselves). They are logged to `MEMORY/api_usage.jsonl` by `api_usage.record(...)` and reported
+  via `WebPivot/tools/api_usage.py report` (or the `api_usage` MCP tool); every run also prints an
+  "API usage this run" summary. State the split when reporting cost; don't imply `total_cost_usd`
+  covers the API credits. **Any NEW licensed/metered API call MUST call `api_usage.record(...)`.**
 
 ## When a skill genuinely needs an example
 

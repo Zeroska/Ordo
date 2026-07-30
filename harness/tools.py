@@ -465,12 +465,34 @@ async def domain_verdict(args: dict[str, Any]) -> dict[str, Any]:
                f"[cases] {cases}\n[operator] {verdict}\n[KB] {facts[:3000]}")
 
 
+@tool(
+    "api_usage",
+    "Report LICENSED/metered API credit usage (FOFA, urlscan, WhoisXML, IPinfo, Shodan) from the "
+    "ledger every collection writes. Pass case=<ID> to scope to one case, since=YYYY-MM-DD to bound "
+    "by date, last=<N> to also list the most recent calls. Shows credits per provider / day / case. "
+    "Read-only — use it to answer 'how many credits did this case/run cost'.",
+    {},   # all optional: case, since (str), last (int) via args.get()
+    annotations=READONLY,
+)
+async def api_usage(args: dict[str, Any]) -> dict[str, Any]:
+    cmd = [PY, os.path.join("WebPivot", "tools", "api_usage.py"), "report"]
+    if args.get("case"):
+        cmd += ["--case", str(args["case"])]
+    if args.get("since"):
+        cmd += ["--since", str(args["since"])]
+    if args.get("last"):
+        cmd += ["--last", str(int(args["last"]))]
+    r = _run(cmd)
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "no output"}],
+            "is_error": r.returncode != 0}
+
+
 # ---------------------------------------------------------------- servers + names
 COLLECT_SERVER = create_sdk_mcp_server("collect", tools=[pivot_extract, fallback_probe, kb_ingest])
 ANALYZE_SERVER = create_sdk_mcp_server(
     "analyze", tools=[kb_cluster, kb_entity, kb_query_shared, risk_signals,
                       reverse_whois, cert_overlap, reference_check, reference_add,
-                      which_cases, domain_verdict])
+                      which_cases, domain_verdict, api_usage])
 
 COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__fallback_probe",
                  "mcp__collect__kb_ingest"]
@@ -478,4 +500,5 @@ ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__kb_query_shared", "mcp__analyze__risk_signals",
                  "mcp__analyze__reverse_whois", "mcp__analyze__cert_overlap",
                  "mcp__analyze__reference_check", "mcp__analyze__reference_add",
-                 "mcp__analyze__which_cases", "mcp__analyze__domain_verdict"]
+                 "mcp__analyze__which_cases", "mcp__analyze__domain_verdict",
+                 "mcp__analyze__api_usage"]

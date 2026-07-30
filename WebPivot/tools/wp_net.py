@@ -28,6 +28,10 @@ except Exception:
 import urllib.request
 import urllib.error
 from wp_common import *  # noqa
+try:
+    import api_usage                      # licensed-API credit ledger
+except Exception:
+    api_usage = None
 
 class _RecordingRedirectHandler(urllib.request.HTTPRedirectHandler):
     """urllib redirect handler that records each hop (from-url, status, to-url)."""
@@ -221,11 +225,19 @@ def urlscan_intel(host: str, ua: str = DEFAULT_UA, limit: int = 20):
         if _uk:
             req_headers["API-Key"] = _uk
         req = urllib.request.Request(api, headers=req_headers)
+        _rem = _lim = None
         with urllib.request.urlopen(req, timeout=30) as r:
+            if api_usage:
+                _rem, _lim = api_usage.rl_headers(r)
             data = json.load(r)
     except Exception as e:
         out["error"] = str(e)
+        if api_usage:
+            api_usage.record("urlscan", "search", credits=0, query=f"domain:{host}", ok=False)
         return out
+    if api_usage:
+        api_usage.record("urlscan", "search", credits=1, query=f"domain:{host}",
+                         results=data.get("total"), remaining=_rem, limit=_lim)
     out["total"] = data.get("total", 0)
     doms, ips, asns, servers = set(), set(), set(), set()
     for res in data.get("results", []):
@@ -268,10 +280,17 @@ def urlscan_verdict(uuid: str, ua: str = DEFAULT_UA, timeout: int = 30):
         headers["API-Key"] = key
     try:
         req = urllib.request.Request(f"https://urlscan.io/api/v1/result/{uuid}/", headers=headers)
+        _rem = _lim = None
         with urllib.request.urlopen(req, timeout=timeout) as r:
+            if api_usage:
+                _rem, _lim = api_usage.rl_headers(r)
             v = (json.load(r).get("verdicts") or {})
     except Exception:
+        if api_usage:
+            api_usage.record("urlscan", "result", credits=0, query=uuid, ok=False)
         return None
+    if api_usage:
+        api_usage.record("urlscan", "result", credits=1, query=uuid, remaining=_rem, limit=_lim)
     ov = v.get("overall") or {}
 
     def _bn(b):
@@ -366,8 +385,13 @@ def urlscan_submit(url: str, timeout: int = 30, visibility: str = None):
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 j = json.loads(resp.read().decode("utf-8", "ignore"))
         if j.get("uuid"):
+            if api_usage:
+                api_usage.record("urlscan", "scan", credits=1, query=url,
+                                 results=j.get("visibility", visibility))
             return {"uuid": j["uuid"], "result": j.get("result"), "api": j.get("api"),
                     "visibility": j.get("visibility", visibility)}
+        if api_usage:
+            api_usage.record("urlscan", "scan", credits=0, query=url, ok=False)
         return {"error": j.get("message") or j.get("description") or str(j)[:200]}
     except Exception as e:
         return {"error": str(e)}

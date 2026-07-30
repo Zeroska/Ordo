@@ -30,6 +30,10 @@ from urllib.parse import urlencode
 from wp_common import *      # noqa  — DEFAULT_UA, _secret, uniq, strip_www, _registrable
 from wp_recon import fofa_search
 from wp_analyze import classify_ip
+try:
+    import api_usage                      # licensed-API credit ledger
+except Exception:
+    api_usage = None
 
 _ASN_REGISTRY = os.path.join(os.path.dirname(__file__), "..", "references", "asn_registry.json")
 
@@ -91,7 +95,11 @@ def ipinfo_lookup(ip: str, timeout: int = 15) -> dict:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             data = json.load(r)
     except Exception as e:
+        if api_usage:
+            api_usage.record("ipinfo", "lookup", credits=0, query=ip, ok=False)
         return {"ip": ip, "error": str(e)}
+    if api_usage:
+        api_usage.record("ipinfo", "lookup", credits=1, query=ip)
     out["raw"] = data
     asn, org_name = _asn_from_org(data.get("org", ""))
     # token plans return a structured `asn` block instead of the `org` string
@@ -237,7 +245,11 @@ def shodan_host(ip: str, timeout: int = 20) -> dict:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             data = json.load(r)
     except Exception as e:
+        if api_usage:
+            api_usage.record("shodan", "host", credits=0, query=ip, ok=False)
         return {"error": str(e)}
+    if api_usage:
+        api_usage.record("shodan", "host", credits=1, query=ip)
     services = uniq([d.get("product") for d in data.get("data", []) if d.get("product")])
     return {"ports": sorted(map(str, data.get("ports", []))), "services": services,
             "hostnames": data.get("hostnames", []), "org": data.get("org"),

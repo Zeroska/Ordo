@@ -30,6 +30,10 @@ import argparse
 import urllib.request
 import urllib.error
 from urllib.parse import urlencode
+try:
+    import api_usage                      # licensed-API credit ledger
+except Exception:
+    api_usage = None
 
 DEFAULT_UA = "WebPivot-whois/1.0"
 _CUSTOMIZATION_ENV = os.path.expanduser(
@@ -97,11 +101,24 @@ def is_privacy(value):
     return False
 
 
+def _wx_action(url):
+    """WhoisXML endpoint → billable action label for the usage ledger (each charges credits)."""
+    if url == WHOIS_HISTORY_URL:
+        return "whois-history"
+    if url == REVERSE_WHOIS_URL:
+        return "reverse-whois"
+    return "whois"
+
+
 def _get_json(url, params, timeout=30):
     full = url + "?" + urlencode(params)
     req = urllib.request.Request(full, headers={"User-Agent": DEFAULT_UA})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.load(r)
+        out = json.load(r)
+    if api_usage:
+        api_usage.record("whoisxml", _wx_action(url), credits=1,
+                         query=params.get("domainName") or params.get("terms") or params.get("q"))
+    return out
 
 
 def _post_json(url, payload, timeout=30):
@@ -110,7 +127,10 @@ def _post_json(url, payload, timeout=30):
                                  headers={"User-Agent": DEFAULT_UA,
                                           "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.load(r)
+        out = json.load(r)
+    if api_usage:
+        api_usage.record("whoisxml", _wx_action(url), credits=1)
+    return out
 
 
 def _contact(rec, *keys):

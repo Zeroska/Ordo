@@ -83,6 +83,10 @@ from wp_analyze import *  # noqa
 from wp_crawl import *  # noqa
 import wp_extract  # noqa  (for the QR toggle set in main)
 import wp_ippivot  # noqa  (IPPivot: bare-IP source runs passive IP recon instead of HTML)
+try:
+    import api_usage  # licensed-API credit ledger (per-run summary + JSONL)
+except Exception:
+    api_usage = None
 from wp_analyze import _is_distinctive_basename, _resource_filename_for  # noqa: kept for external tests
 
 
@@ -162,6 +166,9 @@ def _emit_result(result, args, src):
         print(render_leads(result))
     elif not args.out:
         print(out)
+
+    if api_usage:                     # per-run licensed-API credit summary (also logged to JSONL)
+        api_usage.print_session_summary()
 
 
 def main():
@@ -250,6 +257,8 @@ def main():
                          "needs pyzbar+Pillow or OpenCV). The zero-dep decode of QR-generator-service "
                          "URLs (?data=/&chl=) always runs regardless of this flag.")
     args = ap.parse_args()
+    if api_usage:            # tag every licensed-API call this run with the case + skill
+        api_usage.set_context(case=args.case, skill="WebPivot")
     if args.screenshot is not None and not args.render:
         args.render = True   # a screenshot requires the rendered (Playwright) page
     wp_extract.QR_DECODE_IMAGES = bool(args.decode_qr)

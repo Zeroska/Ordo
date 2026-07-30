@@ -28,6 +28,10 @@ except Exception:
 import urllib.request
 import urllib.error
 from wp_common import *  # noqa
+try:
+    import api_usage                      # licensed-API credit ledger
+except Exception:
+    api_usage = None
 
 def fofa_search(query: str, size: int = 100,
                 fields: str = "host,ip,domain,title", timeout: int = 30,
@@ -61,9 +65,13 @@ def fofa_search(query: str, size: int = 100,
     except Exception as e:
         return {"query": query, "error": str(e)}
     if data.get("error"):
+        if api_usage:
+            api_usage.record("fofa", "search", credits=0, query=query, ok=False)
         return {"query": query, "error": data.get("errmsg", "fofa error")}
     cols = fields.split(",")
     rows = [dict(zip(cols, row)) for row in data.get("results", [])]
+    if api_usage:
+        api_usage.record("fofa", "search", credits=1, query=query, results=len(rows))
     return {"query": query, "total": data.get("size", len(rows)), "results": rows}
 
 def urlscan_search(query: str, limit: int = 100, timeout: int = 30, max_results: int = None):
@@ -82,6 +90,7 @@ def urlscan_search(query: str, limit: int = 100, timeout: int = 30, max_results:
     if max_results is None:
         max_results = 1000 if key else limit
     doms, seen, total, search_after, pages = [], set(), None, None, 0
+    rem = lim = None
     while len(doms) < max_results and pages < 20:
         pages += 1
         size = min(100, max_results - len(doms))
@@ -91,10 +100,14 @@ def urlscan_search(query: str, limit: int = 100, timeout: int = 30, max_results:
         try:
             req = urllib.request.Request(api, headers=headers)
             with urllib.request.urlopen(req, timeout=timeout) as r:
+                if api_usage:
+                    rem, lim = api_usage.rl_headers(r)
                 data = json.load(r)
         except Exception as e:
             if doms:
                 break                       # keep the partial page(s) already gathered
+            if api_usage:
+                api_usage.record("urlscan", "search", credits=pages - 1 or 0, query=query, ok=bool(doms))
             return {"query": query, "error": str(e)}
         results = data.get("results", []) or []
         if not results:
@@ -111,6 +124,9 @@ def urlscan_search(query: str, limit: int = 100, timeout: int = 30, max_results:
         if not sort:
             break
         search_after = ",".join(str(x) for x in sort)
+    if api_usage:
+        api_usage.record("urlscan", "search", credits=pages, query=query,
+                         results=len(doms), remaining=rem, limit=lim)
     return {"query": query, "total": total if total is not None else len(doms),
             "domains": doms[:max_results], "pages": pages}
 
@@ -134,6 +150,8 @@ def urlscan_similar(host: str, timeout: int = 30, limit: int = 60):
             hits = (json.load(r).get("results") or [])
     except Exception as e:
         return {"error": str(e)}
+    if api_usage:
+        api_usage.record("urlscan", "search", credits=1, query=f"page.domain:{host}")
     uuid = (hits[0].get("_id") if hits else None)
     if not uuid:
         return {"skipped": "no prior urlscan scan for host"}
@@ -153,6 +171,8 @@ def urlscan_similar(host: str, timeout: int = 30, limit: int = 60):
         d = (res.get("page") or {}).get("domain") if isinstance(res, dict) else None
         if d and d != host and d not in doms:
             doms.append(d)
+    if api_usage:
+        api_usage.record("urlscan", "similar", credits=1, query=host, results=len(doms))
     return {"uuid": uuid, "similar_domains": doms[:limit]}
 
 

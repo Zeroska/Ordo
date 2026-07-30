@@ -222,6 +222,7 @@ def main():
     unit_mods = [
         ("test_urlscan_reverse", "urlscan_reverse — distinctiveness + resource resolution"),
         ("test_ippivot", "ippivot — IP detect / noise classify / registry opsec / mail parse"),
+        ("test_api_usage", "api_usage — licensed-API credit ledger record/summary"),
     ]
     for modname, desc in unit_mods:
         try:
