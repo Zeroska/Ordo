@@ -656,4 +656,113 @@ def resolve_live_dns(host: str, timeout: int = 6) -> dict:
     return {"host": host, "ips": [], "error": "unresolved"}
 
 
+# --- Mail-server / provider detection (dig MX) -------------------------------------
+# BEFORE spending time on recon, learn what mail infra a domain actually uses — its MX
+# records name the provider (Google Workspace, Microsoft 365, Proofpoint, …) or, when
+# self-hosted, a custom mail host that is itself operator infrastructure to pivot on.
+# Three signals matter for a fraud/scam investigation:
+#   * a MANAGED provider (Google/M365/Zoho/…) → attribution context, not a host pivot
+#     (millions of tenants share aspmx.l.google.com) — EXCEPT M365, whose MX host
+#     `<routing>.mail.protection.outlook.com` encodes the tenant's own domain (a pivot).
+#   * a CUSTOM MX host (matches no known provider) → self-hosted / small-VPS mail = real
+#     infrastructure; reverse-IP + crt.sh it to find sibling domains on the same mail box.
+#   * NO MX at all → the domain is not configured to receive mail — a common throwaway /
+#     parked-scam-domain tell (they only need to serve a page, not run a mailbox).
+# All of this is a recursive-resolver query (dig, nslookup fallback) — passive, no target
+# contact, no API cost.
+
+MAIL_PROVIDERS = (
+    ("Google Workspace", ("aspmx.l.google.com", ".aspmx.l.google.com", ".google.com",
+                          "googlemail.com", ".googlemail.com")),
+    ("Microsoft 365", (".mail.protection.outlook.com", ".outlook.com", ".office365.com")),
+    ("Proofpoint", (".pphosted.com", ".ppe-hosted.com")),
+    ("Mimecast", (".mimecast.com", ".mimecast.co.za")),
+    ("Zoho Mail", (".zoho.com", ".zoho.eu", ".zohomail.com")),
+    ("Yandex 360", (".yandex.net", ".yandex.ru")),
+    ("Proton Mail", (".protonmail.ch", ".proton.me", "protonmail-mx")),
+    ("Cloudflare Email Routing", (".mx.cloudflare.net",)),
+    ("Amazon WorkMail/SES", (".awsapps.com", ".amazonaws.com", ".amazonses.com")),
+    ("Fastmail", (".messagingengine.com", ".fastmail.com")),
+    ("Namecheap Private Email", (".privateemail.com",)),
+    ("GoDaddy (Secureserver)", (".secureserver.net",)),
+    ("Tencent Exmail", (".qq.com",)),
+    ("Alibaba Mail", (".mxhichina.com", ".alibaba-inc.com")),
+    ("NetEase", (".163.com", ".126.com", ".ym163.com")),
+    ("iCloud (Apple)", (".icloud.com", ".mail.me.com")),
+    ("ImprovMX (forwarder)", (".improvmx.com",)),
+    ("ForwardEmail (forwarder)", (".forwardemail.net",)),
+    ("SendGrid", (".sendgrid.net",)),
+    ("Mailgun", (".mailgun.org", ".mailgun.net")),
+    ("Zoho / Migadu / other SaaS", (".migadu.com",)),
+)
+
+def _mx_records(host: str, timeout: int = 8):
+    """Return [(pref:int, exchange:str), …] sorted by preference, via dig then nslookup."""
+    out = []
+    dig = shutil.which("dig")
+    if dig:
+        try:
+            txt = subprocess.run([dig, "+short", "MX", host], capture_output=True,
+                                 text=True, timeout=timeout).stdout
+            for ln in txt.splitlines():
+                m = re.match(r"\s*(\d+)\s+(\S+?)\.?\s*$", ln.strip())
+                if m:
+                    out.append((int(m.group(1)), m.group(2).lower()))
+        except Exception:
+            pass
+    if not out and shutil.which("nslookup"):
+        try:
+            txt = subprocess.run([shutil.which("nslookup"), "-type=MX", host],
+                                 capture_output=True, text=True, timeout=timeout).stdout
+            for m in re.finditer(r"mail exchanger\s*=\s*(\d+)\s+(\S+?)\.?\s*$",
+                                 txt, re.I | re.M):
+                out.append((int(m.group(1)), m.group(2).lower()))
+        except Exception:
+            pass
+    return sorted(uniq(out), key=lambda x: x[0])
+
+def _classify_mx(exchange: str):
+    """('Google Workspace' | … | None) for one MX exchange hostname."""
+    h = exchange.lower().rstrip(".")
+    for name, sigs in MAIL_PROVIDERS:
+        for s in sigs:
+            if (h.endswith(s) if s.startswith(".") else (h == s or h.endswith("." + s))):
+                return name
+    return None
+
+def detect_mail_provider(host: str, timeout: int = 8):
+    """Resolve a domain's MX and classify its mail provider. Returns a dict or None.
+
+    None only when we couldn't query at all (no dig/nslookup). An empty MX set is a
+    RESULT ({'mx': [], 'provider': None, 'no_mx': True}), not a failure — 'no mail' is
+    itself a signal. `custom_mx_hosts` are exchanges matching no known provider (pivots);
+    `m365_tenant` is the routing domain a Microsoft-365 MX host encodes.
+    """
+    host = strip_www(host or "").strip().rstrip(".")
+    if not host or not (shutil.which("dig") or shutil.which("nslookup")):
+        return None
+    recs = _mx_records(host, timeout=timeout)
+    mx_hosts = uniq([ex for _, ex in recs])
+    providers = uniq([p for ex in mx_hosts if (p := _classify_mx(ex))])
+    seed_reg = _registrable(host)
+    custom = [ex for ex in mx_hosts if not _classify_mx(ex)]
+    # a custom exchange that is just this domain's own subdomain is self-hosted mail;
+    # one on a different registrable domain is third-party (possibly shared) mail infra.
+    self_hosted = any(_registrable(ex) == seed_reg for ex in custom)
+    m365_tenant = None
+    for ex in mx_hosts:
+        if ex.endswith(".mail.protection.outlook.com"):
+            m365_tenant = ex[: -len(".mail.protection.outlook.com")] or None
+            break
+    return {
+        "mx": [f"{p} {ex}" for p, ex in recs],
+        "mx_hosts": mx_hosts,
+        "provider": providers[0] if len(providers) == 1 else (providers or None),
+        "custom_mx_hosts": custom,
+        "self_hosted": self_hosted,
+        "m365_tenant": m365_tenant,
+        "no_mx": not mx_hosts,
+    }
+
+
 __all__ = [_n for _n in dir() if not _n.startswith("__")]

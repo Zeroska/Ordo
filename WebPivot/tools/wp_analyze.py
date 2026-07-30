@@ -158,6 +158,16 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
         if parsed.scheme in ("http", "https") and parsed.hostname:
             cors = merge_cors(cors, probe_cors(effective_url, ua=ua, proxy=proxy, timeout=12))
 
+    # --- mail server / provider (dig MX) ---
+    # Gated to the primary live page of a real domain (never archived/offline, and
+    # probe_tls=False on crawled sub-pages — MX is per-domain, one query suffices). This
+    # is a recursive-resolver query, so it needs no proxy suppression (it never contacts
+    # the target). Tells us the mail provider (Google Workspace / M365 / …), any custom
+    # self-hosted MX host to pivot on, and whether the domain receives mail at all.
+    mail = None
+    if probe_tls and self_host and not is_archived:
+        mail = detect_mail_provider(self_host, timeout=8)
+
     # --- app-download artifacts (scam trading-app / APK funnels) ---
     app_downloads = extract_app_downloads(html, base_url)
     # Android App Links: /.well-known/assetlinks.json → package + APK signing-cert sha256
@@ -207,6 +217,7 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
         "footer": footer,
         "etag": etag,
         "tls_cert": tls_cert,
+        "mail": mail,
         "app_downloads": app_downloads,
         "qr_codes": qr_codes,
         "trackers": trackers,
@@ -286,6 +297,25 @@ def render_leads(result: dict) -> str:
                      + (" — trusted origins become cors_allowed_origin pivots below." if _hosts else "")
                      + (" ⚠️ reflect-any + credentials misconfig." if cors.get("reflects_origin")
                         and cors.get("credentials") else ""))
+        lines.append("")
+    mail = (result.get("artifacts") or {}).get("mail") or {}
+    if mail.get("mx_hosts") is not None and (mail.get("provider") or mail.get("no_mx")
+                                             or mail.get("custom_mx_hosts")):
+        if mail.get("no_mx"):
+            lines.append("> 📭 Mail: no MX records — this domain does not receive email "
+                         "(throwaway / parked-scam tell).")
+        else:
+            prov = mail.get("provider")
+            prov = ", ".join(prov) if isinstance(prov, list) else prov
+            bits = []
+            if prov:
+                bits.append(f"provider **{prov}**")
+            if mail.get("m365_tenant"):
+                bits.append(f"M365 tenant `{mail['m365_tenant']}` → m365_tenant pivot")
+            if mail.get("custom_mx_hosts"):
+                bits.append(("self-hosted" if mail.get("self_hosted") else "custom") +
+                            f" MX {', '.join(mail['custom_mx_hosts'])} → mail_server pivot")
+            lines.append("> 📧 Mail (MX): " + "; ".join(bits or [", ".join(mail["mx_hosts"])]) + ".")
         lines.append("")
     if m.get("cloudflare"):
         lines.append(f"> 🛡️ Cloudflare {m['cloudflare']} detected — a UA swap won't pass a managed "

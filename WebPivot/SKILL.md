@@ -308,6 +308,28 @@ under `artifacts.cors`. Three outcomes matter, and only the first is a host pivo
 Corroborate a `cors_allowed_origin` link with a second artifact (favicon / cert / tracker) before
 asserting common ownership — a shared backend can also just be a shared SaaS vendor.
 
+**Mail server / provider — `dig MX` before you spend time on recon.** On a live domain (never
+archived/offline; one query per case — skipped on crawled sub-pages) the tool resolves the domain's
+**MX records** via `dig` (nslookup fallback) and classifies the mail infrastructure into
+`artifacts.mail`. It's a recursive-resolver query — **passive, no target contact, no API cost** — but
+it answers three investigation-shaping questions up front:
+- **Which managed provider?** — Google Workspace (`aspmx.l.google.com`), Microsoft 365
+  (`*.mail.protection.outlook.com`), Proofpoint, Mimecast, Zoho, Yandex, Proton, Cloudflare Email,
+  Amazon WorkMail/SES, Fastmail, Namecheap Private Email, GoDaddy, Tencent/Alibaba/NetEase, forwarders
+  (ImprovMX / ForwardEmail), … A managed provider is **attribution context, not a host pivot** (millions
+  of tenants share `aspmx.l.google.com`).
+- **Microsoft 365 is the exception → `m365_tenant` pivot.** An M365 MX host
+  `<routing>.mail.protection.outlook.com` **encodes the organization's own tenant domain** (dashes
+  stand in for dots), so `github-com.mail.protection.outlook.com` reveals the tenant behind the site —
+  and other domains on the same tenant. Emitted `medium`.
+- **Custom / self-hosted MX → `mail_server` pivot.** An exchange matching no known provider is real
+  operator mail infra. On the seed's own apex it's self-hosted (`low`; the mail box's IP + other
+  domains it serves are pivots); on a **different** apex it's third-party/shared mail infra (`medium`;
+  other domains pointing their MX here — reverse-MX — can be a same-operator link).
+- **No MX at all** — the domain isn't configured to receive mail: a common **throwaway / parked-scam**
+  tell (they only need to serve a page, not run a mailbox). Surfaced in `--leads` (`📭 Mail: no MX`).
+The provider / tenant / custom-MX verdict is shown as a banner in `--leads`; the pivots rank inline.
+
 **CT / SSL search — two indexes merged, resilient, wildcard-aware.** Live enrichment runs a
 certificate-transparency search on the base domain via `ct_search()`, which queries **both crt.sh
 and Shodan's keyless CTL mirror** (`ctl.shodan.io/api/v1/domain/<d>` + `/hostnames`) concurrently
@@ -335,7 +357,7 @@ degrades gracefully (old behaviour). Refresh ranges with `python3 tools/cdn_rang
 **What it extracts** (see `references/PivotArtifacts.md`): favicon mmh3/md5/sha256, analytics & ad IDs (GA4 `G-`, `GTM-`, AdSense `pub-`, FB Pixel, Yandex, Hotjar, Matomo, Sentry DSN, …), crypto wallets (BTC/ETH/XMR/TRON/LTC), **app-download artifacts** (direct `.apk`/`.aab`/`.ipa`
 URLs + the backend host serving them, **desktop "trading terminal" installers** — `.exe`/`.msi`/`.dmg`/`.pkg`/`.appimage`/`.deb` — Android package ids, iOS app ids, smart-app-banner meta,
 `intent://` deep links, and the APK **signing-cert SHA-256** + package from `/.well-known/assetlinks.json`). Each detected file emits an `app:apk` / `app:desktop_installer` pivot whose first query is the exact **BinaryPivot** command to statically extract the file's own IOCs (signing cert, embedded C2/backend hosts, wallets) — those become shared indicators that cluster the app with the web infra,
-emails, social handles, third-party hosts, inline-script SHA-256, form actions + input names (phishing-kit tell), HTML comments, DOM-skeleton hash (template reuse), tech fingerprints, cookie names, server headers, the **full HTTP request/response headers and an active CORS probe** (`artifacts.http` + `artifacts.cors` — see the CORS section above; trusted backend/sibling origins the HTML never names), **SaaS / no-code operator tokens** (GoHighLevel `msgsndr` location ID, backend Google Sheet ID, Make/Zapier/Apps-Script automation webhooks, TrustedForm lead-cert) — attribution-grade for hosted-builder funnels, and only fully present in the `--render` DOM.
+emails, social handles, third-party hosts, inline-script SHA-256, form actions + input names (phishing-kit tell), HTML comments, DOM-skeleton hash (template reuse), tech fingerprints, cookie names, server headers, the **full HTTP request/response headers and an active CORS probe** (`artifacts.http` + `artifacts.cors` — see the CORS section above; trusted backend/sibling origins the HTML never names), the **mail provider + MX records** (`artifacts.mail` — Google Workspace / M365 tenant / custom self-hosted MX / no-MX, via `dig`), **SaaS / no-code operator tokens** (GoHighLevel `msgsndr` location ID, backend Google Sheet ID, Make/Zapier/Apps-Script automation webhooks, TrustedForm lead-cert) — attribution-grade for hosted-builder funnels, and only fully present in the `--render` DOM.
 
 **QR codes — the money is often hidden in the QR (`qr:*` pivots).** Scam funnels put the
 deposit wallet, a Telegram invite, or a WhatsApp/affiliate link inside a QR image instead of
@@ -356,7 +378,7 @@ fed to the KB as `qr_wallet_*` so a reused deposit address clusters operators), 
 first-class**: the tool already records the seed's full `meta.redirect_chain` + affiliate/referral
 codes, and every URL-bearing pivot keeps the **full, unshortened URL** so you can resolve it.
 
-**What it emits:** a `pivots` array, ranked high→low confidence, each with copy-paste queries for the right engine (with the correct hash algorithm per engine — Shodan/FOFA=mmh3, Censys=MD5, Netlas=SHA-256), plus redirect-chain / affiliate-code pivots for tracker links, live-TLS-cert pivots (`tls_cert:co_san` cross-apex + `tls_cert:fingerprint_sha256`), CORS-trusted-origin pivots (`cors_allowed_origin` backend/sibling hosts + a `cors_misconfig` flag), and reverse-WHOIS (email + name, current + historic) under `--whois-reverse`.
+**What it emits:** a `pivots` array, ranked high→low confidence, each with copy-paste queries for the right engine (with the correct hash algorithm per engine — Shodan/FOFA=mmh3, Censys=MD5, Netlas=SHA-256), plus redirect-chain / affiliate-code pivots for tracker links, live-TLS-cert pivots (`tls_cert:co_san` cross-apex + `tls_cert:fingerprint_sha256`), CORS-trusted-origin pivots (`cors_allowed_origin` backend/sibling hosts + a `cors_misconfig` flag), mail-infra pivots (`mail_server` custom/self-hosted MX + `m365_tenant`, via `dig MX`), and reverse-WHOIS (email + name, current + historic) under `--whois-reverse`.
 
 **Case graph — `tools/graph_build.py`.** Merges many `pivot_extract` JSONs into one
 normalized, **clustered** graph model: typed nodes (domains + shared artifacts as hub

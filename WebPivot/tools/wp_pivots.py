@@ -477,6 +477,29 @@ def build_pivots(art: dict, base_host: str):
             "reflect-any credential misconfig. It names no host, but confirms a live "
             "authenticated API; probe it with candidate Origins to enumerate trusted hosts.")
 
+    # --- mail infrastructure (dig MX) — custom/self-hosted MX + M365 tenant ---
+    mail = art.get("mail") or {}
+    for ex in mail.get("custom_mx_hosts", [])[:10]:
+        mx_reg = _registrable(ex)
+        same_apex = bool(seed_reg) and mx_reg == seed_reg
+        add("mail_server", ex, "low" if same_apex else "medium", [
+            {"service": "crt.sh", "query": f"%.{mx_reg}"},
+            {"service": "ViewDNS reverse-IP", "query": ex},
+            {"service": "ViewDNS/SecurityTrails reverse-MX", "query": ex},
+            {"service": "FOFA", "query": f'host="{ex}"'},
+        ], "Custom mail exchanger (matches no managed provider)" + (
+            " on the seed's own apex — self-hosted mail; the box's IP and every other domain it "
+            "serves are pivots." if same_apex else
+            " on a different apex — third-party or shared mail infra; other domains pointing their MX "
+            "at this host (reverse-MX) can be a same-operator link. Corroborate before clustering."))
+    if mail.get("m365_tenant"):
+        add("m365_tenant", mail["m365_tenant"], "medium", [
+            {"service": "crt.sh", "query": mail["m365_tenant"].replace("-", ".")},
+            {"service": "M365 tenant (GetUserRealm / AADInternals)", "query": mail["m365_tenant"]},
+        ], "Microsoft-365 MX routing domain — it encodes the organization's OWN tenant domain "
+           "(dashes stand in for dots), revealing the primary domain behind the site and other "
+           "domains sharing the same M365 tenant.")
+
     for host in art.get("third_party_hosts", [])[:15]:
         add("third_party_host", host, "low", [
             {"service": "crt.sh", "query": f"%.{host}"},
