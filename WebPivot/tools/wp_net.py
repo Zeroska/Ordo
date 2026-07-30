@@ -247,20 +247,42 @@ def urlscan_intel(host: str, ua: str = DEFAULT_UA, limit: int = 20):
     out["asns"] = sorted(asns)[:20]
     out["servers"] = sorted(servers)[:20]
     out["recent_scans"] = out["recent_scans"][:limit]
-    # urlscan verdict/brand (Pro returns richer data; best-effort from the most recent scan) →
-    # feeds risk_signals triage. Absent on results without a verdict.
-    for res in data.get("results", []):
-        ver = res.get("verdicts") or {}
-        ov = ver.get("overall") or {}
-        brands = [b.get("name") for b in (res.get("brands") or ver.get("brands") or [])
-                  if isinstance(b, dict) and b.get("name")]
-        if ov or brands:
-            out["verdict"] = {"score": ov.get("score"), "malicious": ov.get("malicious"),
-                              "brands": brands,
-                              "categories": ov.get("categories") or res.get("categories") or [],
-                              "result": f"https://urlscan.io/result/{res.get('_id')}/"}
-            break
+    # urlscan verdict/brand → feeds risk_signals triage. The compact SEARCH hit omits verdicts;
+    # they live in the full RESULT endpoint (works on a normal key). Fetch it for the latest scan.
+    if _uk:
+        uid = next((res.get("_id") for res in data.get("results", []) if res.get("_id")), None)
+        if uid:
+            v = urlscan_verdict(uid, ua=ua)
+            if v:
+                out["verdict"] = v
     return out
+
+
+def urlscan_verdict(uuid: str, ua: str = DEFAULT_UA, timeout: int = 30):
+    """Fetch urlscan's verdict/brand for a scan UUID from the RESULT endpoint (verdicts are NOT in
+    the search hit). Returns {'score','malicious','brands','categories','tags','result'} or None.
+    Works on a normal key; a Pro key just has richer engine/community verdicts."""
+    headers = {"User-Agent": ua}
+    key = _secret("URLSCAN_API_KEY")
+    if key:
+        headers["API-Key"] = key
+    try:
+        req = urllib.request.Request(f"https://urlscan.io/api/v1/result/{uuid}/", headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            v = (json.load(r).get("verdicts") or {})
+    except Exception:
+        return None
+    ov = v.get("overall") or {}
+
+    def _bn(b):
+        return b.get("name") if isinstance(b, dict) else b
+    brands = sorted({_bn(b) for b in ((ov.get("brands") or []) + ((v.get("urlscan") or {}).get("brands") or []))
+                     if _bn(b)})
+    if not (ov or brands):
+        return None
+    return {"score": ov.get("score"), "malicious": ov.get("malicious"), "brands": brands,
+            "categories": ov.get("categories") or [], "tags": ov.get("tags") or [],
+            "result": f"https://urlscan.io/result/{uuid}/"}
 
 def urlscan_dom(intel: dict, ua: str = DEFAULT_UA, timeout: int = 30):
     """Fetch the rendered DOM of the most recent urlscan scan for a host, so a dead /
