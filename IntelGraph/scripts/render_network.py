@@ -21,6 +21,12 @@ Usage:
 import argparse
 import json
 import os
+import sys
+
+# the community palette is defined ONCE in theme.py (sibling) and injected below,
+# so it never drifts from graph_to_diagram.py's editable-Mermaid output.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from theme import COMMUNITY_CYCLE  # noqa: E402
 
 VENDOR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vendor")
 LIB_FILES = ["cytoscape.min.js", "layout-base.js", "cose-base.js", "cytoscape-fcose.js"]
@@ -140,7 +146,7 @@ const GRAPH = __GRAPH__;
 cytoscape.use(window.cytoscapeFcose);
 
 // community palette (colorblind-safe, muted, ≤8 then grey)
-const COMM = ["#3b5566","#8c2d2d","#b0790f","#5a6b3b","#5a4a7a","#2f6b6b","#9a5b2f","#7a2f52"];
+const COMM = __COMM__;
 const EDGE = {operator:getComputedStyle(document.documentElement).getPropertyValue('--op').trim(),
               kit:"#7b4bab", link:"#b9b2a4", infra:"#3b5566"};
 const commColor = n => n.data('type')==='operator' ? '#5a1a1a'
@@ -418,6 +424,7 @@ def main():
             .replace("__TITLE__", args.title)
             .replace("__SUBTITLE__", args.subtitle)
             .replace("__LIBS__", libs)
+            .replace("__COMM__", json.dumps(COMMUNITY_CYCLE))
             .replace("__GRAPH__", json.dumps(graph, ensure_ascii=False)))
     with open(args.out, "w", encoding="utf-8") as f:
         f.write(html)

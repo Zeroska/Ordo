@@ -487,12 +487,71 @@ async def api_usage(args: dict[str, Any]) -> dict[str, Any]:
             "is_error": r.returncode != 0}
 
 
+# ---------------------------------------------------------------- RENDER tools
+@tool(
+    "render_diagram",
+    "Turn a graph_build.py case_graph.json into an EDITABLE Mermaid diagram source (.mmd) and "
+    "render it to PNG + SVG (+ thumb) via IntelGraph. Use this when you want the relationship web "
+    "as a static, hand-editable figure to drop into a report — unlike render_network.py's opaque "
+    "interactive HTML, the .mmd is plain text you can tweak (rename a cluster, prune a node) and "
+    "re-render. Faithful encoding: node shape = entity type, node fill = Louvain cluster, operator "
+    "= red anchor, edge color = evidence class (operator/kit/infra/link), dashed = inferred. "
+    "Required: graph_json (path), stem (output path, no extension). Optional: title, direction "
+    "(LR|TB|RL|BT), legend=true (append an edge-color legend), no_render=true (emit only the .mmd).",
+    {"graph_json": str, "stem": str},
+)
+async def render_diagram(args: dict[str, Any]) -> dict[str, Any]:
+    cmd = [PY, os.path.join("IntelGraph", "scripts", "graph_to_diagram.py"),
+           str(args["graph_json"]), str(args["stem"])]
+    if args.get("title"):
+        cmd += ["--title", str(args["title"])]
+    if args.get("direction"):
+        cmd += ["--direction", str(args["direction"])]
+    if args.get("legend"):
+        cmd += ["--legend"]
+    if args.get("no_render"):
+        cmd += ["--no-render"]
+    r = _run(cmd, timeout=180)
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "no output"}],
+            "is_error": r.returncode != 0}
+
+
+@tool(
+    "render_report",
+    "Render an assessment MARKDOWN file into a polished PDF and/or DOCX via pandoc, using the "
+    "IntelReport house style (muted editorial palette matching IntelGraph, cover page, TOC, running "
+    "header/footer with the classification + case id, embedded figures, Vietnamese-safe fonts). No "
+    "analyst name is ever stamped; date defaults to UTC today. Title/case-id/classification/subtitle "
+    "are read from the markdown's YAML frontmatter unless overridden. Required: markdown (path), stem "
+    "(output path, no extension). Optional: title, subtitle, case_id, classification (e.g. TLP:AMBER), "
+    "date (YYYY-MM-DD), pdf=true / docx=true (default: both). Embed IntelGraph figures with a normal "
+    "markdown image whose path is resolvable from the markdown file's directory.",
+    {"markdown": str, "stem": str},
+)
+async def render_report(args: dict[str, Any]) -> dict[str, Any]:
+    cmd = [PY, os.path.join("IntelReport", "scripts", "render_report.py"),
+           str(args["markdown"]), str(args["stem"])]
+    for k, flag in (("title", "--title"), ("subtitle", "--subtitle"),
+                    ("case_id", "--case-id"), ("classification", "--classification"),
+                    ("date", "--date")):
+        if args.get(k):
+            cmd += [flag, str(args[k])]
+    if args.get("pdf"):
+        cmd += ["--pdf"]
+    if args.get("docx"):
+        cmd += ["--docx"]
+    r = _run(cmd, timeout=300)
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "no output"}],
+            "is_error": r.returncode != 0}
+
+
 # ---------------------------------------------------------------- servers + names
 COLLECT_SERVER = create_sdk_mcp_server("collect", tools=[pivot_extract, fallback_probe, kb_ingest])
 ANALYZE_SERVER = create_sdk_mcp_server(
     "analyze", tools=[kb_cluster, kb_entity, kb_query_shared, risk_signals,
                       reverse_whois, cert_overlap, reference_check, reference_add,
-                      which_cases, domain_verdict, api_usage])
+                      which_cases, domain_verdict, api_usage,
+                      render_diagram, render_report])
 
 COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__fallback_probe",
                  "mcp__collect__kb_ingest"]
@@ -501,4 +560,5 @@ ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__reverse_whois", "mcp__analyze__cert_overlap",
                  "mcp__analyze__reference_check", "mcp__analyze__reference_add",
                  "mcp__analyze__which_cases", "mcp__analyze__domain_verdict",
-                 "mcp__analyze__api_usage"]
+                 "mcp__analyze__api_usage",
+                 "mcp__analyze__render_diagram", "mcp__analyze__render_report"]

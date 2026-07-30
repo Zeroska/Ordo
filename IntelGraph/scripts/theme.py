@@ -34,6 +34,15 @@ PALETTE = {
 CYCLE = [PALETTE["primary"], PALETTE["brick"], PALETTE["ochre"],
          PALETTE["olive"], PALETTE["slate"], PALETTE["sand"]]
 
+# link-analysis palettes — shared by render_network.py (interactive HTML) and
+# graph_to_diagram.py (editable Mermaid) so the community/edge colors are defined
+# ONCE. COMMUNITY_CYCLE: Louvain community fill, ≤8 then wrap. EDGE_CLASS: edge
+# stroke by evidence class.
+COMMUNITY_CYCLE = ["#3b5566", "#8c2d2d", "#b0790f", "#5a6b3b",
+                   "#5a4a7a", "#2f6b6b", "#9a5b2f", "#7a2f52"]
+EDGE_CLASS = {"operator": "#b00020", "kit": "#7b4bab",
+              "infra": "#3b5566", "link": "#b9b2a4"}
+
 _I18N = {
     "en": {"source": "Source", "grading": "Confidence", "updated": "Updated"},
     "vi": {"source": "Nguồn", "grading": "Độ tin cậy", "updated": "Cập nhật"},

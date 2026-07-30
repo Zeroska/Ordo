@@ -68,6 +68,25 @@ Encoding (research-backed): **node size = betweenness centrality**, **color = Lo
 
 **Engine choice:** relationship web / clustering → `render_network.py` (this). Attack flow / kill-chain / provenance tree → Mermaid or Graphviz. Data charts / Gantt / timeline → matplotlib (`theme.py`, `gantt.py`).
 
+### Editable diagram export (for reports) — `graph_to_diagram.py`
+
+`render_network.py` produces an opaque, interactive HTML — perfect for exploring a dense web
+live, but you can't hand-edit it or embed it in a PDF/DOCX. When you need the case graph as a
+**static, editable figure for a report**, convert the *same* `case_graph.json` into an
+**editable Mermaid source** (`.mmd`) and render it to the PNG/SVG/thumb triple:
+
+```bash
+python3 scripts/graph_to_diagram.py case_graph.json out/case_diagram \
+    --title "One operator, N sites" --legend        # + --direction LR|TB  --no-render
+```
+Writes `out/case_diagram.mmd` (hand-editable — rename a cluster, prune a node, fix a label)
+then `out/case_diagram.svg`, `_hires.png`, `_thumb.png` via `render_mermaid.py`. Encoding is
+faithful to the HTML: **node shape = entity type**, **node fill = Louvain cluster**, operator
+= red anchor, **edge color = evidence class** (operator/kit/infra/link), **dashed = inferred**.
+Use this figure with the **IntelReport** skill to build the PDF/DOCX. Both outputs coexist —
+`render_network.py` (interactive HTML) is unchanged and still the right tool for live triage.
+Rendering needs `mmdc` + headless Chrome (same as any Mermaid figure).
+
 ## Chart type selection
 
 | Input signal | Chart | Engine |
