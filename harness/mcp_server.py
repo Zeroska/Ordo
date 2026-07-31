@@ -22,9 +22,12 @@ RUN / WIRE UP
   Protocol: MCP over stdio = newline-delimited JSON-RPC 2.0. Methods handled:
   initialize · notifications/initialized · tools/list · tools/call · ping.
 
-NOTE — egress policy: tools.POLICY["hostile"] defaults to False here (live fetch allowed), which
-  suits the interactive front-end. A hostile-target client should still enforce egress out of
-  process (PreToolUse hook / can_use_tool), same caveat as the SDK driver.
+NOTE — egress policy: this server has no phase loop to flip tools.POLICY, so it inherits the
+  import-time default, which reads the HARNESS_HOSTILE env var (see tools.py). Run a hostile-infra
+  session with `HARNESS_HOSTILE=1` and pivot_extract refuses direct live fetch (forces passive= /
+  proxy=), matching the SDK driver's per-phase gate. Left unset it defaults permissive, which suits
+  benign interactive use. For a hard, un-bypassable guarantee still layer a PreToolUse hook /
+  can_use_tool callback on top — this env gate is the shared floor that removes the front-end drift.
 """
 from __future__ import annotations
 

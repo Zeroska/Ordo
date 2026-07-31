@@ -86,10 +86,17 @@ except Exception:  # noqa: BLE001
         return False
 
 # --- egress-policy guardrail (the tradecraft-as-code seam) -------------------
-# The orchestrator flips this before a hostile-target run. This is deliberately a
-# simple module global for the skeleton; in production enforce the same rule with
-# a PreToolUse hook or the can_use_tool callback so it can't be bypassed in-process.
-POLICY: dict[str, bool] = {"hostile": False}
+# When hostile, a direct live fetch of the target is refused (pivot_extract forces
+# passive= or proxy=) so the analyst's own IP never touches attacker infra.
+# Two front-ends must agree on this:
+#   - the SDK orchestrator flips it per-phase (orchestrator._phase: T.POLICY["hostile"] = hostile);
+#   - the stdio MCP server (mcp_server.py) has no phase loop, so it inherits the default below.
+# The default reads HARNESS_HOSTILE from the env at import so the MCP / Claude-Code path can
+# enforce the SAME gate (export HARNESS_HOSTILE=1 for a hostile-infra session) instead of always
+# defaulting to permissive — this closes the front-end drift. For a hard, un-bypassable guarantee
+# still layer a PreToolUse hook / can_use_tool callback on top; this global is the shared floor.
+POLICY: dict[str, bool] = {"hostile": os.environ.get("HARNESS_HOSTILE", "").strip().lower()
+                           in ("1", "true", "yes", "on")}
 
 
 def _host(url: str) -> str:

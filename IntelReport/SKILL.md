@@ -77,10 +77,12 @@ enforces the typography (Roman numbering, compact tables, wrapped code); YOU enf
    ICD-203 bands: *almost no chance* (01–05%) · *very unlikely* (05–20) · *unlikely* (20–45) ·
    *roughly even chance* (45–55) · *likely* (55–80) · *very likely* (80–95) · *almost certain* (95–99%).
 7. **Appendix — artifact register (required).** The last section is an appendix table with ONE ROW
-   PER ARTIFACT, and for each artifact these columns: **Value · Source · Where found · How found ·
-   Admiralty grade**. "Source" = which service/dataset (WHOIS, urlscan, FOFA, live fetch, crt.sh…);
-   "Where found" = the exact file/URL/endpoint it came from; "How found" = the action that surfaced it
-   (e.g. "urlscan result API for scan UUID", "live GET of /config.js", "pivot_extract IP recon").
+   PER ARTIFACT, columns: **Artifact · Value · Source (public class) · Admiralty grade** — this is the
+   authoritative schema (Rule 13 restates it). "Source" is the PUBLIC source CLASS only — WHOIS,
+   passive DNS / IP, certificate transparency, public web-scan data, live page — never a specific
+   product/vendor, an internal file path, a tool/script name, or a "how we found it" column (that
+   would leak methodology; see Rules 12 & 14). Grade every row with its Admiralty code (source
+   reliability **A–F** × information credibility **1–6**).
 8. **Wrap code in a code block.** Any config/JSON/command goes in a fenced ```` ``` ```` block — the
    template line-wraps it so it never overflows the page. Never paste code as prose.
 9. **Compact, text-heavy tables are fine.** The template shrinks table font automatically; prefer a

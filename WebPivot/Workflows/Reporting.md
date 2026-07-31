@@ -1,8 +1,8 @@
 # Reporting, evidence & monitoring
 
 Everything for turning raw pivots into an analyst deliverable, packaging evidence, exporting
-IOCs, and watching a brand over time. All of it is `tools/evidence_report.py`,
-`tools/ct_monitor.py`, and a few `pivot_extract.py` flags. **A WebPivot run is only "done"
+IOCs, and watching a brand over time. All of it is `WebPivot/tools/evidence_report.py`,
+`WebPivot/tools/ct_monitor.py`, and a few `pivot_extract.py` flags. **A WebPivot run is only "done"
 when it ends with a readable ICD-203 assessment, not raw JSON.**
 
 ## 🎯 Trigger: "output full report for that cluster" → the WHOLE-CASE rollup
@@ -16,17 +16,17 @@ operator's real identity. Run this, and lead with its BLUF + Key Judgments + Con
 
 ```bash
 # THE cluster deliverable — every host + binary in the case, one ICD-203 assessment
-python3 tools/evidence_report.py cases/<case>/raw/*.json --case <name> \
+python3 WebPivot/tools/evidence_report.py cases/<case>/raw/*.json --case <name> \
     -o cases/<case>/assessment.md
 # share-ready IOC bundle for the whole cluster
-python3 tools/evidence_report.py cases/<case>/raw/*.json --case <name> \
+python3 WebPivot/tools/evidence_report.py cases/<case>/raw/*.json --case <name> \
     --misp cases/<case>/iocs.misp.json
 ```
 
 A single-domain `--report` (below) is only for eyeballing one page in isolation — it is **not** the
 cluster deliverable and should not be presented when the request was for the cluster.
 
-## Finished-intelligence reporting (ICD-203 / CIA analytic tradecraft) — `tools/evidence_report.py`
+## Finished-intelligence reporting (ICD-203 / CIA analytic tradecraft) — `WebPivot/tools/evidence_report.py`
 
 Two levels, both in US IC style: classification banner, **BLUF**, **Key Judgments** with ICD-203
 estimative language (*almost certainly / likely / roughly even chance*) kept distinct from
@@ -45,7 +45,7 @@ IP has low attribution value.
 
 ### Whole case (cluster) — the campaign deliverable
 ```bash
-python3 tools/evidence_report.py cases/<case>/raw/*.json --case <name> \
+python3 WebPivot/tools/evidence_report.py cases/<case>/raw/*.json --case <name> \
     -o cases/<case>/assessment.md
 ```
 Rolls ALL hosts into **one** ICD-203 assessment: BLUF verdict, cluster **Key Judgments** (hosts
@@ -73,7 +73,7 @@ stdlib; `.xlsx` needs openpyxl (falls back to CSV). Bare `--master` + `--case` d
 ## IOC bundle for sharing — `--misp`
 ```bash
 python3 tools/pivot_extract.py <host> --misp [PATH]                       # single host
-python3 tools/evidence_report.py cases/<case>/raw/*.json --case <c> \
+python3 WebPivot/tools/evidence_report.py cases/<case>/raw/*.json --case <c> \
     --misp cases/<c>/iocs.misp.json                                       # whole case
 ```
 Writes a **MISP-event JSON** of the extracted artifacts (domains, IPs, TLS cert fingerprints,
