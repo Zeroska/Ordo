@@ -27,6 +27,7 @@ import os
 import sys
 import json
 import argparse
+import concurrent.futures
 import urllib.request
 import urllib.error
 from urllib.parse import urlencode
@@ -306,8 +307,14 @@ def whois_summary(domain, history_mode="purchase", timeout=40, keep_raw=True):
     so later analysis can mine fields we don't normalize today."""
     if not _key():
         return None
-    cur = whois_current(domain, timeout=timeout, keep_raw=keep_raw) or {}
-    hist = whois_history(domain, mode=history_mode, timeout=timeout, keep_raw=keep_raw) or {}
+    # current + history are two INDEPENDENT WhoisXML calls (the long pole of enrichment). Run them
+    # concurrently to ~halve WHOIS latency per host. Same two API calls, same credits/egress — only
+    # concurrency changes; api_usage.record's single-line append is atomic, so it's ledger-safe.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as _ex:
+        _f_cur = _ex.submit(whois_current, domain, timeout=timeout, keep_raw=keep_raw)
+        _f_hist = _ex.submit(whois_history, domain, mode=history_mode, timeout=timeout, keep_raw=keep_raw)
+        cur = _f_cur.result() or {}
+        hist = _f_hist.result() or {}
     cur_raw = cur.pop("_raw", None)
     hist_raw = hist.pop("_raw", None)
     out = dict(cur)
@@ -328,6 +335,7 @@ def main():
     ap.add_argument("--history-mode", choices=["preview", "purchase"], default="purchase")
     ap.add_argument("--reverse-email", help="reverse WHOIS by registrant email")
     ap.add_argument("--reverse-name", help="reverse WHOIS by registrant name/org")
+    ap.add_argument("--reverse-phone", help="reverse WHOIS by registrant phone (bulk = registrar noise)")
     ap.add_argument("--search-type", choices=["current", "historic"], default="current")
     ap.add_argument("--reverse-mode", choices=["preview", "purchase"], default="purchase")
     ap.add_argument("--json", action="store_true", help="raw JSON output")
@@ -345,6 +353,9 @@ def main():
     if args.reverse_name:
         out["reverse_name"] = reverse_whois(args.reverse_name, "name",
                                             args.search_type, args.reverse_mode)
+    if args.reverse_phone:
+        out["reverse_phone"] = reverse_whois(args.reverse_phone, "phone",
+                                             args.search_type, args.reverse_mode)
     if args.domain:
         out["whois"] = whois_summary(args.domain, history_mode=args.history_mode)
 

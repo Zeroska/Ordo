@@ -114,10 +114,12 @@ def main():
         print("\n  dry-run — nothing written. Re-run with --apply to execute.")
         return
 
-    # rewrite edges
-    with open(edges_path, "w", encoding="utf-8") as fh:
+    # rewrite edges — atomically, so an interrupted clean can't truncate the core edge store
+    tmp = edges_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         for e in kept:
             fh.write(json.dumps(e, ensure_ascii=False) + "\n")
+    os.replace(tmp, edges_path)
 
     def _rm(etype, value):
         f = os.path.join(ent_dir, etype, re.sub(r"[^a-zA-Z0-9._@-]", "_", str(value))[:200] + ".json")

@@ -67,10 +67,14 @@ def crtsh(domain: str) -> dict:
         name = name.strip().lower().lstrip("*.")
         if not name or "@" in name:
             return
-        if name.endswith(domain) or domain.endswith(_reg(name)):
+        # Group by REGISTRABLE domain, not a bare endswith: `fakesite.com`.endswith("site.com")
+        # is True yet it's a different owner — an unanchored test buried the strongest pivot
+        # (a SAN sibling) in the subdomain bucket. Match cert_overlap's _reg-based comparison.
+        if _reg(name) == _reg(domain):
             subs.add(name)
         else:
             siblings.add(name)          # a DIFFERENT registrable domain on the same cert
+
 
     # (a) crt.sh — ?q= 502s a lot; ?identity= is steadier
     rows = []

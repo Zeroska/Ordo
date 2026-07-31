@@ -127,7 +127,10 @@ archetypal payment funnel — `escalate`. Tunable lists: `references/risk_indica
   block or DOM-skeleton hash** across sites = stronger (same build, not just same theme).
 - **Reverse-WHOIS count is a filter:** a registrant tied to a handful of thematically-coherent
   domains = attribution-grade; one tied to hundreds/thousands of unrelated domains = a shared
-  reseller/agency = NOISE. Enforced by `tools/kb/ingest_reverse_whois.py --max-domains`.
+  reseller/agency = NOISE. Enforced by `tools/kb/ingest_reverse_whois.py --max-domains`. Reverse by
+  **email**, **name**, or **phone** (`--email/--name/--phone`; `reverse_whois` MCP `kind=phone`) —
+  all **preview the count first** and refuse to purchase/link a > `--max-domains` set without an
+  explicit override (a registrant *phone* is especially prone to registrar-bulk noise, e.g. Dynadot).
 - **Registrar/proxy contacts** (`abuse@`, `admin@onamae.com`, `registrar@inet.vn`, Domains-By-Proxy)
   and placeholder registrants ("domain expired", "Domain Admin C/O ID#…") are never the owner.
 - **Origin IP ≠ hosting/CDN IP.** A shared *origin/backend* IP — a real server both

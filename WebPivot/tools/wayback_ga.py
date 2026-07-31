@@ -63,6 +63,8 @@ def sample_evenly(snaps, n):
     """Pick up to n snapshots spread evenly across time (keep first & last)."""
     if len(snaps) <= n:
         return snaps
+    if n <= 1:                       # n==1 → one sample; avoids /(n-1) ZeroDivisionError
+        return snaps[:n]
     step = (len(snaps) - 1) / (n - 1)
     return [snaps[round(i * step)] for i in range(n)]
 

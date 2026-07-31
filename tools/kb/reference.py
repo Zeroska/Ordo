@@ -71,9 +71,11 @@ def load(kb: str) -> list[dict]:
 def _save(kb: str, entries: list[dict]) -> None:
     p = _path(kb)
     os.makedirs(os.path.dirname(p), exist_ok=True)
-    with open(p, "w", encoding="utf-8") as f:
+    tmp = p + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         for e in entries:
             f.write(json.dumps(e, ensure_ascii=False) + "\n")
+    os.replace(tmp, p)   # atomic: an interrupted write can't truncate the live signal ledger
 
 
 def benign_values(kb: str) -> set[str]:

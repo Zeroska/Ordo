@@ -83,9 +83,22 @@ def _host(x: str) -> str:
 
 
 def is_managed_dns(nameserver: str) -> bool:
-    """True if the nameserver belongs to a big managed/registrar/parking DNS provider."""
+    """True if the nameserver belongs to a big managed/registrar/parking DNS provider.
+
+    Match on DNS-label boundaries, never a raw substring: an unanchored `s in ns` wrongly
+    flags an operator's own nameserver whose domain merely CONTAINS a provider suffix
+    (e.g. `ns1.jordan.com` ⊃ `dan.com`, `ns1.casedo.com` ⊃ `sedo.com`), silently dropping it
+    from clustering. Dotted suffixes match as an exact-or-parent domain; bare labels like
+    `awsdns` (Route 53's `ns-2048.awsdns-64.co.uk`) match only as a whole dot/dash-delimited
+    label."""
     ns = _host(nameserver)
-    return any(ns == s or ns.endswith("." + s) or s in ns for s in MANAGED_DNS_SUFFIXES)
+    for s in MANAGED_DNS_SUFFIXES:
+        if "." in s:
+            if ns == s or ns.endswith("." + s):
+                return True
+        elif re.search(r"(?:^|[.\-])" + re.escape(s) + r"(?:[.\-]|$)", ns):
+            return True
+    return False
 
 
 def is_parking_favicon(mmh3_hash) -> bool:

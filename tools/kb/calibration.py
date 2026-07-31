@@ -63,9 +63,11 @@ def _load(path):
 
 def _save(path, records):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    with open(path, "w") as fh:
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
         for r in records:
             fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)   # atomic: an interrupted write can't truncate the calibration ledger
 
 
 def _now():

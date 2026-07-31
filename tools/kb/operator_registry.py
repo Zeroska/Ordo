@@ -69,9 +69,11 @@ def cmd_add(a):
         recs.append({"operator": a.operator, "domains": domains, "case": a.case,
                      "confidence": a.confidence, "basis": a.basis, "added": a.date})
     os.makedirs(os.path.dirname(REGISTRY), exist_ok=True)
-    with open(REGISTRY, "w", encoding="utf-8") as fh:
+    tmp = REGISTRY + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         for r in recs:
             fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    os.replace(tmp, REGISTRY)   # atomic: never truncate the confirmed-operator ledger
     print(f"registry: {a.operator} now holds {len(domains)} domain(s) "
           f"({len(recs)} operator(s) tracked) -> {os.path.relpath(REGISTRY, ROOT)}")
 

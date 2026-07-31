@@ -9,12 +9,15 @@ Usage: python3 aggregate_case2.py <CASE-ID>   (reads cases/<CASE-ID>/raw, writes
 import json, os, csv, glob, re, sys
 from collections import defaultdict
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (tools/..)
 CASE = sys.argv[1] if len(sys.argv) > 1 else "CASE-0001"
-RAW = f"cases/{CASE}/raw"
-OUTD = f"knowledge/reports/{CASE}"
+RAW = os.path.join(ROOT, "cases", CASE, "raw")          # resolve from repo root, not cwd
+OUTD = os.path.join(ROOT, "knowledge", "reports", CASE)
 os.makedirs(OUTD, exist_ok=True)
 
-CDN = re.compile(r"^(104\.(1[6-9]|2[0-1])\.|172\.(6[4-9]|7[0-1])\.|188\.114\.9[67]\.|162\.159\.|173\.245\.|103\.21\.24|141\.101\.)")
+# Cloudflare edge ranges. 104.16.0.0/12 spans 104.16–104.31 (the old 1[6-9]|2[0-1] stopped at
+# .21, so 104.22–104.31 edge IPs leaked through as false "origin" bridges); 172.64.0.0/13 = .64–.71.
+CDN = re.compile(r"^(104\.(1[6-9]|2[0-9]|3[01])\.|172\.(6[4-9]|7[0-1])\.|188\.114\.9[67]\.|162\.159\.|173\.245\.|103\.21\.24|141\.101\.)")
 PRIVACY_EMAIL = re.compile(r"(abuse|privacy|whois|redacted|withheld|proxy|protect|registrar|domainsbyproxy|namecheap|hostinger|gname|dynadot)", re.I)
 
 def load(fp):

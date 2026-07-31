@@ -223,6 +223,11 @@ def main():
         ("test_urlscan_reverse", "urlscan_reverse — distinctiveness + resource resolution"),
         ("test_ippivot", "ippivot — IP detect / noise classify / registry opsec / mail parse"),
         ("test_api_usage", "api_usage — licensed-API credit ledger record/summary"),
+        ("test_binarypivot_protection", "binarypivot — packer / protector / obfuscation triage"),
+        ("test_audit_high_fixes", "audit HIGH fixes — managed-DNS / KB load / dig / clarity / wayback"),
+        ("test_audit_medium_fixes", "audit MEDIUM fixes — CF challenge / SAN sibling / social key"),
+        ("test_reverse_phone", "reverse-WHOIS phone + preview-first / confirm-if-large gate"),
+        ("test_whois_parallel", "whois_summary parallelizes current+history (speed)"),
     ]
     for modname, desc in unit_mods:
         try:

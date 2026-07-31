@@ -45,7 +45,7 @@ cases/<case>/raw/*.json   case_graph.json   <case>_network.html   history.json
 3. **Render the interactive HTML** (Cytoscape + fcose, fully inlined, CSP-safe —
    opens in any browser, no server):
    ```bash
-   python3 ../../.../IntelGraph/scripts/render_network.py case_graph.json network.html \
+   python3 ~/.claude/skills/IntelGraph/scripts/render_network.py case_graph.json network.html \
      --title "One operator, N sites — clustered by shared artifacts" \
      --subtitle "Node size = broker centrality · color = cluster · shape = type. Red = same-operator, purple = same-kit."
    ```

@@ -213,6 +213,7 @@ def collect_one(url: str, case: str, *, hostile: bool = False, passive: bool = F
         base += ["--archive-missing", "--master", "--case", case]
     screenshot_py = PY
     if SHOT and not SMOKE and not (hostile and not proxy):    # screenshot needs a browser
+        os.makedirs(shot_dir, exist_ok=True)                 # pivot_extract writes the PNG here
         base += ["--render", "--screenshot", shot]
         screenshot_py = RENDER_PY
     r = _run([screenshot_py, *base], timeout=300 if SHOT else 240)
@@ -257,7 +258,8 @@ def collect_many(seeds: list[str], case: str, *, hostile: bool = False,
 def ingest(case: str) -> tuple[bool, str]:
     """Ingest a case's raw pivot JSON into the KB (sync). Run once after collect_many."""
     raw = os.path.join(ROOT, "cases", case, "raw")
-    files = [os.path.join(raw, f) for f in os.listdir(raw)] if os.path.isdir(raw) else []
+    files = ([os.path.join(raw, f) for f in os.listdir(raw) if f.endswith(".json")]
+             if os.path.isdir(raw) else [])   # skip .DS_Store and other non-pivot files
     if not files:
         return False, f"no raw pivot JSON in {raw}"
     r = _run([PY, os.path.join("tools", "kb", "ingest_webpivot.py"), "--kb", KB_DIR, *files])
@@ -294,6 +296,94 @@ async def kb_ingest(args: dict[str, Any]) -> dict[str, Any]:
     if not ok and msg.startswith("no raw"):
         return _err(msg)
     return {"content": [{"type": "text", "text": msg or "ingested"}], "is_error": not ok}
+
+
+def collect_binary(target: str, case: str | None = None, keep: str | None = None,
+                   timeout: int = 240) -> dict[str, Any]:
+    """Static IOC + packer/protector extraction from a scam-funnel binary (APK/exe/installer/zip)
+    via BinaryPivot/analyze_artifact.py — the file-half sibling of collect_one. When `case` is set,
+    the WebPivot-shaped JSON is written to cases/<case>/raw/<host>.json so kb_ingest folds the app's
+    signing cert / backend host / firebase tenant / named protector into the SAME cluster as the web
+    infra. Returns a summary dict, never raises."""
+    import re
+    import tempfile
+    if POLICY["hostile"] and re.match(r"^https?://", target, re.I):
+        return {"ok": False, "leads": "", "saved": None, "host": None,
+                "error": (f"BLOCKED by egress policy: refusing a direct download of {target} on "
+                          "hostile infra (it would touch attacker infra from your IP). Pull it from "
+                          "non-attributable egress (research VPS/VPN) and re-call with the LOCAL path.")}
+    script = os.path.join("BinaryPivot", "tools", "analyze_artifact.py")
+    raw_dir = os.path.join(ROOT, "cases", case, "raw") if case else None
+    if raw_dir:
+        os.makedirs(raw_dir, exist_ok=True)
+
+    def _unlink(p):
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+
+    # Put the temp JSON on the SAME filesystem as its final home (the case raw dir) so the rename
+    # is atomic and never cross-device; with no case it's a throwaway we delete after reading.
+    fd, tmp_out = tempfile.mkstemp(suffix=".json", prefix="binpivot_", dir=raw_dir)
+    os.close(fd)
+    cmd = [PY, script, target, "--leads", "-o", tmp_out]
+    if case:
+        cmd += ["--case", case]
+    keep_dir = keep or (os.path.join(ROOT, "cases", case, "bin") if case else None)
+    if keep_dir:
+        cmd += ["--keep", keep_dir]
+    r = _run(cmd, timeout=timeout)
+    data = _load_json(tmp_out)
+    if data is None:
+        _unlink(tmp_out)
+        return {"ok": False, "leads": "", "saved": None, "host": None,
+                "error": f"analyze_artifact failed for {target}: {(r.stderr or '')[-500:]}"}
+    host = (data.get("meta") or {}).get("host") or "artifact"
+    saved = None
+    if case:
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", host)[:120] or "artifact"
+        saved = os.path.join(raw_dir, safe + ".json")
+        try:
+            os.replace(tmp_out, saved)
+        except OSError:
+            saved = tmp_out          # same-fs replace should not fail; keep the temp copy if it does
+    else:
+        _unlink(tmp_out)             # no case → ephemeral; the leads text is the deliverable
+    prot = ((data.get("artifacts") or {}).get("binary") or {}).get("protection") or {}
+    return {"ok": not data.get("error"), "error": data.get("error"), "leads": r.stdout or "",
+            "saved": saved, "host": host, "n_pivots": len(data.get("pivots", [])),
+            "packed": bool(prot.get("packed") or prot.get("obfuscated"))}
+
+
+@tool(
+    "analyze_artifact",
+    "Static IOC + PACKER/obfuscation extraction from the FILE half of a scam funnel — a sideloaded "
+    "APK/AAB, a desktop 'trading terminal' .exe/.msi/.dmg, or a bundled .jar/.zip (BinaryPivot). "
+    "`target` is a LOCAL path or an http(s) URL. Hashes it, then pulls the operator-clustering "
+    "identifiers that survive re-skinning: APK signing-cert SHA-256 (strongest same-developer link), "
+    "package name + sensitive permissions, embedded backend/C2 hosts + IP:port, Firebase/appspot "
+    "tenant, S3 buckets, crypto wallets, Telegram/WhatsApp handles — PLUS a packer/protector triage "
+    "(entropy + section/member signatures: UPX, VMProtect, Themida, NSIS/Inno self-extractors, and "
+    "the Android app-protectors Qihoo Jiagu / Tencent Legu / Bangcle / Ijiami…) that EXPLAINS a thin "
+    "string sweep and routes a protected sample to a dynamic sandbox. When case=<ID> is given the "
+    "WebPivot-shaped JSON is written to cases/<ID>/raw/<host>.json so kb_ingest folds the app's "
+    "cert/backend/firebase/protector into the SAME cluster as the web infra. For HOSTILE targets a "
+    "direct URL download is refused — pull it from non-attributable egress and pass the local path.",
+    {"target": str},   # case:str, keep:str optional via args.get()
+)
+async def analyze_artifact(args: dict[str, Any]) -> dict[str, Any]:
+    res = collect_binary(str(args["target"]), case=args.get("case"), keep=args.get("keep"))
+    if res.get("error") and not res.get("leads"):
+        return _err(res["error"])
+    head = f"Analyzed {res['host']} — {res.get('n_pivots', 0)} pivots" \
+           + (" · ⚠ PACKED/PROTECTED (thin static IOCs are expected — consider a sandbox)"
+              if res.get("packed") else "")
+    if res.get("saved"):
+        head += f"\nJSON saved: {res['saved']}  → run kb_ingest(case={args['case']}) to correlate."
+    else:
+        head += "\n(JSON not persisted — pass case=<ID> to save it into the case for kb_ingest.)"
+    return _ok(head + "\n\n" + (res.get("leads") or ""))
 
 
 # ---------------------------------------------------------------- ANALYZE tools
@@ -350,34 +440,75 @@ async def risk_signals(args: dict[str, Any]) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": r.stdout or r.stderr}], "is_error": r.returncode != 0}
 
 
+_REVERSE_FLAG = {"email": "--reverse-email", "name": "--reverse-name", "phone": "--reverse-phone"}
+
+
+def _reverse_gate(kind: str, count: int, cap: int, confirm: bool) -> tuple[str, str]:
+    """Decide what to do after a reverse-WHOIS PREVIEW (cheap count, no credits). Pure — no I/O —
+    so the 'preview first, ask if it's a lot' logic is unit-tested. Returns (action, reason) with
+    action ∈ {'empty','confirm','purchase'}."""
+    if count <= 0:
+        return "empty", "0 domains — no reverse-WHOIS pivot here"
+    if count > cap and not confirm:
+        noise = {"phone": "a shared registrar/reseller phone stamped on many unrelated domains",
+                 "email": "a shared reseller/agency mailbox",
+                 "name": "a shared registration service"}.get(kind, "a shared service")
+        return "confirm", (f"{count} domains (> {cap}) — likely {noise} = NOISE, not one operator, "
+                           "and pulling them all spends credits. NOT purchased. If you're sure, "
+                           "re-call with confirm=true (optionally raise max_domains) to purchase.")
+    return "purchase", f"{count} domains"
+
+
 @tool(
     "reverse_whois",
-    "Reverse-WHOIS a registrant email or name and return only the HIGH-VALUE pivots. Refuses a "
-    "privacy/registrar term outright, and flags a bulk registrant (> max_domains = a shared "
-    "reseller/agency = NOISE) instead of dumping it. Use on a leaked registrant identity. "
-    "kind = 'email' or 'name'.",
-    {"term": str, "kind": str},  # max_domains optional (default 150)
+    "Reverse-WHOIS a registrant email, name, or PHONE for HIGH-VALUE pivots. PREVIEWS FIRST (cheap "
+    "count, no credits spent); if the term matches MORE than max_domains (default 150) — a shared "
+    "reseller/agency/registrar term = NOISE — it STOPS and asks you to confirm rather than spending "
+    "credits to pull them, so re-call with confirm=true (and optionally a higher max_domains) to "
+    "purchase anyway. Refuses a privacy/registrar email outright. kind = 'email' | 'name' | 'phone'.",
+    {"term": str, "kind": str},  # max_domains:int (default 150), confirm:bool — both optional
     annotations=READONLY,
 )
 async def reverse_whois(args: dict[str, Any]) -> dict[str, Any]:
-    term, kind = args["term"], args.get("kind", "email")
+    term = str(args["term"]).strip()
+    kind = args.get("kind", "email")
     cap = int(args.get("max_domains", 150))
+    confirm = bool(args.get("confirm"))
     if kind == "email" and _is_noise_email(term):
         return _err(f"'{term}' is a privacy/registrar address (shared by every domain there) — "
                     "NOT a registrant pivot. Do not reverse it.")
-    flag = "--reverse-email" if kind == "email" else "--reverse-name"
-    r = _run([PY, os.path.join("WebPivot", "tools", "whois_enrich.py"), flag, term,
-              "--search-type", "historic", "--json"], timeout=150)
-    data = _load_json_str(r.stdout) or {}
-    rec = data.get("reverse_email") or data.get("reverse_name") or {}
+    flag = _REVERSE_FLAG.get(kind)
+    if not flag:
+        return _err(f"kind must be 'email', 'name', or 'phone' (got '{kind}').")
+
+    def _call(mode: str):
+        r = _run([PY, os.path.join("WebPivot", "tools", "whois_enrich.py"), flag, term,
+                  "--search-type", "historic", "--reverse-mode", mode, "--json"], timeout=150)
+        data = _load_json_str(r.stdout) or {}
+        rec = (data.get("reverse_email") or data.get("reverse_name")
+               or data.get("reverse_phone") or {})
+        return rec, r
+
+    # 1) PREVIEW — count only, spends no purchase credits
+    rec, r = _call("preview")
     if not rec or rec.get("error"):
-        return _err(f"reverse-WHOIS failed for '{term}': {rec.get('error') or (r.stderr or '')[-300:]}")
-    domains, count = rec.get("domains") or [], rec.get("count", 0)
-    if count > cap:
-        return _ok(f"'{term}' registers {count} domains (> {cap}) — a shared reseller/agency; "
-                   "treat as NOISE, do NOT cluster on it.")
-    return _ok(f"'{term}' → {count} domains (high-value reverse-WHOIS pivots; privacy/bulk filtered):\n"
-               + ("\n".join(domains) if domains else "(none)"))
+        return _err(f"reverse-WHOIS preview failed for '{term}': "
+                    f"{rec.get('error') or (r.stderr or '')[-300:]}")
+    count = rec.get("count", 0)
+    action, reason = _reverse_gate(kind, count, cap, confirm)
+    if action == "empty":
+        return _ok(f"'{term}' ({kind}) → {reason}.")
+    if action == "confirm":
+        return _ok(f"⚠ '{term}' ({kind}): {reason}")
+    # 2) PURCHASE — small enough, or explicitly confirmed
+    rec, r = _call("purchase")
+    if not rec or rec.get("error"):
+        return _err(f"reverse-WHOIS purchase failed for '{term}': "
+                    f"{rec.get('error') or (r.stderr or '')[-300:]}")
+    domains = rec.get("domains") or []
+    override = "  (confirmed override of the >cap gate — verify it isn't shared/bulk)" if count > cap else ""
+    return _ok(f"'{term}' ({kind}) → {rec.get('count', count)} domains{override}:\n"
+               + ("\n".join(domains) if domains else "(none returned)"))
 
 
 @tool(
@@ -562,15 +693,16 @@ async def render_report(args: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- servers + names
-COLLECT_SERVER = create_sdk_mcp_server("collect", tools=[pivot_extract, fallback_probe, kb_ingest])
+COLLECT_SERVER = create_sdk_mcp_server(
+    "collect", tools=[pivot_extract, analyze_artifact, fallback_probe, kb_ingest])
 ANALYZE_SERVER = create_sdk_mcp_server(
     "analyze", tools=[kb_cluster, kb_entity, kb_query_shared, risk_signals,
                       reverse_whois, cert_overlap, reference_check, reference_add,
                       which_cases, domain_verdict, api_usage,
                       render_diagram, render_report])
 
-COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__fallback_probe",
-                 "mcp__collect__kb_ingest"]
+COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__analyze_artifact",
+                 "mcp__collect__fallback_probe", "mcp__collect__kb_ingest"]
 ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__kb_query_shared", "mcp__analyze__risk_signals",
                  "mcp__analyze__reverse_whois", "mcp__analyze__cert_overlap",

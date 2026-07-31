@@ -164,7 +164,7 @@ def _prior_knowledge(seeds: list[str]) -> str:
         collected = bool(T._find_cached_raw(host))
         op = subprocess.run(
             [sys.executable, os.path.join("tools", "kb", "operator_registry.py"), "find", host],
-            cwd=ROOT, capture_output=True, text=True)
+            cwd=ROOT, capture_output=True, text=True, timeout=60)
         first = (op.stdout or "").strip().splitlines()
         attributed = bool(first) and "not attributed" not in first[0].lower()
         tags = [t for t, on in (("already-collected", collected), ("attributed", attributed)) if on]
@@ -297,7 +297,7 @@ def _convergence_snapshot(case: str) -> str:
     """Record this round in cases/<case>/rounds.jsonl via the convergence tool (its own authority
     on what counts as a new host/indicator). Returns its one-line summary for the worklog."""
     r = subprocess.run([sys.executable, os.path.join("tools", "kb", "convergence.py"),
-                        "snapshot", case], cwd=ROOT, capture_output=True, text=True)
+                        "snapshot", case], cwd=ROOT, capture_output=True, text=True, timeout=120)
     return (r.stdout or r.stderr or "").strip()
 
 
@@ -327,7 +327,7 @@ def _discover_new_seeds(case: str, known: list[str], max_new: int) -> list[str]:
     for dom in collected:
         r = subprocess.run([sys.executable, os.path.join("tools", "kb", "query.py"),
                             "--kb", T.KB_DIR, "--cluster", dom, "--strong"],
-                           cwd=ROOT, capture_output=True, text=True)
+                           cwd=ROOT, capture_output=True, text=True, timeout=120)
         for line in (r.stdout or "").splitlines():
             m = re.match(r"^\s+(\S+)\s+via\s+(\d+)\s+shared", line)
             if not m:
@@ -383,7 +383,7 @@ def _compute_components(case: str, domains: list[str]) -> list[list[str]]:
     hosts = sorted({T._host(d) for d in domains})
     r = subprocess.run([sys.executable, os.path.join("tools", "kb", "query.py"),
                         "--kb", T.KB_DIR, "--components", "--domains", ",".join(hosts)],
-                       cwd=ROOT, capture_output=True, text=True)
+                       cwd=ROOT, capture_output=True, text=True, timeout=120)
     comps = []
     for line in (r.stdout or "").splitlines():
         if line.startswith("COMPONENT"):
@@ -444,7 +444,7 @@ def _cluster_prior_verdict(members: list[str]) -> str | None:
     verdicts = []
     for d in members:
         r = subprocess.run([sys.executable, os.path.join("tools", "kb", "operator_registry.py"),
-                            "find", d], cwd=ROOT, capture_output=True, text=True)
+                            "find", d], cwd=ROOT, capture_output=True, text=True, timeout=60)
         out = (r.stdout or "").strip()
         if not out or "not attributed" in out.lower():
             return None
@@ -639,7 +639,7 @@ def _ensure_case_diagram(case: str, title: str) -> str | None:
         return fig
     graph_json = os.path.join(rep_dir, "case_graph.json")
     gb = subprocess.run([sys.executable, os.path.join("WebPivot", "tools", "graph_build.py"),
-                         *raw, "-o", graph_json], cwd=ROOT, capture_output=True, text=True)
+                         *raw, "-o", graph_json], cwd=ROOT, capture_output=True, text=True, timeout=240)
     if gb.returncode != 0 or not os.path.exists(graph_json):
         _log(f" deliverables: graph build skipped ({(gb.stderr or gb.stdout or '').strip()[:120]})")
         return None
@@ -647,7 +647,7 @@ def _ensure_case_diagram(case: str, title: str) -> str | None:
                          graph_json, os.path.join(rep_dir, "case_diagram"),
                          "--title", (title or case)[:80], "--legend",
                          "--drop-types", ",".join(FIGURE_DROP_TYPES)],
-                        cwd=ROOT, capture_output=True, text=True)
+                        cwd=ROOT, capture_output=True, text=True, timeout=180)
     if gd.returncode != 0 or not os.path.exists(fig):
         _log(f" deliverables: diagram skipped ({(gd.stderr or gd.stdout or '').strip()[:120]})")
         return None
@@ -686,7 +686,7 @@ def _render_deliverables(case: str, snap_md: str, assessment: Assessment) -> dic
 
     stem = os.path.join(rep_dir, base)
     rr = subprocess.run([sys.executable, os.path.join("IntelReport", "scripts", "render_report.py"),
-                         report_md, stem, "--case-id", case], cwd=ROOT, capture_output=True, text=True)
+                         report_md, stem, "--case-id", case], cwd=ROOT, capture_output=True, text=True, timeout=300)
     if rr.returncode == 0:
         for ext in ("pdf", "docx"):
             if os.path.exists(f"{stem}.{ext}"):

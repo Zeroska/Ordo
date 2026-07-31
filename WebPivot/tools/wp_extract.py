@@ -53,7 +53,7 @@ TRACKER_PATTERNS = [
     ("mixpanel",             r"mixpanel\.init\(\s*['\"]([a-f0-9]{20,40})['\"]"),
     ("sentry_dsn",           r"https://[a-f0-9]{20,64}@[\w.-]+/\d+"),
     ("cloudflare_beacon",    r"beacon\.min\.js['\"].*?token['\"]?\s*:\s*['\"]([a-f0-9]{16,64})['\"]"),
-    ("clarity_ms",           r"clarity\(\s*['\"]set['\"]|c\.clarity\.ms/tag/([a-z0-9]{8,12})"),
+    ("clarity_ms",           r"c\.clarity\.ms/tag/([a-z0-9]{8,12})|['\"]clarity['\"]\s*,\s*['\"]script['\"]\s*,\s*['\"]([a-z0-9]{8,12})['\"]"),
     ("intercom_appid",       r"app_id\s*[:=]\s*['\"]([a-z0-9]{6,10})['\"]"),
     ("crisp_website",        r"CRISP_WEBSITE_ID\s*=\s*['\"]([a-f0-9-]{30,40})['\"]"),
 ]

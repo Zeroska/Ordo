@@ -135,7 +135,10 @@ def _dig(name: str, rrtype: str, reverse: bool = False, timeout: int = 8):
         out = subprocess.run(args, capture_output=True, text=True, timeout=timeout).stdout
     except Exception:
         return None
-    return [ln.strip().rstrip(".") for ln in out.splitlines() if ln.strip()]
+    # `dig +short TXT` wraps each record in double quotes (`"v=spf1 …"`); strip them so SPF/DMARC
+    # prefix matching works (mirrors wp_net's _txt_records). Without this, mail.spf/mail.dmarc are
+    # silently None on every IPPivot run.
+    return [ln.strip().strip('"').rstrip(".") for ln in out.splitlines() if ln.strip()]
 
 
 def _nslookup(name: str, rrtype: str, reverse: bool = False, timeout: int = 8):

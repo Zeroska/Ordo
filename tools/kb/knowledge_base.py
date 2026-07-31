@@ -18,6 +18,7 @@ This is a LIBRARY (collectors call it) + a tiny CLI for stats. It does no I/O to
 """
 import os
 import re
+import sys
 import json
 
 CONF_WORDS = {"high": 0.9, "medium": 0.6, "low": 0.35, "inferred": 0.4, "confirmed": 0.9}
@@ -135,10 +136,17 @@ class KB:
         if not os.path.exists(self.rel_path):
             return []
         out = []
-        for line in open(self.rel_path, encoding="utf-8"):
-            line = line.strip()
-            if line:
-                out.append(json.loads(line))
+        with open(self.rel_path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:
+                    # edges.jsonl is append-only; an interrupted append leaves a partial final
+                    # line. Skip it (and warn) instead of crashing every KB tool at construction.
+                    sys.stderr.write(f"[kb] skipped malformed edge line in {self.rel_path}\n")
         return out
 
     # ---------------------------------------------------------------- evidence
@@ -154,8 +162,14 @@ class KB:
     def all_entities(self):
         for root, _, files in os.walk(self.ent_dir):
             for fn in files:
-                if fn.endswith(".json"):
-                    yield json.load(open(os.path.join(root, fn), encoding="utf-8"))
+                if not fn.endswith(".json"):
+                    continue
+                p = os.path.join(root, fn)
+                try:
+                    with open(p, encoding="utf-8") as fh:
+                        yield json.load(fh)
+                except (json.JSONDecodeError, OSError):
+                    sys.stderr.write(f"[kb] skipped unreadable entity file {p}\n")
 
     def edges(self):
         return list(self._edges)

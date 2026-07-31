@@ -16,6 +16,9 @@ survive re-skinning and cluster an operator's whole app portfolio:
   * Firebase project / appspot / API keys, S3 buckets          -> operator-owned cloud tenant
   * crypto wallets, Telegram / WhatsApp / support handles       -> Chainabuse / social pivots
   * files-of-interest inside the container (google-services.json, config.json, .env, extra dex/so)
+  * PACKER / PROTECTOR / obfuscation triage (entropy + section/member signatures)  <-- why a
+      protected sample's string sweep is thin; routes it to a dynamic sandbox. A named protector
+      (UPX / VMProtect / Qihoo Jiagu / Tencent Legu / …) is also a weak, kit-level clustering hint.
 
 Output is WebPivot-shaped JSON ({meta, artifacts, pivots}) so the SAME KB ingester and case
 graph consume it — the APK's backend host / signing cert become shared indicators that cluster
@@ -37,6 +40,7 @@ from non-attributable egress. Detonation is NOT performed here — this is stati
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import struct
@@ -697,6 +701,286 @@ def pe_metadata(raw):
     return out
 
 
+# ----------------------------------------------------------------------------- packing / obfuscation
+# Static packer / protector / obfuscation triage. The point for THIS tool: a packed or protected
+# artifact is exactly why a string sweep comes back thin (the real backend hosts / wallets are
+# encrypted inside and only surface on execution) — so we flag it, explain the sparse IOCs, and
+# route the analyst to a dynamic sandbox. A *named* commercial protector is also a weak, kit-level
+# clustering hint (same builder/service), NOT proof of a shared operator on its own.
+_ENTROPY_PACKED = 7.2       # bits/byte (0..8); >7.2 ~ compressed/encrypted body
+_ENTROPY_STRONG = 7.5       # >7.5 ~ almost certainly encrypted/packed
+
+
+def _entropy(data):
+    """Shannon entropy (bits/byte, 0..8) of a byte blob; 0.0 for empty."""
+    if not data:
+        return 0.0
+    from collections import Counter
+    n = len(data)
+    ent = 0.0
+    for c in Counter(data).values():
+        p = c / n
+        ent -= p * math.log2(p)
+    return round(ent, 3)
+
+
+def _sample(data, cap=4_000_000):
+    """Head+middle+tail sample so entropy / signature scans stay fast on huge installers."""
+    if len(data) <= cap:
+        return bytes(data)
+    t = cap // 3
+    mid = len(data) // 2
+    return bytes(data[:t]) + bytes(data[mid:mid + t]) + bytes(data[-t:])
+
+
+# PE section names that are packer / protector tells (lower-cased exact match).
+_PE_SECTION_PACKERS = {
+    "upx0": "UPX", "upx1": "UPX", "upx2": "UPX", "upx!": "UPX", ".upx": "UPX",
+    ".aspack": "ASPack", ".adata": "ASPack",
+    ".vmp0": "VMProtect", ".vmp1": "VMProtect", ".vmp2": "VMProtect",
+    ".themida": "Themida/WinLicense", ".winlice": "Themida/WinLicense",
+    ".enigma1": "Enigma Protector", ".enigma2": "Enigma Protector",
+    ".petite": "Petite", ".pec2": "PECompact", "pec1": "PECompact",
+    ".mpress1": "MPRESS", ".mpress2": "MPRESS",
+    ".nsp0": "NsPack", ".nsp1": "NsPack", ".nsp2": "NsPack",
+    "fsg!": "FSG", ".fsg": "FSG",
+    ".mew": "MEW", ".taz": "PESpin",
+    ".y0da": "Yoda's Protector", ".yoda": "Yoda's Protector",
+    ".upack": "Upack", ".bydwing": "Upack",
+    ".neolite": "NeoLite", ".boom": "The Boomerang",
+    ".sforce3": "StarForce", ".vprotect": "VProtect",
+    ".packed": "generic packer", ".perplex": "Perplex", ".dyamar": "DYAMAR",
+}
+
+# Byte strings that mark a self-extracting installer / wrapper (the real payload is inside it).
+_INSTALLER_SIGS = [
+    (b"Nullsoft.NSIS.exehead", "NSIS"), (b"Nullsoft Install System", "NSIS"),
+    (b"NSIS Error", "NSIS"),
+    (b"Inno Setup", "Inno Setup"), (b"InnoSetupLdr", "Inno Setup"),
+    (b"InstallShield", "InstallShield"),
+    (b"Wise Installation", "Wise Installer"),
+    (b"Setup Factory", "Setup Factory"),
+    (b";!@Install@!UTF-8!", "7-Zip SFX"), (b"7zSFX", "7-Zip SFX"),
+    (b"WinRAR SFX", "WinRAR SFX"),
+    (b"app.asar", "Electron (asar)"), (b"Squirrel", "Squirrel/Electron"),
+]
+
+# Known Android app-protectors / DEX packers, matched purely on file NAMES inside the APK — fast
+# and reliable. Each wraps/encrypts the real classes.dex, which is why a protected APK's string
+# sweep is thin. (label, [member-name regexes])
+_ANDROID_PROTECTORS = [
+    ("Bangcle / SecNeo", [r"libsecexe\.so$", r"libsecmain\.so$", r"libSecShell.*\.so$",
+                          r"libDexHelper.*\.so$", r"bangcle_classes\.jar$", r"secData0\.jar$"]),
+    ("Qihoo 360 Jiagu", [r"libjiagu.*\.so$", r"libprotectClass\.so$", r"libqihoo.*\.so$"]),
+    ("Tencent Legu", [r"libshell.*\.so$", r"libtup\.so$", r"libtosprotection.*",
+                      r"libtxsafemode\.so$"]),
+    ("Ijiami", [r"ijiami\.dat$", r"ijiami\.ajm$", r"libexec\.so$", r"libexecmain\.so$",
+                r"libixgja\.so$"]),
+    ("Baidu Protect", [r"libbaiduprotect.*\.so$", r"baiduprotect.*\.jar$"]),
+    ("NetEase Yidun", [r"libnesec\.so$"]),
+    ("DexProtector", [r"dexprotect.*", r"classes\.dex\.dat$", r"assets/dp\..*\.so.*"]),
+    ("Alibaba / Mobile Security SDK", [r"libmobisec\.so$", r"libpreverify1\.so$",
+                                       r"libsgmain\.so$", r"libsgsecuritybody\.so$"]),
+    ("AppSuit / CoVault", [r"libAppSuit\.so$", r"libcovault.*\.so$"]),
+    ("Promon SHIELD", [r"libshield\.so$"]),
+    ("Virbox Protector", [r"libvbox.*\.so$"]),
+    ("Nagain / APKProtect", [r"libnagain.*\.so$", r"libapkprotect.*\.so$"]),
+]
+
+
+def _pe_sections(raw):
+    """Enumerate PE sections as [{name, vsize, rawsize, rawoff}] using stdlib struct (no pefile)."""
+    secs = []
+    try:
+        e = struct.unpack_from("<I", raw, 0x3C)[0]
+        if raw[e:e + 4] != b"PE\x00\x00":
+            return secs
+        nsec = struct.unpack_from("<H", raw, e + 6)[0]
+        opt_size = struct.unpack_from("<H", raw, e + 20)[0]
+        sect_off = e + 24 + opt_size
+        for i in range(min(nsec, 96)):
+            base = sect_off + i * 40
+            name = raw[base:base + 8].rstrip(b"\x00").decode("latin-1", "ignore")
+            secs.append({
+                "name": name,
+                "vsize": struct.unpack_from("<I", raw, base + 8)[0],
+                "rawsize": struct.unpack_from("<I", raw, base + 16)[0],
+                "rawoff": struct.unpack_from("<I", raw, base + 20)[0],
+            })
+    except Exception:
+        pass
+    return secs
+
+
+def _macho_encrypted(raw):
+    """True if a Mach-O carries LC_ENCRYPTION_INFO(_64) with cryptid != 0 (encrypted segment).
+    Best-effort, little-endian single-arch only; FAT/BE binaries just return False."""
+    try:
+        m = raw[:4]
+        if m == b"\xcf\xfa\xed\xfe":        # MH_MAGIC_64 (LE)
+            hdr = 32
+        elif m == b"\xce\xfa\xed\xfe":      # MH_MAGIC (LE, 32-bit)
+            hdr = 28
+        else:
+            return False
+        ncmds = struct.unpack_from("<I", raw, 16)[0]
+        off = hdr
+        for _ in range(min(ncmds, 400)):
+            cmd, csize = struct.unpack_from("<II", raw, off)
+            if csize < 8:
+                break
+            if cmd in (0x21, 0x2c):         # LC_ENCRYPTION_INFO / _64
+                if struct.unpack_from("<I", raw, off + 16)[0] != 0:
+                    return True
+            off += csize
+    except Exception:
+        pass
+    return False
+
+
+def _protect_zip(raw, kind, det, ent, flag):
+    try:
+        zf = zipfile.ZipFile(_bio(raw))
+        names = zf.namelist()
+    except Exception:
+        return
+    for label, pats in _ANDROID_PROTECTORS:
+        hits = []
+        for pat in pats:
+            rx = re.compile(pat, re.I)
+            hits += [n for n in names if rx.search(n)]
+        if hits:
+            flag(label, "protector", "member(s): " + ", ".join(uniq(hits)[:4]), "high")
+
+    if kind != "apk":
+        return
+    # Even with no named .so, an encrypted classes.dex or a high-entropy payload stashed in
+    # assets/ is DEX packing — the real code is the encrypted blob, the visible dex is a stub.
+    try:
+        for n in [n for n in names if re.match(r"classes\d*\.dex$", n)]:
+            try:
+                e = _entropy(_sample(zf.read(n), 2_000_000))
+            except Exception:
+                continue
+            ent.setdefault("classes_dex", {})[n] = e
+            if e >= _ENTROPY_STRONG:
+                flag("encrypted classes.dex", "protector",
+                     f"{n} entropy {e} ≥ {_ENTROPY_STRONG}", "high")
+        enc_assets = []
+        susp = [n for n in names
+                if re.search(r"^assets/.*\.(dex|jar|dat|bin|so|apk|db|key|enc)$", n, re.I)]
+        for n in susp[:12]:
+            try:
+                b = zf.read(n)
+            except Exception:
+                continue
+            if len(b) < 4096:
+                continue
+            e = _entropy(_sample(b, 2_000_000))
+            if e >= _ENTROPY_STRONG:
+                enc_assets.append(f"{n}({e})")
+        if enc_assets:
+            flag("encrypted asset payload", "protector",
+                 "high-entropy assets: " + ", ".join(enc_assets[:6]), "medium")
+    except Exception:
+        pass
+
+
+def _protect_pe(raw, det, ent, flag):
+    secs = _pe_sections(raw)
+    if not secs:
+        e = _entropy(_sample(raw))
+        ent["overall"] = e
+        if e >= _ENTROPY_PACKED:
+            flag("high-entropy PE", "packer", f"entropy {e} ≥ {_ENTROPY_PACKED}", "medium")
+        return
+    hi = []
+    for s in secs:
+        pk = _PE_SECTION_PACKERS.get((s["name"] or "").lower())
+        if pk:
+            flag(pk, "packer", f'section "{s["name"]}"', "high")
+        body = raw[s["rawoff"]:s["rawoff"] + min(s["rawsize"], 2_000_000)]
+        if len(body) >= 4096:
+            e = _entropy(body)
+            if e >= _ENTROPY_PACKED:
+                hi.append({"section": s["name"], "entropy": e, "rawsize": s["rawsize"]})
+    if hi:
+        ent["high_entropy_sections"] = hi[:12]
+        if not any(d["type"] == "packer" for d in det):
+            top = max(hi, key=lambda x: x["entropy"])
+            flag("high-entropy PE section", "packer",
+                 f'{top["section"]} entropy {top["entropy"]} ≥ {_ENTROPY_PACKED}',
+                 "high" if top["entropy"] >= _ENTROPY_STRONG else "medium")
+    try:
+        last = max((s["rawoff"] + s["rawsize"] for s in secs), default=0)
+        overlay = len(raw) - last
+        if last and overlay > 4096:
+            ent["overlay_bytes"] = overlay   # appended data — self-extractor / installer / payload
+    except Exception:
+        pass
+
+
+def detect_protection(raw, kind):
+    """Static packer / protector / obfuscation triage. Additive and fully guarded — any failure
+    returns whatever was gathered so the rest of the analysis is unaffected. {} if nothing found."""
+    det = []      # [{name, type, evidence, confidence}]  type ∈ packer|protector|obfuscator|installer
+    ent = {}
+    installer = None
+    try:
+        sample = _sample(raw)
+    except Exception:
+        sample = bytes(raw[:4_000_000])
+
+    def flag(name, typ, evidence, conf="medium"):
+        det.append({"name": name, "type": typ, "evidence": evidence, "confidence": conf})
+
+    for sig, label in _INSTALLER_SIGS:
+        if sig in sample:
+            installer = label
+            flag(label, "installer", f'signature "{sig.decode("latin-1", "ignore")}"', "high")
+            break
+    if b"UPX!" in sample or b"This file is packed with the UPX" in sample:
+        flag("UPX", "packer", "UPX! marker present", "high")
+
+    if kind in ("apk", "jar", "zip"):
+        _protect_zip(raw, kind, det, ent, flag)
+    elif kind == "pe":
+        _protect_pe(raw, det, ent, flag)
+    elif kind in ("elf", "macho", "dex", "gzip", "unknown"):
+        e = _entropy(sample)
+        ent["overall"] = e
+        if kind == "macho" and _macho_encrypted(raw):
+            flag("Mach-O LC_ENCRYPTION_INFO", "protector", "cryptid≠0 (encrypted segment)", "high")
+        if e >= _ENTROPY_PACKED and kind in ("elf", "macho", "dex"):
+            flag("high-entropy body", "packer",
+                 f"overall entropy {e} ≥ {_ENTROPY_PACKED} (compressed/encrypted)",
+                 "high" if e >= _ENTROPY_STRONG else "medium")
+
+    # de-dup (name,type) — e.g. generic UPX marker + a UPX0 section
+    seen, dd = set(), []
+    for d in det:
+        k = (d["name"], d["type"])
+        if k not in seen:
+            seen.add(k)
+            dd.append(d)
+    det = dd
+
+    # Only surface a protection block when something actionable fired. Bare entropy readings with
+    # nothing over threshold (e.g. a normal classes.dex) are not worth a confusing "signals" line.
+    if not det:
+        return {}
+    out = {
+        "packed": any(d["type"] in ("packer", "protector") for d in det),
+        "obfuscated": any(d["type"] in ("protector", "obfuscator") for d in det),
+        "detections": det,
+    }
+    if ent:
+        out["entropy"] = ent
+    if installer:
+        out["installer"] = installer
+    return out
+
+
 # ----------------------------------------------------------------------------- pivots
 _CLOUD_HOST = re.compile(
     r"""(firebaseio\.com|firebaseapp\.com|appspot\.com|web\.app|amazonaws\.com|
@@ -807,6 +1091,28 @@ def build_pivots(kind, hashes, art, iocs, meta):
             ], f"{label} support/recruitment handle baked into the app — a human pivot; often reused "
                "verbatim across an operator's whole portfolio.")
 
+    # --- packing / obfuscation triage ---
+    prot = art.get("protection") or {}
+    if prot.get("packed") or prot.get("obfuscated") or prot.get("installer"):
+        names = uniq([d["name"] for d in prot.get("detections", [])]) or ["unidentified"]
+        val = ", ".join(names[:6])
+        is_upx = any(n == "UPX" for n in names)
+        queries = [
+            {"service": "sandbox (MobSF / Triage / Any.Run)",
+             "query": "detonate in an isolated sandbox — static IOCs are thin because the real "
+                      "backend hosts / wallets are encrypted inside"},
+            {"service": "VirusTotal",
+             "query": f"https://www.virustotal.com/gui/file/{sha256}/details  (PEiD/packer + section entropy)"},
+        ]
+        if is_upx:
+            queries.insert(0, {"service": "unpack",
+                               "query": "upx -d <file>  then re-run analyze_artifact.py on the unpacked binary"})
+        P("binary:protection", val, "low", queries,
+          f"Artifact is packed/protected ({val}). This EXPLAINS a thin string sweep — the operator's "
+          "real backend, wallets and handles are encrypted in the payload and only surface on "
+          "execution, so route it to dynamic analysis. A shared *named* protector is a WEAK, "
+          "kit-level link (same builder/protection service), not proof of a shared operator alone.")
+
     return pivots
 
 
@@ -842,6 +1148,14 @@ def to_trackers(art, iocs):
     put("google_api_key", iocs.get("google_api_key") or [])
     for label in ("telegram", "whatsapp"):
         put("app_" + label, iocs.get(label) or [])
+    # A NAMED protector/packer is a WEAK, kit-level clustering hint (same builder/service). Only
+    # emit named vendors — generic entropy verdicts ("high-entropy …", "encrypted …") are not a
+    # shared identifier and would create false same-operator edges.
+    prot = art.get("protection") or {}
+    protectors = [d["name"] for d in prot.get("detections", [])
+                  if d["type"] in ("packer", "protector", "installer")
+                  and not d["name"].lower().startswith(("high-entropy", "encrypted ", "mach-o "))]
+    put("app_protector", protectors)
     return tr
 
 
@@ -873,6 +1187,13 @@ def analyze(target, keep_dir=None, timeout=60):
         if kind == "pe":
             art["pe"] = pe_metadata(raw)
         iocs = _merge_iocs(iocs, scan_iocs(strings_of(raw), label=kind))
+
+    try:
+        prot = detect_protection(raw, kind)
+        if prot:
+            art["protection"] = prot
+    except Exception as e:
+        art["protection_error"] = f"{type(e).__name__}: {e}"
 
     art["iocs"] = {k: v for k, v in iocs.items() if v}
     pivots = build_pivots(kind, hashes, art, iocs, meta)
@@ -923,6 +1244,24 @@ def render_leads(result):
         lines.append(f"SIGNING CERT sha256 {c.get('sha256')}  subj={c.get('subject','?')}")
     if a.get("embedded_payloads"):
         lines.append(f"⚠ embedded payloads: {', '.join(a['embedded_payloads'][:8])}")
+    prot = a.get("protection") or {}
+    if prot:
+        state = []
+        if prot.get("packed"):
+            state.append("PACKED")
+        if prot.get("obfuscated"):
+            state.append("OBFUSCATED")
+        if prot.get("installer"):
+            state.append(f"installer={prot['installer']}")
+        tags = ", ".join(d["name"] for d in prot.get("detections", [])[:6]) or "signals"
+        pent = prot.get("entropy", {})
+        extra = ""
+        if isinstance(pent.get("overall"), (int, float)):
+            extra += f"  entropy={pent['overall']}"
+        if pent.get("high_entropy_sections"):
+            extra += "  hi-ent=" + ",".join(f"{s['section']}:{s['entropy']}"
+                                             for s in pent["high_entropy_sections"][:4])
+        lines.append(f"⚠ PROTECTION: {'/'.join(state) or 'signals'}  [{tags}]{extra}")
     for f in a.get("files_of_interest", []) or []:
         if f.get("firebase"):
             lines.append(f"firebase: {json.dumps(f['firebase'])}")

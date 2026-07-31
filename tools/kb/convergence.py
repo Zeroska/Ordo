@@ -82,7 +82,11 @@ def _indicators_from_raw(obj):
         inds.add(f"verification:{label}:{tok}")
     for net, handles in (art.get("socials") or {}).items():
         for h in (handles if isinstance(handles, list) else [handles]):
-            inds.add(f"social:{net}:{h}")
+            # match ingest_webpivot's stored form (last path segment) so the reference.py
+            # prevalence gate and case_index cross-lookup actually hit. NOTE: email/saas/qr/
+            # verification keys still diverge from KB storage (email is an entity, not an
+            # `email:` indicator) — reconcile those in a dedicated pass with a round-trip test.
+            inds.add(f"social:{net}:{h.rstrip('/').split('/')[-1]}")
     for item in (art.get("qr_codes") or {}).get("payloads", []):
         inds.add(f"qr:{item.get('payload')}")
     for em in (art.get("emails") or []):

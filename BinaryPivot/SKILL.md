@@ -72,6 +72,7 @@ Flags: `--leads` (human-readable ranked pivots), `-o FILE` (full result JSON), `
 | **S3 buckets, crypto wallets, Telegram/WhatsApp handles** | payout + recruitment infra reused across the portfolio |
 | **embedded 2nd-stage payloads** (bundled dex/apk/dll/exe) | dropper behavior — a strong malicious tell |
 | **PE compile timestamp / machine** (desktop installers) | build-time + arch fingerprint |
+| **packer / protector / obfuscation** (entropy + section/member signatures) | *why* a sample's string sweep is thin — the real IOCs are encrypted inside; routes it to a dynamic sandbox. A **named** protector (UPX, VMProtect, Qihoo Jiagu, Tencent Legu, Ijiami…) is a **weak, kit-level** same-builder hint (`app_protector`) |
 
 Supported containers: **APK/AAB** (manifest via a bundled pure-Python binary-XML parser, signing
 cert via `keytool`/`openssl`), **JAR/ZIP**, **PE** (.exe/.dll), **Mach-O**, **ELF**, and a generic
@@ -128,3 +129,13 @@ a URL) so the artifact anchors onto the site that served it.
   pulled from a real `http(s)://` URL are trusted.
 - Static only — dead-code strings and library boilerplate can appear; corroborate a backend host by
   actually resolving/pivoting it before asserting it's live operator infra.
+- **Packer / obfuscation triage** is entropy + signature based (`protection` block in the JSON;
+  `⚠ PROTECTION:` line in `--leads`; a low-confidence `binary:protection` pivot). It detects UPX,
+  the common PE protectors (VMProtect/Themida/ASPack/Enigma/MPRESS/…), Windows self-extractors
+  (NSIS/Inno/InstallShield/7z-SFX), and the major Android app-protectors by their `.so`/asset
+  signatures (Qihoo 360 Jiagu, Tencent Legu, Bangcle/SecNeo, Ijiami, Baidu, Alibaba, DexProtector,
+  Promon, Virbox…), plus generic high-entropy `classes.dex`/asset blobs (encrypted-DEX packing).
+  A **packed sample legitimately yields few IOCs** — that is the signal to detonate it in an
+  isolated sandbox (MobSF/Triage), not to conclude the app is clean. A shared *named* protector is
+  a **weak, kit-level** link (same builder/protection service), **not** proof of a common operator
+  on its own — corroborate with a signing cert / backend host before clustering on it.

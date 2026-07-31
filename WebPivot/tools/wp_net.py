@@ -229,11 +229,14 @@ def detect_cloudflare_challenge(status: int, headers: dict, body: str):
     cf = ("cloudflare" in server) or ("cf-ray" in h) or ("cf-mitigated" in h)
     low = (body or "")[:20000].lower()
     body_hit = any(m in low for m in _CF_BODY_MARKERS)
-    if status in (403, 429, 503) and (cf or body_hit) and body_hit:
-        # managed challenge / Turnstile pages are JS interstitials — need a real browser
-        return "cloudflare_challenge"
-    if status in (403, 503) and cf:
-        return "cloudflare_block"
+    if status in (403, 429, 503):
+        if body_hit:
+            # managed challenge / Turnstile pages are JS interstitials — need a real browser
+            return "cloudflare_challenge"
+        if cf:
+            # CF-attributed hard denial with no interstitial body — includes a cf-ray 429
+            # rate-limit that the old `(cf or body_hit) and body_hit` silently dropped.
+            return "cloudflare_block"
     return None
 
 def flaresolverr_get(url: str, endpoint: str, timeout: int = 60, proxy: str = None):
