@@ -31,6 +31,7 @@ Confidence = how strongly a shared value implies **same operator**.
 | **Form action + input names** | `<form>` | Medium | phishing-kit fingerprint; PublicWWW for reused field-name sets | ✅ `forms[].action / .inputs` |
 | **HTML comments** | `<!-- -->` | Low-Medium | kit author strings, build tools, dev leaks, template IDs | ✅ `html_comments` |
 | **DOM skeleton hash** | tag structure | Medium | template reuse — compare skeleton hashes across pages | ✅ `dom_skeleton_sha1` |
+| **JARM TLS fingerprint** | active 10-probe TLS handshake to :443 | Medium | Shodan `ssl.jarm:`, Censys `services.jarm.fingerprint`, ZoomEye `jarm=` — fingerprints the server's TLS **stack + config**, so it clusters an operator's origin/backend hosts **across domain rotation & re-branding**. Noisy on stock stacks (nginx/CF defaults share a JARM) → corroborate with a 2nd artifact. Active probe, suppressed under `--proxy`. | ✅ `jarm.jarm` |
 | **Tech fingerprint** | headers + markers | Low | CMS/framework/jQuery version → narrows the population | ✅ `tech_fingerprint` |
 | **Cookie names** | `Set-Cookie`, JS | Low-Medium | session/tracking cookie name-sets can fingerprint a kit/platform | ✅ `cookie_names` |
 | **Server / X-Powered-By / CSP** | response headers | Low | infra + CSP `report-uri` / allowed hosts leak related domains | ✅ `server_headers` |

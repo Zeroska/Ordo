@@ -140,7 +140,9 @@ def _ok(text: str) -> dict[str, Any]:
 @tool(
     "pivot_extract",
     "Extract pivot artifacts and write the JSON into the case. `url` may be a URL/host "
-    "(domainPivot: favicon hash, tracking/analytics IDs, wallets, emails, third-party infra, plus "
+    "(domainPivot: favicon hash, tracking/analytics IDs, wallets, emails, third-party infra, the live "
+    "TLS cert (SAN/fingerprint) and an active JARM TLS-stack fingerprint (a jarm:hash pivot — Shodan "
+    "ssl.jarm/Censys — that clusters an operator's origin/backend hosts even across domain rotation), plus "
     "the full HTTP request/response headers and an active CORS probe — a foreign-Origin GET+preflight "
     "that reads Access-Control-Allow-Origin: any LITERAL origin the server trusts becomes a "
     "cors_allowed_origin pivot exposing backend/API/sibling hosts absent from the HTML, and a "

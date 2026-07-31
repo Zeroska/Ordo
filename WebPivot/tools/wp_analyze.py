@@ -138,13 +138,19 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
     # when a proxy is set — the raw ssl socket can't use the proxy, so a direct
     # handshake would leak the analyst's real IP the proxy exists to hide.
     tls_cert = None
+    jarm = None
     if probe_tls and effective_url and not is_archived:
         parsed = urlparse(effective_url)
         if parsed.scheme == "https" and parsed.hostname:
             if proxy:
-                tls_cert = {"skipped": "proxy configured — direct TLS probe suppressed (OPSEC)"}
+                _suppressed = {"skipped": "proxy configured — direct TLS probe suppressed (OPSEC)"}
+                tls_cert = _suppressed
+                jarm = _suppressed
             else:
                 tls_cert = fetch_tls_cert(parsed.hostname, parsed.port or 443, timeout=8)
+                # JARM: active TLS-stack fingerprint (10 handshakes) — same gating as the
+                # cert probe (primary live host, never under proxy). Pivots on Shodan ssl.jarm.
+                jarm = fetch_jarm(parsed.hostname, parsed.port or 443, timeout=8)
 
     # --- CORS policy (which origins/backends the server trusts) ---
     # Passive read of any ACAO already on the fetched response, then — for a live origin —
@@ -217,6 +223,7 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
         "footer": footer,
         "etag": etag,
         "tls_cert": tls_cert,
+        "jarm": jarm,
         "mail": mail,
         "app_downloads": app_downloads,
         "qr_codes": qr_codes,

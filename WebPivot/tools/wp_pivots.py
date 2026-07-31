@@ -249,6 +249,18 @@ def build_pivots(art: dict, base_host: str):
             add("tls_cert:co_san", ", ".join(co_apexes[:20]), "high", queries,
                 "Distinct registrable domains sharing one TLS certificate = same operator.")
 
+    jarm = art.get("jarm")
+    if jarm and isinstance(jarm, dict) and jarm.get("jarm") and not jarm.get("empty") \
+            and not jarm.get("error") and not jarm.get("skipped"):
+        h = jarm["jarm"]
+        add("jarm:hash", h, "medium", [
+            {"service": "Shodan", "query": f"ssl.jarm:{h}"},
+            {"service": "Censys", "query": f"services.jarm.fingerprint:{h}"},
+            {"service": "ZoomEye", "query": f'jarm="{h}"'},
+        ], "Identical JARM = same TLS server stack + config — clusters an operator's "
+           "origin/backend hosts even across domain rotation and re-branding. Corroborate: "
+           "stock stacks (nginx/Cloudflare defaults) share a JARM, so pair with a 2nd artifact.")
+
     app = art.get("app_downloads") or {}
     for apk in app.get("apk_urls", []):
         apk_host = strip_www(urlparse(apk).netloc)

@@ -291,6 +291,22 @@ def fetch_tls_cert(host: str, port: int = 443, timeout: int = 15):
         return {"host": host, "port": port, "error": str(e),
                 "validated": False, "validation_error": verr}
 
+def fetch_jarm(host: str, port: int = 443, timeout: int = 8):
+    """Active JARM fingerprint of host:port — a hash of the TLS *server stack +
+    config* that survives re-branding/domain rotation (great against the
+    self-rotating infra scam apps use). Returns {target, ip, jarm, empty} or
+    {host, error}. Pure stdlib: delegates to the vendored Salesforce algorithm in
+    `jarm.py`, so the 62-hex value byte-matches Shodan `ssl.jarm:` / Censys
+    `services.jarm.fingerprint` / ZoomEye and is directly pivotable. This is an
+    ACTIVE probe (10 TLS handshakes) — the caller gates it to the primary live
+    host and suppresses it under --proxy (a raw socket can't use an HTTP proxy,
+    so a direct probe would leak the analyst's real IP)."""
+    try:
+        from jarm import jarm_fingerprint
+        return jarm_fingerprint(host, port, timeout=timeout)
+    except Exception as e:                    # never propagate to the caller
+        return {"host": host, "port": port, "error": str(e)}
+
 def _crtsh_fetch(value: str, timeout: int = 25):
     """Fetch crt.sh JSON rows for a search value, resilient to crt.sh flakiness.
 
