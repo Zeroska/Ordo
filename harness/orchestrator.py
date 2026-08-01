@@ -73,6 +73,16 @@ ESCALATE = Profile(
 )
 ESCALATE_ON = os.environ.get("HARNESS_ESCALATE", "1").lower() not in ("0", "false", "no", "")
 
+# Adversarial verify: between CORRELATE and ASSESS, a skeptic pass that tries to REFUTE every
+# same-operator link before it's committed (benign/over-prevalent/managed-DNS/competing-explanation
+# → dropped). Defaults to the judge model — refutation is the harness's core false-positive control,
+# so it runs on by default; disable per run with HARNESS_VERIFY=0 or `--no-verify`.
+VERIFY = Profile(
+    os.environ.get("HARNESS_VERIFY_MODEL", JUDGE.model),
+    os.environ.get("HARNESS_VERIFY_EFFORT", JUDGE.effort),
+)
+VERIFY_ON = os.environ.get("HARNESS_VERIFY", "1").lower() not in ("0", "false", "no", "")
+
 
 MAX_TURNS = int(os.environ.get("HARNESS_MAX_TURNS", "40"))  # lower for cheap smoke runs
 
@@ -213,37 +223,84 @@ async def _phase(prompt, *, label, system, tools, servers, resume=None,
     return result
 
 
-async def investigate(seeds: list[str], case: str, hostile: bool = False) -> Assessment:
+async def collect_fanout(seeds: list[str], case: str, *, hostile: bool = False,
+                         max_conc: int = 6) -> dict:
+    """COLLECT, fanned out — one WebPivot *collector agent* per seed, all running CONCURRENTLY
+    under a semaphore. This is the wired realization of `agents.py`'s dormant `collector` persona:
+    it combines `run_case_parallel`'s parallelism with the per-seed *reactive* tradecraft
+    (empty→fallback_probe, hostile→passive) that `collect_many`'s deterministic thread-pool can't
+    do. Collectors do NOT ingest — the caller ingests once after, avoiding a concurrent KB write
+    race. Returns {host: ResultMessage} so the caller aggregates per-seed cost."""
+    sem = asyncio.Semaphore(max_conc)
+
+    async def _one(seed: str) -> tuple[str, object]:
+        host = T._host(seed)
+        async with sem:
+            r = await _phase(
+                _prompt(
+                    "collect_one",
+                    case=case,
+                    prior=_prior_knowledge([seed]),
+                    seed_lines=f"- {seed}",
+                    hostile_note=("Target is HOSTILE — pass passive=true or a proxy on pivot_extract.\n"
+                                  if hostile else ""),
+                ),
+                label=f"collect:{host}",
+                system=_skill("WebPivot"),
+                tools=T.COLLECT_TOOLS,
+                servers={"collect": T.COLLECT_SERVER},
+                model=COLLECT.model,
+                effort=COLLECT.effort,
+                hostile=hostile,
+            )
+            return host, r
+
+    return dict(await asyncio.gather(*[_one(s) for s in seeds]))
+
+
+async def investigate(seeds: list[str], case: str, hostile: bool = False,
+                      collect_conc: int = 1) -> Assessment:
     seed_lines = "\n".join(f"- {s}" for s in seeds)
     seed_csv = ", ".join(seeds)
 
     # PHASE 1 — COLLECT  (WebPivot brain, cheap model). Writes raw + ingests into the KB.
     prior = _prior_knowledge(seeds)
     _log("prior knowledge:\n" + prior)
-    p1 = await _phase(
-        _prompt(
-            "collect",
-            case=case,
-            prior=prior,
-            seed_lines=seed_lines,
-            hostile_note=("Targets are HOSTILE — pass passive=true or a proxy on pivot_extract.\n"
-                          if hostile else ""),
-        ),
-        label="collect",
-        system=_skill("WebPivot"),
-        tools=T.COLLECT_TOOLS,
-        servers={"collect": T.COLLECT_SERVER},
-        model=COLLECT.model,
-        effort=COLLECT.effort,
-        hostile=hostile,
-    )
+    if collect_conc > 1 and len(seeds) > 1:
+        # Fan-out: one reactive collector agent per seed, concurrently. Collectors don't ingest;
+        # we ingest all of their raw output once here (sync) to avoid a concurrent KB write race.
+        _log(f"collect fan-out: {len(seeds)} seeds · ≤{collect_conc} concurrent collector agents")
+        collect_phases = {f"collect:{h}": r
+                          for h, r in (await collect_fanout(seeds, case, hostile=hostile,
+                                                            max_conc=collect_conc)).items()}
+        ok, msg = T.ingest(case)
+        _log(f"  ingest · {'ok' if ok else 'FAILED'} · {msg.splitlines()[0] if msg else ''}")
+    else:
+        p1 = await _phase(
+            _prompt(
+                "collect",
+                case=case,
+                prior=prior,
+                seed_lines=seed_lines,
+                hostile_note=("Targets are HOSTILE — pass passive=true or a proxy on pivot_extract.\n"
+                              if hostile else ""),
+            ),
+            label="collect",
+            system=_skill("WebPivot"),
+            tools=T.COLLECT_TOOLS,
+            servers={"collect": T.COLLECT_SERVER},
+            model=COLLECT.model,
+            effort=COLLECT.effort,
+            hostile=hostile,
+        )
+        collect_phases = {"collect": p1}
     # We do NOT resume the collect session into judgment. The facts now live in the KB,
     # which the judgment phases read via tools — carrying the (large) collect transcript
     # into every Opus turn was the main cost driver. Judgment runs in its own session.
 
     # PHASE 2+3 — judgment (Correlate → Assess) over the seeds, reading the ingested KB.
     assessment, jphases = await _judge(seeds, case)
-    _report_cost({"collect": p1, **jphases}, case=case)
+    _report_cost({**collect_phases, **jphases}, case=case)
     if assessment is None:
         raise RuntimeError("assessment failed (correlate/assess produced nothing)")
     return assessment
@@ -267,13 +324,27 @@ async def _judge(domains: list[str], case: str) -> tuple[Assessment | None, dict
     session = p2.session_id if p2 else None
     if not session:
         return None, {"correlate": p2}
+    phases = {"correlate": p2}
 
-    # PHASE 3 — ASSESS  (resume CORRELATE; schema-forced structured assessment)
+    # PHASE 2.5 — ADVERSARIAL VERIFY  (resume CORRELATE; refute each same-operator link before it's
+    # committed). Runs in the correlate session so it attacks the very cluster it just drew; ASSESS
+    # then resumes THIS session, so the structured output reflects only the surviving links.
+    if VERIFY_ON:
+        pv = await _phase(
+            _prompt("verify", case=case, seed_csv=seed_csv),
+            label="verify", system=_skill("IntelAnalysis"), tools=T.ANALYZE_TOOLS,
+            servers={"analyze": T.ANALYZE_SERVER}, resume=session,
+            model=VERIFY.model, effort=VERIFY.effort)
+        phases["verify"] = pv
+        if pv and pv.session_id:
+            session = pv.session_id      # ASSESS resumes the adversarial session, not raw correlate
+
+    # PHASE 3 — ASSESS  (resume the (verified) judgment session; schema-forced structured assessment)
     assess_prompt = _prompt("assess")
     assess_kw = dict(system=_skill("IntelAnalysis"), tools=T.ANALYZE_TOOLS,
                      servers={"analyze": T.ANALYZE_SERVER}, resume=session, output_schema=Assessment)
     p3 = await _phase(assess_prompt, label="assess", model=JUDGE.model, effort=JUDGE.effort, **assess_kw)
-    phases = {"correlate": p2, "assess": p3}
+    phases["assess"] = p3
 
     assessment = None
     if p3 and p3.subtype == "success" and p3.structured_output:
@@ -339,15 +410,17 @@ def _discover_new_seeds(case: str, known: list[str], max_new: int) -> list[str]:
 
 
 async def run_case(seeds: list[str], case: str, *, hostile: bool, depth: int,
-                   stale: int, max_new: int) -> Assessment:
+                   stale: int, max_new: int, collect_conc: int = 1) -> Assessment:
     """One or more Collect→Correlate→Assess rounds. Each round snapshots an immutable assessment
     (r1, r2, …); between rounds it expands the seed set with newly-discovered cluster peers and
-    stops when convergence.py reports CONVERGED, the depth cap is hit, or nothing new is found."""
+    stops when convergence.py reports CONVERGED, the depth cap is hit, or nothing new is found.
+    collect_conc>1 fans the collect phase into one reactive collector agent per seed (see
+    collect_fanout); the default (1) keeps the single sequential collect session."""
     current, final = list(seeds), None
     for rnd in range(1, depth + 1):
         _log(f"\n===== ROUND {rnd}/{depth} · {len(current)} seed(s): {', '.join(current)} =====")
         try:
-            final = await investigate(current, case, hostile=hostile)
+            final = await investigate(current, case, hostile=hostile, collect_conc=collect_conc)
         except Exception as e:  # noqa: BLE001
             _log(f"round {rnd} failed: {e}")
             break
@@ -527,7 +600,11 @@ def _main() -> None:
     hostile = "--hostile" in argv
     cont = "--continue" in argv
     parallel = "--parallel" in argv
-    argv = [a for a in argv if a not in ("--hostile", "--continue", "--parallel")]
+    fanout = "--fanout" in argv
+    if "--no-verify" in argv:
+        globals()["VERIFY_ON"] = False   # per-run override of the adversarial-verify default
+    argv = [a for a in argv
+            if a not in ("--hostile", "--continue", "--parallel", "--fanout", "--no-verify")]
     depth = int(_pop_val(argv, "--depth", "4" if cont else "1"))
     stale = int(_pop_val(argv, "--stale", "2"))
     max_new = int(_pop_val(argv, "--max-new", "8"))
@@ -536,8 +613,10 @@ def _main() -> None:
     if depth > 1:
         cont = True
     if len(argv) < 2:
-        sys.exit("usage: orchestrator.py <CASE-ID> [--hostile] [--continue [--depth N] [--stale N] "
-                 "[--max-new N]] [--parallel [--collect-conc N] [--judge-conc N]] <seed-url> ...")
+        sys.exit("usage: orchestrator.py <CASE-ID> [--hostile] [--no-verify] "
+                 "[--fanout [--collect-conc N]] "
+                 "[--continue [--depth N] [--stale N] [--max-new N]] "
+                 "[--parallel [--collect-conc N] [--judge-conc N]] <seed-url> ...")
     case, seeds = argv[0], argv[1:]
     # Auto-parallel for large seed sets (a single collect session would blow context/turns).
     auto_at = int(os.environ.get("HARNESS_PARALLEL_AT", "12"))
@@ -550,7 +629,10 @@ def _main() -> None:
         asyncio.run(run_case_parallel(seeds, case, hostile=hostile, max_conc=collect_conc,
                                       judge_conc=judge_conc, depth=pdepth, stale=stale, max_new=max_new))
     else:
-        asyncio.run(run_case(seeds, case, hostile=hostile, depth=depth, stale=stale, max_new=max_new))
+        # --fanout → one reactive collector agent per seed, concurrently (collect_conc); default is
+        # the single sequential collect session. Judgment is unchanged.
+        asyncio.run(run_case(seeds, case, hostile=hostile, depth=depth, stale=stale, max_new=max_new,
+                             collect_conc=collect_conc if fanout else 1))
 
 
 def _persist_assessment(assessment: Assessment, case: str, table_md: str) -> dict:

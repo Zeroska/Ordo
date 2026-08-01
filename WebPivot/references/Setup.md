@@ -30,6 +30,16 @@ values, and WhoisXML adds current + historical registrant data plus reverse-WHOI
 attached to each pivot as `live_results` (shown inline in `--leads`). Use `--no-enrich` /
 `--no-whois` to skip; `--whois-reverse` runs reverse-WHOIS live (costs credits).
 
+**WHOIS runs on every domain, key or not.** Without `WHOISXML_API_KEY` the tool falls back to
+**keyless RDAP** (the IETF-standard, free, structured-JSON, ToS-respecting successor to port-43
+whois — one polite request per domain via the `rdap.org` bootstrap redirector), with a system
+`whois` port-43 fallback for ccTLDs that don't serve RDAP (e.g. `.vn`). RDAP reliably yields
+**registrar, registration/expiry/updated dates, name servers, and domain status** even when the
+registrant is GDPR-redacted — so the Domain Summary table + report are populated on every host,
+not left blank. `meta.enriched_with` records the actual source (`rdap` / `whois43` / `whoisxml`,
+or `whoisxml+rdap` when the licensed record was empty and RDAP backfilled it). History + reverse-
+WHOIS still require the licensed WhoisXML API (RDAP has no reverse index).
+
 ### urlscan reverses match how urlscan INDEXES each artifact
 
 (not one-size-fits-all) — this is often the better index than FOFA for freshly-stood-up domains
@@ -64,10 +74,12 @@ see `SKILLCUSTOMIZATIONS/WebPivot/PREFERENCES.md` for setup.
 
 ## WHOIS tool — `tools/whois_enrich.py`
 
-Standalone WhoisXML client: current WHOIS, WHOIS history (every registrant email/name ever seen),
-and reverse WHOIS by registrant email/name. `pivot_extract.py` calls it automatically when
-`WHOISXML_API_KEY` is set; `graph_build.py` models registrant email/name, registrar, and name
-servers as graph hubs so shared registration data clusters domains.
+Standalone WHOIS client. **With `WHOISXML_API_KEY`:** current WHOIS, WHOIS history (every
+registrant email/name ever seen), and reverse WHOIS by registrant email/name. **Without a key:**
+current-registration lookup still works via keyless RDAP (+ port-43 fallback) — history/reverse
+need the licensed key. `pivot_extract.py` calls it automatically for **every** domain (keyed or
+keyless); `graph_build.py` models registrant email/name, registrar, and name servers as graph
+hubs so shared registration data clusters domains.
 ```bash
 python3 WebPivot/tools/whois_enrich.py suspect.example                     # current + history
 python3 WebPivot/tools/whois_enrich.py --reverse-email owner@x.com         # owner's other domains

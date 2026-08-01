@@ -484,7 +484,7 @@ def _resource_filename_for(result: dict, kind: str, val, seed_reg: str):
             return base
     return None
 
-def enrich_live(result: dict, fofa_full: bool = False) -> dict:
+def enrich_live(result: dict, fofa_full: bool = False, free_only: bool = False) -> dict:
     """Run live pivots and attach the real hits to each pivot as pivot['live_results'].
 
     Keyless always-on: the base `domain` pivot is resolved live via crt.sh
@@ -495,10 +495,14 @@ def enrich_live(result: dict, fofa_full: bool = False) -> dict:
 
     fofa_full=True runs every FOFA reverse over ALL historical data (`full=true`)
     instead of the default ~1-year window.
+
+    free_only=True forces the FREE/keyless sources only — even when metered keys are
+    configured it skips FOFA, CIRCL passive DNS, and urlscan-Pro similarity, so the
+    autonomous convergence loop never spends credits without analyst approval.
     """
-    have_fofa = bool(_secret("FOFA_KEY", "FOFA_API_KEY"))
-    have_urlscan = bool(_secret("URLSCAN_API_KEY"))
-    have_pdns = bool(_secret("PDNS_USERNAME") and _secret("PDNS_PASSWORD"))
+    have_fofa = bool(_secret("FOFA_KEY", "FOFA_API_KEY")) and not free_only
+    have_urlscan = bool(_secret("URLSCAN_API_KEY")) and not free_only  # gates only Pro similarity
+    have_pdns = bool(_secret("PDNS_USERNAME") and _secret("PDNS_PASSWORD")) and not free_only
     sources = ["crtsh", "passivedns", "urlscan"]  # keyless domain enrichment
     if have_fofa:
         sources.append("fofa-full" if fofa_full else "fofa")
@@ -613,25 +617,32 @@ def _whois_registrant_vals(w: dict, hist: dict, field: str):
     return vals
 
 def whois_enrich_result(result: dict, do_reverse: bool = False,
-                        history_mode: str = "purchase") -> dict:
-    """Attach WhoisXML registration data + registrant pivots to a result.
+                        history_mode: str = "purchase", free_only: bool = False) -> dict:
+    """Attach WHOIS registration data + registrant pivots to a result.
 
     Adds result['artifacts']['whois'] (registrant email/name/org, registrar, dates,
     name servers, and every historical registrant email/name), and a HIGH-confidence
     'whois:registrant_email' pivot with reverse-WHOIS queries. With do_reverse, runs
-    the reverse-WHOIS live and attaches sibling domains. No WHOISXML key → no-op.
+    the reverse-WHOIS live and attaches sibling domains.
+
+    Runs on EVERY domain: WhoisXML (current+history+reverse) when keyed, else keyless
+    RDAP (+ port-43). free_only=True forces the keyless RDAP path even when a WhoisXML
+    key is present, so the autonomous loop spends no WhoisXML credits.
     """
-    if not (HAVE_WHOIS and whois_enrich._key()):
+    # Only a total absence of the module skips WHOIS.
+    if not HAVE_WHOIS:
         return result
     host = result.get("meta", {}).get("host")
     if not host:
         return result
-    w = whois_enrich.whois_summary(host, history_mode=history_mode)
+    w = (whois_enrich.whois_summary_keyless(host) if free_only
+         else whois_enrich.whois_summary(host, history_mode=history_mode))
     if not w or w.get("error"):
         result.setdefault("meta", {})["whois_error"] = (w or {}).get("error", "no data")
         return result
     result.setdefault("artifacts", {})["whois"] = w
-    result.setdefault("meta", {}).setdefault("enriched_with", []).append("whoisxml")
+    # record the actual source so cost/provenance is honest (rdap / whois43 / whoisxml[+rdap])
+    result.setdefault("meta", {}).setdefault("enriched_with", []).append(w.get("source", "whoisxml"))
 
     # registrant email → same-operator pivot (reverse WHOIS)
     hist = w.get("history") or {}

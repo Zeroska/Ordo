@@ -332,6 +332,34 @@ async def impersonation_hunt(args: dict[str, Any]) -> dict[str, Any]:
 
 
 @tool(
+    "search_pivot",
+    "Multi-engine SEARCH-ENGINE pivot for an indicator — the general-web complement to FOFA/"
+    "PublicWWW (which only see served HTML). Takes ANY indicator (domain, distinctive slogan, "
+    "tracking ID, wallet, Telegram/Zalo handle) and emits ready-to-open, URL-encoded results URLs "
+    "+ raw OSINT dork queries across a switchable engine set (Google / Yandex / DuckDuckGo / Bing / "
+    "Brave) — off-site mentions, bilingual scam/fraud context, chat handles, paste/code leaks, "
+    "related: sites. It does NOT scrape (SERPs are bot-walled) — FIRE the queries with Claude "
+    "Code's WebSearch (single-engine but free) and/or WebFetch the duckduckgo html URL (the one a "
+    "plain fetch can read; Google/Yandex bot-wall WebFetch), extract candidate hosts from the "
+    "results, and feed the NEW ones back into pivot_extract to close the keyword→search→"
+    "infrastructure loop. Pass engines='google,yandex,duckduckgo' to pick engines; kind='domain'|"
+    "'keyword' to override auto-detection.",
+    {"indicator": str},  # engines:str (comma list), kind:str optional -> args.get()
+    annotations=READONLY,
+)
+async def search_pivot(args: dict[str, Any]) -> dict[str, Any]:
+    cmd = [PY, os.path.join("tools", "search_pivot.py"), args["indicator"]]
+    if args.get("engines"):
+        cmd += ["--engines", str(args["engines"])]
+    if args.get("kind"):
+        cmd += ["--kind", str(args["kind"])]
+    r = _run(cmd, timeout=30)
+    if r.returncode != 0:
+        return _err(r.stderr or "search_pivot failed")
+    return _ok(r.stdout or "search_pivot produced no output")
+
+
+@tool(
     "kb_ingest",
     "Ingest a case's raw pivot JSON into the knowledge base so it becomes correlatable. "
     "Run this after pivot_extract; a run that isn't ingested is invisible to correlation.",
@@ -683,6 +711,12 @@ async def api_usage(args: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------- RENDER tools
 @tool(
     "render_diagram",
+    "RENDERING ONLY — the `IntelGraph` skill owns figure DESIGN (engine choice, encoding, when to "
+    "split one hairball into several focused figures); load it if the figure needs judgement. Note "
+    "this builds the graph from COLLECTED hosts only, so a case whose finding spans domains you never "
+    "collected will render a misleading partial picture — check the node count against the claim, and "
+    "hand-edit the emitted .mmd (then render with IntelGraph's render_mermaid.py, and pass "
+    "no_figures=true to render_report so it is not overwritten) when it does not match. "
     "Turn a graph_build.py case_graph.json into an EDITABLE Mermaid diagram source (.mmd) and "
     "render it to PNG + SVG (+ thumb) via IntelGraph. Use this when you want the relationship web "
     "as a static, hand-editable figure to drop into a report — unlike render_network.py's opaque "
@@ -711,24 +745,34 @@ async def render_diagram(args: dict[str, Any]) -> dict[str, Any]:
 
 @tool(
     "render_report",
-    "Render an assessment MARKDOWN file into a polished PDF and/or DOCX via pandoc, using the "
-    "IntelReport house style (muted editorial palette matching IntelGraph, cover page, TOC, running "
-    "header/footer with the classification + case id, embedded figures, Vietnamese-safe fonts). No "
-    "analyst name is ever stamped; date defaults to UTC today. Title/case-id/classification/subtitle "
-    "are read from the markdown's YAML frontmatter unless overridden. Required: markdown (path), stem "
-    "(output path, no extension). Optional: title, subtitle, case_id, classification (e.g. TLP:AMBER), "
-    "date (YYYY-MM-DD), pdf=true / docx=true (default: both). Embed IntelGraph figures with a normal "
-    "markdown image whose path is resolvable from the markdown file's directory.",
+    "TYPOGRAPHY ONLY — this renders a markdown file you have ALREADY written to the house structure; "
+    "it does NOT make a report conformant. LOAD THE `IntelReport` SKILL FIRST and author the markdown "
+    "to its contract, then call this. The skill owns the structure and the OPSEC rules; this tool only "
+    "applies the LaTeX template (cover, TOC, running header/footer, figure styling, Vietnamese-safe "
+    "fonts) via pandoc and emits PDF + DOCX. What the skill requires and this tool cannot supply: "
+    "Executive-Summary-first Key Judgments, an early Methodology with the NATO Admiralty + ICD-203 "
+    "tables, the artifact register and per-domain-profile appendices, and — critically — naming every "
+    "indicator (seed domain, IPs, hashes, impersonated brands) in the BODY while keeping internal "
+    "tool/vendor/case-store names out of it. Required: markdown (path), stem (output path, no "
+    "extension). Optional: report_ref (EXTERNAL reference shown on the cover — use this, NOT case_id, "
+    "or the internal case-store id leaks onto every page), audience (technical|executive|le), title, "
+    "subtitle, case_id (internal fallback only), classification (e.g. TLP:AMBER), date (YYYY-MM-DD), "
+    "no_figures=true (skip figures.json regeneration — set this when the .mmd was hand-edited, else "
+    "the hand-edited figure is overwritten), pdf=true / docx=true (default: both). Embed figures with "
+    "a markdown image path resolvable from the markdown file's directory.",
     {"markdown": str, "stem": str},
 )
 async def render_report(args: dict[str, Any]) -> dict[str, Any]:
     cmd = [PY, os.path.join("IntelReport", "scripts", "render_report.py"),
            str(args["markdown"]), str(args["stem"])]
     for k, flag in (("title", "--title"), ("subtitle", "--subtitle"),
+                    ("report_ref", "--report-ref"), ("audience", "--audience"),
                     ("case_id", "--case-id"), ("classification", "--classification"),
                     ("date", "--date")):
         if args.get(k):
             cmd += [flag, str(args[k])]
+    if args.get("no_figures"):
+        cmd += ["--no-figures"]
     if args.get("pdf"):
         cmd += ["--pdf"]
     if args.get("docx"):
@@ -738,22 +782,84 @@ async def render_report(args: dict[str, Any]) -> dict[str, Any]:
             "is_error": r.returncode != 0}
 
 
+# ---------------------------------------------------------------- convergence loop
+@tool(
+    "case_frontier",
+    "Read the case's UNRESOLVED GAPS without collecting anything: the next FREE frontier (new "
+    "registrable apexes already discovered — via crt.sh SAN, passive-DNS co-host, urlscan-related, "
+    "TLS co-SAN, CORS, impersonation, reverse-WHOIS — that are not yet collected), plus the "
+    "convergence verdict and the DEFERRED metered leads (FOFA/WhoisXML pivots that would spend "
+    "credits, held for your approval). Call this after an assessment to decide what to chase next. "
+    "Read-only; spends no credits.",
+    {"case": str},
+    annotations=READONLY,
+)
+async def case_frontier(args: dict[str, Any]) -> dict[str, Any]:
+    r = _run([PY, os.path.join("tools", "case_state.py"), "frontier", str(args["case"]),
+              "--max-new", str(int(args.get("max_new", 8)))])
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "no output"}],
+            "is_error": r.returncode != 0}
+
+
+@tool(
+    "case_loop",
+    "Run the RESUMABLE convergence feedback loop on a case: collect (free-only WebPivot) -> ingest "
+    "-> convergence snapshot -> assess (assessment.md + machine-readable assessment.json) -> chase "
+    "the discovered FREE frontier back into WebPivot -> repeat until CONVERGED, cold (no free leads "
+    "left), or the round cap (awaiting-analyst). Never spends FOFA/urlscan-Pro/WhoisXML credits — "
+    "those pivots are deferred to assessment.json.metered_leads. Checkpoints cases/<case>/state.json "
+    "every round, so an interrupt RESUMES and a cold case re-mines against the current KB on re-run. "
+    "First run / added evidence: pass seeds (a domains-file path or a comma list). Resume: omit seeds.",
+    {"case": str},
+    annotations=ToolAnnotations(readOnlyHint=False),
+)
+async def case_loop(args: dict[str, Any]) -> dict[str, Any]:
+    cmd = [PY, os.path.join("tools", "intel.py"), "loop", str(args["case"])]
+    if args.get("seeds"):
+        cmd.append(str(args["seeds"]))
+    cmd += ["--max-rounds", str(int(args.get("max_rounds", 6))),
+            "--max-new", str(int(args.get("max_new", 8)))]
+    r = _run(cmd, timeout=1800)   # a multi-round loop of live free collection can take a while
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "no output"}],
+            "is_error": r.returncode != 0}
+
+
+@tool(
+    "case_reopen",
+    "Cold-case reopen: flip a finished (converged/cold) case back to 'expanding' and optionally "
+    "merge NEW seeds, so the next case_loop re-mines its frontier against the CURRENT knowledge base "
+    "— an old case benefits from breakthroughs made in other cases since it closed. Pass seeds as a "
+    "space/comma list of new domains, or omit to just reopen for re-mining.",
+    {"case": str},
+    annotations=ToolAnnotations(readOnlyHint=False),
+)
+async def case_reopen(args: dict[str, Any]) -> dict[str, Any]:
+    seeds = str(args.get("seeds", "")).replace(",", " ").split()
+    r = _run([PY, os.path.join("tools", "case_state.py"), "reopen", str(args["case"]), *seeds])
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "no output"}],
+            "is_error": r.returncode != 0}
+
+
 # ---------------------------------------------------------------- servers + names
 COLLECT_SERVER = create_sdk_mcp_server(
-    "collect", tools=[pivot_extract, analyze_artifact, fallback_probe, impersonation_hunt, kb_ingest])
+    "collect", tools=[pivot_extract, analyze_artifact, fallback_probe, impersonation_hunt,
+                      search_pivot, kb_ingest])
 ANALYZE_SERVER = create_sdk_mcp_server(
     "analyze", tools=[kb_cluster, kb_entity, kb_query_shared, risk_signals,
                       reverse_whois, cert_overlap, reference_check, reference_add,
                       which_cases, domain_verdict, api_usage,
+                      case_frontier, case_loop, case_reopen,
                       render_diagram, render_report])
 
 COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__analyze_artifact",
                  "mcp__collect__fallback_probe", "mcp__collect__impersonation_hunt",
-                 "mcp__collect__kb_ingest"]
+                 "mcp__collect__search_pivot", "mcp__collect__kb_ingest"]
 ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__kb_query_shared", "mcp__analyze__risk_signals",
                  "mcp__analyze__reverse_whois", "mcp__analyze__cert_overlap",
                  "mcp__analyze__reference_check", "mcp__analyze__reference_add",
                  "mcp__analyze__which_cases", "mcp__analyze__domain_verdict",
                  "mcp__analyze__api_usage",
+                 "mcp__analyze__case_frontier", "mcp__analyze__case_loop",
+                 "mcp__analyze__case_reopen",
                  "mcp__analyze__render_diagram", "mcp__analyze__render_report"]

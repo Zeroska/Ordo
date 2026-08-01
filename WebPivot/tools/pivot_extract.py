@@ -209,6 +209,11 @@ def main():
     ap.add_argument("--no-enrich", action="store_true",
                     help="do NOT run live enrichment (keyless crt.sh/passive-DNS/urlscan on the "
                          "domain, plus FOFA/urlscan when keys are configured)")
+    ap.add_argument("--free-only", action="store_true",
+                    help="enrich with FREE/keyless sources only (crt.sh, HackerTarget passive DNS, "
+                         "anonymous urlscan search, live DNS, keyless RDAP WHOIS) — skip every "
+                         "METERED call (FOFA, CIRCL pDNS, urlscan-Pro similarity, WhoisXML). Used by "
+                         "the autonomous convergence loop so it never spends credits without approval.")
     ap.add_argument("--fofa-full", action="store_true",
                     help="run FOFA reverses over ALL historical data (full=true) instead of the "
                          "default ~1-year window — catches favicon/tracker assets later scrubbed. "
@@ -565,10 +570,10 @@ def main():
         sort_pivots(result["pivots"])  # re-rank after folding in crawled pages
 
     if not args.no_enrich:
-        enrich_live(result, fofa_full=args.fofa_full)
+        enrich_live(result, fofa_full=args.fofa_full, free_only=args.free_only)
     if not args.no_whois:
-        whois_enrich_result(result, do_reverse=args.whois_reverse,
-                            history_mode=args.whois_history_mode)
+        whois_enrich_result(result, do_reverse=args.whois_reverse and not args.free_only,
+                            history_mode=args.whois_history_mode, free_only=args.free_only)
 
     # --- store the raw DOM (the collected page) ---
     if args.save_dom and html:

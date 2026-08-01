@@ -134,7 +134,33 @@ keyword/subdomain reverse **live** when a `FOFA_KEY` is set. Collect the new hos
 re-ingest, and re-correlate — repeat until convergence. Prefer FOFA `body=` / CT over PublicWWW on
 **freshly-registered** domains PublicWWW hasn't indexed yet.
 
+**General-web search pivot (`search_pivot`).** FOFA/PublicWWW only see served HTML; the open web
+indexes the *off-infrastructure* mentions (forums, complaints, pastebin, social, RU-CIS sites) that
+name an operator's other domains. For a distinctive indicator (domain, slogan, tracking ID, wallet,
+Telegram/Zalo handle), call **`search_pivot`** (MCP tool, or `python3 tools/search_pivot.py
+"<indicator>" --engines google,yandex,duckduckgo`) to get ready-to-open dork URLs across Google /
+Yandex / DuckDuckGo / Bing / Brave — Yandex especially for Cyrillic/RU-CIS + reverse-image. It does
+**not** scrape (SERPs are bot-walled); **fire the queries with Claude Code's own `WebSearch` +
+`WebFetch`** (WebFetch the readable `html.duckduckgo.com` URL — Google/Yandex bot-wall a plain
+fetch), extract candidate hosts from the results, and feed the NEW ones back into Phase 1. The
+`cti-fanout-case` workflow runs this as an opt-in `Search-expand` phase (`args.expand` /
+`args.keywords`). Free, no keys.
+
 ---
+
+### Adversarial verify — refute every link before you commit it
+
+Before writing the assessment, switch sides and try HARD to **break** each same-operator link you
+drew. A link that survives a genuine refutation attempt is defensible; one you never attacked is not.
+For each shared-artifact link: `reference.py check` it (BENIGN → discard), `query.py --entity` it for
+**prevalence** (shared by many unrelated domains → managed-DNS/parking/platform noise, not an operator
+link), re-run `cert_overlap.py` on the specific pair (only a SAN cross-cover survives — a shared CA
+does not), and name the innocent **competing explanation** (shared host/CDN/registrar/SaaS/brand
+coincidence). **Default to refuted when uncertain.** Keep only the links that survive; fold the
+refuted ones into the assessment's `gaps` as competing explanations ruled out. The SDK harness does
+this automatically as a phase between correlate and assess (`HARNESS_VERIFY`, disable per run with
+`--no-verify`); the `cti-fanout-case` workflow runs it as a 3-skeptic panel vote (2-of-3 refuted kills
+a link). This is the harness's core false-positive control — don't skip it.
 
 ## Phase 3 — ASSESS  (write it, then version it)
 
@@ -162,9 +188,24 @@ current head. Show the BLUF + attribution/confidence + the evidence trail (full,
 ### Deliverables — auto-emit the figure + PDF/DOCX
 
 Right after the snapshot, produce the shareable deliverables so a finished case ships with a
-relationship figure and a polished report (the SDK's `_render_deliverables` does this
-deterministically; here you call the two MCP tools). Both are best-effort — skip on a missing
-`mmdc`/headless Chrome or `pandoc`, don't fail the case:
+relationship figure and a polished report. Both are best-effort — skip on a missing
+`mmdc`/headless Chrome or `pandoc`, don't fail the case.
+
+> **LOAD THE `IntelGraph` AND `IntelReport` SKILLS FIRST — the `render_diagram` / `render_report`
+> MCP tools are renderers, not the deliverable.** They apply the figure encoding and the LaTeX
+> template; they do **not** supply the report's structure or its OPSEC rules. Calling them on a raw
+> `case_store` snapshot yields a document that is *typeset* correctly and *wrong* as a report: no
+> Executive-Summary-first Key Judgments, no early Methodology with the Admiralty + ICD-203 tables,
+> no artifact-register or per-domain-profile appendices — and, because the snapshot is an internal
+> working artifact, it leaks collector/vendor names while leaving the actual indicators unnamed.
+> Two specifics the tools cannot fix for you:
+> - pass **`report_ref`**, never `case_id` — `case_id` stamps the internal case-store id on the
+>   cover and every page header (IntelReport Rule 11);
+> - **name every indicator in the body** — seed domain, IPs, hashes, impersonated brands — and keep
+>   tool/vendor/case-store names out (IntelReport Rules 12a/12b). Redacting evidence is the single
+>   most common defect; a findings section that never says *which domain* it is about has failed.
+>
+> Write the assessment markdown to the `IntelReport` contract, then call the tools to render it.
 
 0. **Write the figure recipe (`figures.json`) so the report ⇄ chart stay chained.** At assess-time,
    drop `cases/<CASE>/report/figures.json` (only if absent — don't clobber a curated one) so a later
@@ -194,17 +235,61 @@ image path resolves). See the **IntelGraph** and **IntelReport** skills for deta
 
 ---
 
-## Iterate to convergence (optional, for expanding cases)
+## Iterate to convergence — the resumable gap-chasing loop
 
-Each round is a cheap, LLM-free expansion; only assess once the case stops growing:
+The whole feedback loop — **collect → assess → read the assessment's gaps → chase them back into
+WebPivot → repeat until nothing new can be collected for free or you say stop** — is one resumable
+command. It never spends metered credits on its own (free-only collection; FOFA/WhoisXML pivots are
+deferred for your approval), and it **checkpoints every round** so an interrupt resumes and a cold
+case picks up later breakthroughs:
+
 ```bash
-python3 tools/kb/convergence.py snapshot <CASE>                 # record this round's hosts+indicators
-python3 tools/kb/convergence.py status  <CASE> --stale 2        # CONVERGED (stop) or EXPANDING (keep going)
+python3 tools/intel.py loop <CASE> seeds.txt        # first run (or a comma list: a.com,b.com)
+python3 tools/intel.py loop <CASE>                  # RESUME — omit seeds; continues from state.json
+python3 tools/intel.py loop <CASE> --max-rounds 8 --max-new 10
 ```
-To find the **next frontier**, take the `--strong` cluster peers of the collected domains that are
-**not yet collected**, collect those (Phase 1), re-ingest, snapshot convergence. Repeat until
-`status` says **CONVERGED** (last 2 rounds added nothing) or the shared budget is spent. Only then
-write the assessment. (This mirrors `orchestrator.py --continue`.)
+
+Each round: collect the pending seeds with `pivot_extract --free-only` (keyless crt.sh / passive-DNS /
+urlscan / RDAP WHOIS — **zero credits**) → ingest → `convergence.py snapshot` → write
+`assessment.md` **and** machine-readable **`assessment.json`** → mine every collected `raw/*.json` for
+the next **free frontier** (new registrable apexes from crt.sh SAN siblings, passive-DNS co-hosts,
+urlscan-related, TLS co-SAN, CORS origins, impersonation lookalikes, reverse-WHOIS siblings; shared
+infra/noise filtered) → checkpoint. It **stops** when `convergence.py` says **CONVERGED** (last
+`--stale` rounds added nothing), the frontier is empty (**cold**), or the round cap is hit
+(**awaiting-analyst**).
+
+Two persisted artifacts drive it (both under `cases/<CASE>/`):
+- **`state.json`** — the stage machine: `status` (expanding · converged · cold · awaiting-analyst),
+  round cursor, the `collected` / `pending` / `consumed` queues, deferred `metered_leads`, and history.
+  Ground truth is reconciled from `raw/*.json` each run, so a mid-round interrupt never corrupts it.
+- **`assessment.json`** — the **same schema the SDK/IntelAnalysis path writes** (`bluf`, `cluster`,
+  `attribution_level`, `confidence`, `evidence`, `gaps`, `next_pivots[str]`) so both front-ends are
+  interchangeable; the loop stamps `attribution_level:"inconclusive"` (it never attributes — that's
+  IntelAnalysis's job) and keeps its structured detail under an additive `loop` key
+  (`loop.frontier`, `loop.metered_leads` — the FOFA/WhoisXML pivots deferred for approval, **never
+  auto-run**). **The loop never clobbers an analyst-written assessment.json** — if one exists it
+  reads its `next_pivots`/`gaps` for domain leads (folding them into the frontier, analyst-first)
+  and drops its own view in `loop_assessment.json`. This is the WebPivot⇄IntelAnalysis chain: run
+  the loop, invoke **IntelAnalysis** to judge/attribute over the KB and write the real assessment,
+  then re-run the loop — it picks up the analyst's next_pivots automatically.
+
+Inspect or steer the loop without collecting (also exposed as MCP tools `case_frontier` / `case_loop`
+/ `case_reopen`, and to the SDK harness):
+```bash
+python3 tools/case_state.py status   <CASE>              # stage, queues, convergence verdict
+python3 tools/case_state.py frontier <CASE> --json       # the gaps + deferred metered leads
+python3 tools/case_state.py reopen   <CASE> newlead.com  # COLD-CASE reopen: re-mine vs the current KB
+```
+
+**Analyst override** — the loop chases the *free* frontier automatically; your judgment enters by
+feeding seeds (`intel.py loop <CASE> a.com,b.com` merges them into pending and re-opens a finished
+case) or by approving a `metered_leads` pivot and running it by hand. **Cold-case benefit:** because
+`reopen` re-mines against the *current* KB + operator registry, an old case re-run after a later case
+proves a new operator link automatically inherits that breakthrough.
+
+*(Low-level pieces still work standalone: `convergence.py snapshot/status` owns `rounds.jsonl`; the
+SDK mirror is `orchestrator.py --continue`. `intel.py loop` is the deterministic Claude-Code driver
+that ties them together with resumable state + gap-chasing.)*
 
 ---
 
@@ -222,6 +307,15 @@ Each `COMPONENT` line is one same-operator cluster (strong edges only). Then, pe
 Collection scales by fanning `pivot_extract` across seeds (independent processes / background Bash);
 each cluster is a small, focused judgement, so cost tracks cluster count, not domain count. (This
 mirrors `orchestrator.py --parallel`.)
+
+**Reactive parallel collect (`--fanout`).** `--parallel`'s `collect_many` is a deterministic
+thread-pool — fast, but it runs one fixed `pivot_extract` per seed with no per-seed reasoning. When
+seeds each need the *reactive* tradecraft (empty→`fallback_probe`, hostile→passive, CF→render) **and**
+you want it concurrent, `orchestrator.py --fanout [--collect-conc N]` spins one WebPivot collector
+agent per seed (the wired `agents.py` `collector` persona, `collect_fanout`) under a semaphore, then
+ingests once. In Claude Code, the `cti-fanout-case` **workflow** (`.claude/workflows/`) is the same
+shape over the MCP `intel` tools. Use `--parallel` for large/mechanical sweeps, `--fanout` for
+small–medium seed sets where per-seed collection judgement matters.
 
 ---
 
@@ -260,14 +354,16 @@ future collections that hit a `signal` fingerprint or an attributed domain resol
 | Phase / step | This skill runs | SDK-harness counterpart |
 |---|---|---|
 | prior-knowledge | `case_index.py`, `operator_registry.py find` | `_prior_knowledge`, `domain_verdict` |
-| collect | `pivot_extract.py --archive-missing --master` | `collect_one` / `collect_many` |
+| collect | `pivot_extract.py --archive-missing --master` | `collect_one` / `collect_many` / `collect_fanout` (`--fanout`) |
 | empty-seed | `fallback_probe.py` | `fallback_probe` tool |
 | ingest | `ingest_webpivot.py` | `ingest` |
 | correlate | `query.py --cluster --strong`/`--entity`, `cert_overlap.py`, `reference.py check`, `risk_signals.py` | Correlate phase tools |
+| verify (adversarial) | refute each link — `reference.py check`, `query.py --entity` (prevalence), `cert_overlap.py` | verify phase (`HARNESS_VERIFY`, `--no-verify`) |
 | cross-case | `case_index.py` | `which_cases` |
 | assess + version | write JSON → `case_store.py snapshot` | schema-forced `Assessment` + `_persist_assessment` |
-| deliverables | `graph_build.py` → `render_diagram` + `render_report` tools | `_render_deliverables` (auto, best-effort) |
+| deliverables | **load `IntelGraph` + `IntelReport` skills**, author the assessment md to the IntelReport contract, then `graph_build.py` → `render_diagram` + `render_report` (pass `report_ref`, not `case_id`) | `_render_deliverables` (auto, best-effort) |
 | evidence manifest | `case_store.py manifest` | `_append_manifest` |
 | converge | `convergence.py snapshot/status` | `--continue` loop |
+| **gap-chasing loop (resumable)** | `intel.py loop <CASE>` = collect(free-only)→assess→`case_state.py frontier`→repeat, checkpointed to `state.json` (`case_frontier`/`case_loop`/`case_reopen` MCP tools) | `run_case` / `run_case_parallel` (`--continue`) |
 | scale | `query.py --components` + per-cluster judge | `--parallel` / `run_case_parallel` |
 | learn | `operator_registry.py add`, `reference.py ingest-case` | close-out step |

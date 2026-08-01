@@ -101,6 +101,34 @@ enforces the typography (Roman numbering, compact tables, wrapped code); YOU enf
     names (the collectors, the KB, the registry, Claude APIs), no internal file paths, no case-store
     ids. In the body and appendix, cite only **public source CLASSES** — WHOIS, passive DNS / IP,
     certificate transparency, public web-scan data, live page — never the specific product/service.
+
+12a. **…but NEVER anonymise the EVIDENCE. Rule 12 restricts how we say we found something, never
+    what we found.** These are two different categories and confusing them destroys the report.
+    The test is **who authored the string**:
+
+    | Category | Authored by | Rule |
+    |---|---|---|
+    | **Internal working** | *our* investigation — tool / script / MCP / API names, the KB, the case-store id, file paths, command lines, data-vendor product names | **Never appears.** Cite the public source CLASS instead. |
+    | **Case evidence** | *the target* — domains, URLs, IPs, ASNs, hashes, favicon mmh3, cert fingerprints, registrant strings, wallets, handles, impersonated brand names, dates | **Always appears, literally.** This IS the deliverable. |
+
+    A section headed "The seed and its lifecycle" that never states the seed's domain name, or a
+    finding written as "a US wealth-management brand" instead of naming it, has **failed** — the
+    reader cannot verify it, act on it, or follow the argument. Describing the *sector* of a brand
+    is not OPSEC; it is an unreadable report.
+
+12b. **Name every reference at FIRST MENTION in the body — not only in the appendix.**
+    - **The SEED is named in the Executive Summary**, and again in the first line of the section
+      that analyses it. A reader must never reach the appendix to learn what the case is about.
+    - **First body mention of any indicator carries its literal value**: write
+      `login.site-a.example (203.0.113.10 · AS64500)`, not "the login host". Later mentions may
+      shorten once the value has been given.
+    - **Impersonated brands are named** — "imitates *Example Brokerage Ltd*", never "a large broker".
+    - **Every claim carries the reference it rests on.** If a sentence asserts a shared artifact, the
+      artifact's value appears in that sentence or in its table row.
+    - **Enumerate the cluster.** If the finding is "N domains", an appendix lists all N by name.
+    - Vague (fails): *"Two members share a favicon; the seed imitates a broker."*
+    - Named (passes): *"`site-a.example` and `site-b.example` both serve favicon mmh3 `123456789`;
+      the seed `site-a.example` imitates Example Brokerage Ltd."*
 13. **Appendix = collected EVIDENCE only.** The final appendix is the evidence table: **Artifact ·
     Value · Source (public class) · Admiralty grade**. No "how we found it", no file paths, no
     reproduction/credit-log appendix. It is what we observed, not how our harness observed it.
@@ -272,4 +300,12 @@ Word/LibreOffice, and keep it case-data-free.
 - Vietnamese text renders with correct diacritics (no tofu boxes).
 - Embedded figures appear (use the `_hires.png`); tables render with rules.
 - Header/footer carry the classification + case id + page numbers on every body page.
-- The classification and case id came from an argument or frontmatter — never hardcoded.
+- The classification and report reference came from an argument or frontmatter — never hardcoded,
+  and the displayed reference is the EXTERNAL `--report-ref`, not the internal case id (Rule 11).
+- **Identifier disclosure (Rules 12a/12b) — check explicitly, it is the most common defect:**
+  - the SEED's domain name appears in the Executive Summary;
+  - every impersonated brand is named, not described by sector;
+  - every indicator's literal value appears at its first mention in the BODY, not only the appendix;
+  - if the finding counts N domains, an appendix lists all N;
+  - and, in the other direction, no tool / script / vendor-product / case-store id survives anywhere.
+  Read one findings section as a stranger: if you cannot tell WHICH domain it is about, rewrite it.
