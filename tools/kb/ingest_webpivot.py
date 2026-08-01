@@ -114,6 +114,40 @@ _PRIV = ("privacy", "redacted", "whoisguard", "data protected", "withheld",
 _PROXY_DOM = ("porkbun.com", "godaddy.com", "namecheap.com", "domainsbyproxy.com",
               "withheldforprivacy.com", "privacyprotect.org", "contactprivacy.com")
 
+# Generic registrant ROLE placeholders. Distinct from _PRIV, which matches privacy-SIGNALLING
+# words ("privacy", "redacted", "withheld"). These strings contain no such word, so _PRIV misses
+# them — yet they are boilerplate emitted by registrars in place of a registrant, shared across
+# unrelated customers. Left unfiltered, `Domain Admin` becomes a high-confidence
+# `registered_by -> person` edge and merges every domain whose registrar used that placeholder.
+#
+# Matched on the NORMALISED form (lowercased, punctuation stripped, whitespace collapsed) and
+# EXACTLY, never as a substring — a substring rule would eat legitimate registrant orgs such as
+# "Admin Solutions GmbH" or "Domain Manager Services Ltd". Exactness is the safety property here:
+# over-filtering silently destroys real attribution, which is the costlier direction.
+_ROLE_NAME_PLACEHOLDERS = frozenset({
+    "domain admin", "domain admins", "domain administrator", "domain administrators",
+    "domainadmin", "domain manager", "domain name administrator", "domain owner",
+    "domain registrant", "registrant", "dns admin", "dns administrator",
+    "admin", "administrator", "hostmaster", "postmaster", "webmaster",
+    "statutory masking enabled", "non public data", "nonpublic data",
+    "not available", "not applicable", "na", "n a", "none", "null", "unknown",
+    "no name", "anonymous", "customer", "client", "owner", "registry",
+})
+
+
+def _norm_name(v):
+    """Lowercase, drop punctuation, collapse whitespace — so 'Domain Admin.', 'DOMAIN  ADMIN'
+    and 'domain-admin' all normalise to 'domain admin'."""
+    s = (v or "").lower()
+    s = "".join(c if (c.isalnum() or c.isspace()) else " " for c in s)
+    return " ".join(s.split())
+
+
+def _is_role_placeholder(v):
+    """True if a WHOIS registrant NAME is a generic role/boilerplate placeholder rather than an
+    identity. Such a name must never become a `registered_by` clustering edge."""
+    return _norm_name(v) in _ROLE_NAME_PLACEHOLDERS
+
 
 def _is_privacy(v):
     s = (v or "").strip().lower()
@@ -261,6 +295,42 @@ def _ingest_ip(kb, d, meta, ip, observed, day):
     return n
 
 
+def _ingest_impersonation(kb, d, meta, host, observed, day):
+    """Ingest an ImpersonationHunt result (meta.kind=='impersonation'). The seed's brand keyword
+    becomes an `indicator brand:<label>`; the seed and every CONFIRMED lookalike get an edge to it,
+    so a brand and its typosquats/TLD-swaps cluster together (union-find keys on domain→indicator
+    edges, exactly like a shared favicon). Resolved lookalikes also get a `hosted_on` edge to their
+    IP indicator, reusing the same IP-clustering IPPivot uses. The unregistered watchlist is NOT
+    ingested — non-existent NRDs aren't infrastructure yet, so they'd only add noise nodes."""
+    art = (d.get("artifacts") or {}).get("impersonation") or {}
+    label = art.get("brand_label")
+    if not label:
+        return 0
+    ev = kb.save_evidence("webpivot", host, d, day)
+    ind = f"brand:{label}"
+    kb.touch("indicator", ind, observed)
+    kb.add_fact("indicator", ind, "kind", "brand_keyword", "webpivot", COLLECTOR, observed, "high", ev)
+    # the seed anchors the brand indicator
+    kb.touch("domain", host, observed)
+    kb.add_edge("domain", host, "is_brand", "indicator", ind, "webpivot", COLLECTOR, observed, "high", ev)
+    n = 1
+    for p in d.get("pivots") or []:
+        if p.get("kind") != "impersonation:candidate":
+            continue
+        look = _norm_domain(p.get("value"))
+        if not look or _is_ip_host(look):
+            continue
+        kb.touch("domain", look, observed)
+        kb.add_edge("domain", look, "impersonates", "indicator", ind,
+                    "webpivot", COLLECTOR, observed, p.get("confidence", "low"), ev)
+        n += 1
+        for ip in ((p.get("live_results") or {}).get("resolves") or []):
+            kb.add_edge("domain", look, "hosted_on", "indicator", f"ip:{ip}",
+                        "webpivot", COLLECTOR, observed, "medium", ev)
+            n += 1
+    return n
+
+
 def ingest_file(kb, path):
     d = json.load(open(path, encoding="utf-8"))
     meta = d.get("meta") or {}
@@ -273,6 +343,9 @@ def ingest_file(kb, path):
     # IPPivot result → IP-shaped ingest (co-hosted domains cluster on the ip: indicator)
     if meta.get("kind") == "ip" or _is_ip_host(host):
         return _ingest_ip(kb, d, meta, host, observed, day)
+    # ImpersonationHunt result → brand-shaped ingest (a seed + its lookalikes cluster on brand:<label>)
+    if meta.get("kind") == "impersonation":
+        return _ingest_impersonation(kb, d, meta, host, observed, day)
     art = d.get("artifacts") or {}
     ev = kb.save_evidence("webpivot", host, d, day)
     n = 0
@@ -407,12 +480,16 @@ def ingest_file(kb, path):
         names = ([wh.get("registrant_name") or wh.get("registrant_org")] +
                  ((wh.get("history") or {}).get("registrant_names") or []))
         for nm in names:
-            if nm and not _is_privacy(nm):
+            if nm and not _is_privacy(nm) and not _is_role_placeholder(nm):
                 kind = _name_kind(nm)          # org / person / None(junk label — skip)
                 if not kind:
                     continue
                 kb.add_edge("domain", host, "registered_by", kind, nm.strip(),
                             "whoisxml", "webpivot/whois_enrich", observed, "high", ev)
+                n += 1
+            elif nm and _is_role_placeholder(nm):   # generic role boilerplate — fact, never an edge
+                kb.add_fact("domain", host, "whois_role_name", nm.strip(),
+                            "whoisxml", "webpivot/whois_enrich", observed, "low", ev)
                 n += 1
         for ns in wh.get("name_servers") or []:
             if is_managed_dns(ns):

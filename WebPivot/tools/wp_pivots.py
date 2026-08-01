@@ -168,6 +168,16 @@ def sort_pivots(pivots: list) -> list:
     return pivots
 
 
+def add_pivot(pivots: list, kind, value, confidence, queries, note="", live=None):
+    """Append one pivot dict (the WebPivot pivot schema) to `pivots`. Shared builder so every
+    collector (domainPivot, IPPivot, ImpersonationHunt) emits the identical shape."""
+    p = {"kind": kind, "value": value, "confidence": confidence, "note": note, "queries": queries}
+    if live is not None:
+        p["live_results"] = live
+    pivots.append(p)
+    return p
+
+
 # Subdomain labels that are generic infrastructure/service names — a shared one clusters nothing,
 # so they are NOT treated as a distinctive same-operator signal.
 _GENERIC_SUBLABELS = {

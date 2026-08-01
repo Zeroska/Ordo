@@ -24,7 +24,8 @@ import threading
 from typing import Any
 from urllib.parse import urlparse
 
-from claude_agent_sdk import ToolAnnotations, create_sdk_mcp_server, tool
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # harness/ on path for sdk_compat
+from sdk_compat import ToolAnnotations, create_sdk_mcp_server, tool  # real SDK or OpenAI-compat shim
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repo root (harness/..)
 PY = sys.executable
@@ -285,6 +286,49 @@ async def fallback_probe(args: dict[str, Any]) -> dict[str, Any]:
               "--kb", KB_DIR], timeout=120)
     return {"content": [{"type": "text", "text": r.stdout or r.stderr or "probe produced no output"}],
             "is_error": r.returncode != 0}
+
+
+@tool(
+    "impersonation_hunt",
+    "Hunt IMPERSONATION / typosquat / lookalike domains of a seed — not the one page, but the "
+    "domains an operator would register to mimic it. Three moves: (1) TYPOSQUAT permutations of "
+    "the brand label (omission/insertion/adjacent-key/transposition/homoglyph/hyphenation/"
+    "combosquat), (2) a TLD SWEEP of the exact label across a curated scam-heavy TLD list, (3) a "
+    "KEYWORD HUNT for every domain whose NAME contains the label via certificate transparency "
+    "(crt.sh identity LIKE). Candidates are then existence-checked with live DNS, so the output "
+    "SEPARATES confirmed/registered lookalikes (with DNS/CT evidence — each an "
+    "impersonation:candidate pivot: run pivot_extract on it and compare) from an unregistered "
+    "monitoring "
+    "watchlist. FREE by default (crt.sh + DNS, zero credits); pass fofa=true / urlscan=true for "
+    "the metered cert=/page.domain keyword sweeps. Does NOT live-fetch the lookalike infra "
+    "(opsec). Writes the result into the case's raw/ so kb_ingest clusters lookalikes with the "
+    "rest of the case's web infrastructure.",
+    {"domain": str, "case": str},  # fofa/urlscan:bool, max:int optional -> args.get()
+)
+async def impersonation_hunt(args: dict[str, Any]) -> dict[str, Any]:
+    host = _host(args["domain"])
+    case = args["case"]
+    raw_dir = os.path.join(ROOT, "cases", case, "raw")
+    os.makedirs(raw_dir, exist_ok=True)
+    out = os.path.join(raw_dir, host + ".impersonation.json")
+    cmd = [PY, os.path.join("WebPivot", "tools", "pivot_extract.py"), host,
+           "--hunt-impersonation", "--pretty", "-o", out, "--case", case]
+    if args.get("fofa"):
+        cmd += ["--hunt-fofa"]
+    if args.get("urlscan"):
+        cmd += ["--hunt-urlscan"]
+    if args.get("max"):
+        cmd += ["--hunt-max", str(int(args["max"]))]
+    r = _run(cmd, timeout=240)
+    data = _load_json(out)
+    if data is None:
+        return _err(f"impersonation_hunt failed for {host}: {(r.stderr or '')[-500:]}")
+    art = (data.get("artifacts") or {}).get("impersonation") or {}
+    blob = json.dumps(data, ensure_ascii=False)
+    return _ok(f"ImpersonationHunt on {host}: generated {art.get('generated', 0)} candidates → "
+               f"{art.get('existing_count', 0)} confirmed lookalikes (DNS/CT), "
+               f"{art.get('candidate_count', 0)} on the monitoring watchlist. "
+               f"Written to {os.path.relpath(out, ROOT)} for kb_ingest.\n{blob[:6000]}")
 
 
 @tool(
@@ -696,7 +740,7 @@ async def render_report(args: dict[str, Any]) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- servers + names
 COLLECT_SERVER = create_sdk_mcp_server(
-    "collect", tools=[pivot_extract, analyze_artifact, fallback_probe, kb_ingest])
+    "collect", tools=[pivot_extract, analyze_artifact, fallback_probe, impersonation_hunt, kb_ingest])
 ANALYZE_SERVER = create_sdk_mcp_server(
     "analyze", tools=[kb_cluster, kb_entity, kb_query_shared, risk_signals,
                       reverse_whois, cert_overlap, reference_check, reference_add,
@@ -704,7 +748,8 @@ ANALYZE_SERVER = create_sdk_mcp_server(
                       render_diagram, render_report])
 
 COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__analyze_artifact",
-                 "mcp__collect__fallback_probe", "mcp__collect__kb_ingest"]
+                 "mcp__collect__fallback_probe", "mcp__collect__impersonation_hunt",
+                 "mcp__collect__kb_ingest"]
 ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__kb_query_shared", "mcp__analyze__risk_signals",
                  "mcp__analyze__reverse_whois", "mcp__analyze__cert_overlap",

@@ -29,18 +29,17 @@ import sys
 import time
 from dataclasses import dataclass
 
-from claude_agent_sdk import (
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import render  # noqa: E402
+import tools as T  # noqa: E402
+from schemas import Assessment  # noqa: E402
+from sdk_compat import (  # noqa: E402  — real Anthropic SDK, or the OpenAI-compat shim (HARNESS_BACKEND)
     AssistantMessage,
     ClaudeAgentOptions,
     ResultMessage,
     ToolUseBlock,
     query,
 )
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import render  # noqa: E402
-import tools as T  # noqa: E402
-from schemas import Assessment  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))            # harness/
 ROOT = os.path.dirname(HERE)                                  # repo root

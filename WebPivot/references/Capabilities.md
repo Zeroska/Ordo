@@ -37,6 +37,51 @@ co-hosted domain → feed it back through domainPivot. Optional keys: `IPINFO_TO
 structured ASN + abuse), `SHODAN_KEY` (host ports/services). All optional — the flow degrades
 gracefully to keyless IPinfo + FOFA + system `dig`.
 
+## ImpersonationHunt — hunt lookalikes of a seed — `--hunt-impersonation`
+
+When a domain isn't just a target but a **brand being impersonated**, the highest-yield move is
+often NOT analyzing the one page — it's finding every **typo / TLD-swap / keyword lookalike** an
+operator registered around it. `--hunt-impersonation` turns a bare seed domain into that hunt
+(`tools/wp_impersonate.py`). Like IPPivot it is **standalone and never live-fetches** the lookalike
+infra — so your IP never touches the attacker's clones.
+
+```bash
+python3 "$WP/tools/pivot_extract.py" brandname.example --hunt-impersonation --leads
+python3 "$WP/tools/pivot_extract.py" brandname.example --hunt-impersonation --pretty \
+        -o "$CASE/raw/brandname.example.impersonation.json"
+python3 "$WP/tools/wp_impersonate.py" brandname.example --generate-only --pretty   # just the candidate list, offline
+```
+
+Three moves, in yield order:
+1. **Typosquat permutations** of the brand label — omission, adjacent-QWERTY-key insertion/
+   replacement, transposition, character repetition, ASCII **homoglyph** (`o→0`, `l→1`, `rn→m`),
+   hyphenation/de-hyphenation, and **combosquat** affixes (`brand-login`, `secure-brand`, `brandvn`).
+2. **TLD sweep** — the exact brand label across a curated scam-heavy TLD list
+   (`.com/.net/.io/.vip/.top/.xyz/.cc/.online/.sbs/.cfd/.icu`, common ccTLDs `.vn/.id/.ph/.br/.ng`,
+   multi-part `com.vn`/`co.uk`, …).
+3. **Keyword hunt** — every domain whose **name contains the brand label**, from **certificate
+   transparency** (`crt.sh` identity `%label%` LIKE search — this catches lookalikes you'd never
+   think to generate, e.g. `label` + random string). A too-short/generic label (< 4 chars) skips
+   the LIKE sweep to avoid a noise flood; typos + TLD sweep still run.
+
+Every generated candidate is then **existence-checked with concurrent live DNS**, so the output
+separates **confirmed lookalikes** (resolve now and/or seen in CT — each an `impersonation:candidate`
+pivot whose first query is `pivot_extract.py https://<lookalike>` so you can compare its pivots to
+the seed and prove same-operator) from an **`impersonation:watchlist`** roll-up of unregistered
+candidates to monitor (NRDs of a brand appear over time). Same `pivots` schema → `--report` /
+`--master` / `--misp` and KB ingest all work unchanged, so lookalikes cluster with the rest of the
+case's web infrastructure.
+
+**Cost:** free by default — **crt.sh + DNS spend zero credits**. Add `--hunt-fofa` (FOFA
+`cert="label"`) and/or `--hunt-urlscan` (`page.domain:*label*`) for the metered keyword sweeps;
+both are recorded to the `api_usage` ledger. `--hunt-max N` caps generated candidates (default 600,
+ordered typo → combosquat → TLD-sweep so a cap keeps the closest lookalikes).
+
+> **WHOIS/registrant keyword hunting** — to find lookalikes tied by *who registered them* (not just
+> the name), take the seed's WHOIS **registrant email/name/phone** and reverse it with the
+> `reverse_whois` tool (or `pivot_extract.py … --whois-reverse`). That complements the name-based
+> hunt here.
+
 ## Multi-page crawl — `--crawl`
 
 By default the tool analyzes a single page. Add `--crawl [MAXPAGES]` to also follow the site's

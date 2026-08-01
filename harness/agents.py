@@ -11,8 +11,10 @@ the `Agent`/dispatch tool available. Kept separate so the linear path stays simp
 from __future__ import annotations
 
 import os
+import sys
 
-from claude_agent_sdk import AgentDefinition
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # harness/ on path for sdk_compat
+from sdk_compat import AgentDefinition  # real SDK or OpenAI-compat shim (HARNESS_BACKEND)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 

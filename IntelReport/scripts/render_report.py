@@ -267,8 +267,8 @@ def build_defs_and_cover(m, tmpdir, resource_dir="."):
         fh.write("\\graphicspath{{%s/}}\n" % os.path.abspath(resource_dir).replace("\\", "/"))
         fh.write("\\newcommand{\\CLSLINE}{%s}\n" % cls)
         fh.write("\\newcommand{\\CASEID}{%s}\n" % caseid)
-        fh.write("\\setmainfont{%s}[Scale=0.98]\n" % serif)
-        fh.write("\\setsansfont{%s}[Scale=0.98]\n" % sans)
+        fh.write("\\setmainfont{%s}[Scale=1.0]\n" % serif)
+        fh.write("\\setsansfont{%s}[Scale=1.0]\n" % sans)
         fh.write("\\newfontfamily\\headingfont{%s}\n" % sans)
 
     title = tex_escape(m["title"])
@@ -320,6 +320,7 @@ def render_pdf(body, stem, m, resource_dir):
                   "--pdf-engine=xelatex",
                   "--from", "markdown+yaml_metadata_block+pipe_tables+grid_tables",
                   "--number-sections", "--toc", "--toc-depth=%d" % m.get("toc_depth", 3),
+                  "-V", "fontsize=10pt", "-V", "linestretch=1.08",
                   "-V", "linkcolor=steel",
                   "--include-in-header", defs,
                   "--include-in-header", HOUSE_HEADER,

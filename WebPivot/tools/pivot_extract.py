@@ -83,6 +83,7 @@ from wp_analyze import *  # noqa
 from wp_crawl import *  # noqa
 import wp_extract  # noqa  (for the QR toggle set in main)
 import wp_ippivot  # noqa  (IPPivot: bare-IP source runs passive IP recon instead of HTML)
+import wp_impersonate  # noqa  (ImpersonationHunt: --hunt-impersonation hunts lookalikes of a seed)
 try:
     import api_usage  # licensed-API credit ledger (per-run summary + JSONL)
 except Exception:
@@ -252,6 +253,15 @@ def main():
     ap.add_argument("--analyst", default=None,
                     help="accepted for backward compat but IGNORED — the analyst name is never "
                          "stamped on a deliverable (opsec / attribution leak)")
+    ap.add_argument("--hunt-impersonation", action="store_true",
+                    help="ImpersonationHunt mode: from a bare seed DOMAIN, hunt typosquat / TLD-sweep "
+                         "/ keyword lookalikes (crt.sh + live DNS, free) instead of analyzing the page")
+    ap.add_argument("--hunt-fofa", action="store_true",
+                    help="with --hunt-impersonation: also run the FOFA cert= keyword sweep (metered)")
+    ap.add_argument("--hunt-urlscan", action="store_true",
+                    help="with --hunt-impersonation: also run the urlscan keyword sweep (metered)")
+    ap.add_argument("--hunt-max", type=int, default=600, metavar="N",
+                    help="with --hunt-impersonation: cap on generated candidates (default 600)")
     ap.add_argument("--decode-qr", action="store_true",
                     help="decode QR-code IMAGES from pixels (fetches candidate <img>/data-URIs; "
                          "needs pyzbar+Pillow or OpenCV). The zero-dep decode of QR-generator-service "
@@ -305,6 +315,22 @@ def main():
               file=sys.stderr)
         result = wp_ippivot.build_ip_result(ip_target, args, fofa_full=args.fofa_full)
         _emit_result(result, args, ip_target)
+        return
+
+    # --- ImpersonationHunt: --hunt-impersonation hunts LOOKALIKES of a seed domain, standalone. ---
+    # Like IPPivot, it does NOT live-fetch the target: it takes a bare seed domain and generates
+    # typosquat/TLD-sweep/keyword candidates, then validates them via crt.sh + live DNS (free) —
+    # so the analyst's IP never touches the (hostile) lookalike infra.
+    if args.hunt_impersonation:
+        hunt_seed = strip_www(urlparse(src).netloc if "://" in src else src).split("/")[0]
+        print(f"[+] ImpersonationHunt mode: hunting lookalikes of {hunt_seed} "
+              f"(typosquat · TLD-sweep · crt.sh keyword · live DNS"
+              f"{' · FOFA' if args.hunt_fofa else ''}{' · urlscan' if args.hunt_urlscan else ''})",
+              file=sys.stderr)
+        result = wp_impersonate.build_impersonation_result(
+            hunt_seed, max_variants=args.hunt_max, fofa=args.hunt_fofa,
+            urlscan=args.hunt_urlscan, case=args.case)
+        _emit_result(result, args, hunt_seed)
         return
 
     if src == "-":
