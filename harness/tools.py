@@ -784,6 +784,33 @@ async def render_report(args: dict[str, Any]) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- convergence loop
 @tool(
+    "case_clusters",
+    "PARTITION a case into same-operator clusters BEFORE judging it — the unit of judgment is the "
+    "CLUSTER, not the case. Returns each connected component over STRONG shared indicators "
+    "(boilerplate / reference-benign / over-prevalent edges excluded), the indicators binding it, "
+    "and each indicator's KB-WIDE prevalence — so an indicator binding 3 domains here but sitting "
+    "on 400 domains KB-wide is visibly noise, not an owner link. Judge each cluster on its own "
+    "evidence: correlating 100 domains in one pass is unfocused and blows context, and it is N "
+    "attribution questions, not one. Pure KB read — collects nothing, spends no credits. Writes "
+    "cases/<case>/clusters.json. Optional: min (domains an indicator must bind, default 2), "
+    "max_prevalence (KB-wide count above which an indicator is generic noise, default 8).",
+    {"case": str},
+    annotations=READONLY,
+)
+async def case_clusters(args: dict[str, Any]) -> dict[str, Any]:
+    cmd = [PY, os.path.join("tools", "intel.py"), "clusters", str(args["case"]),
+           "--min", str(int(args.get("min", 2))),
+           "--max-prevalence", str(int(args.get("max_prevalence", 8)))]
+    if args.get("all"):
+        cmd.append("--all")
+    if args.get("json"):
+        cmd.append("--json")
+    r = _run(cmd, timeout=300)
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "no output"}],
+            "is_error": r.returncode != 0}
+
+
+@tool(
     "case_frontier",
     "Read the case's UNRESOLVED GAPS without collecting anything: the next FREE frontier (new "
     "registrable apexes already discovered — via crt.sh SAN, passive-DNS co-host, urlscan-related, "
@@ -848,7 +875,7 @@ ANALYZE_SERVER = create_sdk_mcp_server(
     "analyze", tools=[kb_cluster, kb_entity, kb_query_shared, risk_signals,
                       reverse_whois, cert_overlap, reference_check, reference_add,
                       which_cases, domain_verdict, api_usage,
-                      case_frontier, case_loop, case_reopen,
+                      case_clusters, case_frontier, case_loop, case_reopen,
                       render_diagram, render_report])
 
 COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__analyze_artifact",
@@ -860,6 +887,7 @@ ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__reference_check", "mcp__analyze__reference_add",
                  "mcp__analyze__which_cases", "mcp__analyze__domain_verdict",
                  "mcp__analyze__api_usage",
-                 "mcp__analyze__case_frontier", "mcp__analyze__case_loop",
+                 "mcp__analyze__case_clusters", "mcp__analyze__case_frontier",
+                 "mcp__analyze__case_loop",
                  "mcp__analyze__case_reopen",
                  "mcp__analyze__render_diagram", "mcp__analyze__render_report"]

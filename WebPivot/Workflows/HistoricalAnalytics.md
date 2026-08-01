@@ -16,9 +16,6 @@ sites, then scrubs it once flagged. `pivot_extract.py` sees only *now*.
 (Note: GA `UA-` IDs were the strongest link pre-2023; GA4 `G-`, `GTM-`, and
 `ca-pub-` AdSense are the live equivalents — this tool captures all of them.)
 
-## Voice
-`curl -s -X POST http://localhost:8888/notify -H "Content-Type: application/json" -d '{"message": "Running the HistoricalAnalytics workflow in the WebPivot skill to walk Wayback analytics history"}' >/dev/null 2>&1 &`
-
 ## Steps
 
 1. **Timeline one domain** — every tracker/verification ID ever seen, with first/last dates:

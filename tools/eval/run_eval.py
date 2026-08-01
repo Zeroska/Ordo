@@ -228,6 +228,7 @@ def main():
         ("test_audit_medium_fixes", "audit MEDIUM fixes — CF challenge / SAN sibling / social key"),
         ("test_reverse_phone", "reverse-WHOIS phone + preview-first / confirm-if-large gate"),
         ("test_whois_parallel", "whois_summary parallelizes current+history (speed)"),
+        ("test_frontier_guards", "frontier co-tenancy guards — multi-tenant cert / shared IP / bulk registrant"),
     ]
     for modname, desc in unit_mods:
         try:

@@ -9,7 +9,9 @@ way every time and always lands on disk:
 
     cases/<case>/raw/<host>.json     one pivot_extract JSON per host (overwrites on re-run)
     knowledge/                        ingested (idempotent) so IntelAnalysis can reason
-    cases/<case>/shared.txt           the --shared cluster seeds, saved not just printed
+    cases/<case>/shared.txt           the --shared cluster seeds, SCOPED to this case's hosts
+    cases/<case>/clusters.json        same-operator components + the indicators binding each —
+                                      judgment runs per CLUSTER, not per case
     cases/<case>/case_graph.json      + network.html   (unless --no-graph)
 
 Runs from anywhere: all tool paths are resolved from this file's location, not the CWD.
@@ -263,14 +265,17 @@ def cmd_open(a):
     _risk_signals(raw_files)
 
     # 3) shared cluster seeds — saved to the case, not just printed ----------
+    #    SCOPED to this case's hosts (--domains): unscoped, this reported every past case's
+    #    indicators too, which is noise once the KB holds more than one investigation.
     shared_path = os.path.join(case_dir, "shared.txt")
-    print(f"== cluster seeds (--shared --min {a.min}) -> {os.path.relpath(shared_path, ROOT)} ==")
-    r = _run([sys.executable, os.path.join(KB_TOOLS, "query.py"),
-              "--kb", KB, "--shared", "--min", str(a.min)],
-             capture_output=True, text=True)
-    sys.stdout.write(r.stdout)
-    with open(shared_path, "w", encoding="utf-8") as fh:
-        fh.write(r.stdout)
+    case_hosts = _case_hosts(case_dir)
+    print(f"== cluster seeds (--shared --min {a.min}, scoped to {len(case_hosts)} case host(s)) "
+          f"-> {os.path.relpath(shared_path, ROOT)} ==")
+    _write_shared(case_dir, a.min, case_hosts)
+    sys.stdout.write(open(shared_path, encoding="utf-8").read())
+
+    # 3b) same-operator partition -> clusters.json (judge per cluster, not per case)
+    _write_clusters(case_dir, a.case, case_hosts, min_shared=a.min)
 
     # 4) graph (default on; --no-graph to skip) -----------------------------
     graph_json = os.path.join(case_dir, "case_graph.json")
@@ -319,7 +324,7 @@ def cmd_open(a):
     print(f"   extracted: {len(ok)}/{len(hosts)}   raw files: {len(raw_files)}")
     if failed:
         print(f"   MISSES ({len(failed)}) — re-run these: {', '.join(failed)}")
-    print(f"   case dir : {os.path.relpath(case_dir, ROOT)}/  (raw/, shared.txt"
+    print(f"   case dir : {os.path.relpath(case_dir, ROOT)}/  (raw/, shared.txt, clusters.json"
           + ("" if a.no_graph else ", case_graph.json")
           + (", network.html" if a.render and not a.no_graph else "") + ")")
     print(f"   next     : IntelAnalysis over knowledge/ -> knowledge/reports/{a.case}/assessment.md")
@@ -334,12 +339,100 @@ def _ingest_case(raw_files):
     _run([sys.executable, os.path.join(KB_TOOLS, "ingest_webpivot.py"), "--kb", KB, *raw_files])
 
 
-def _write_shared(case_dir, min_shared):
-    """(re)compute the --shared cluster seeds into shared.txt (persisted, not just printed)."""
-    r = _run([sys.executable, os.path.join(KB_TOOLS, "query.py"),
-              "--kb", KB, "--shared", "--min", str(min_shared)], capture_output=True, text=True)
+def _case_hosts(case_dir):
+    """The hosts THIS case has collected (from raw/*.json) — the scope for shared/components."""
+    return sorted({os.path.basename(p)[:-5].lower()
+                   for p in _all_raw(case_dir) if not p.endswith(".impersonation.json")})
+
+
+def _write_shared(case_dir, min_shared, hosts=None):
+    """(re)compute the --shared cluster seeds into shared.txt (persisted, not just printed).
+
+    SCOPED to this case's hosts: without --domains the query reports indicators shared across the
+    WHOLE KB, so a case's shared.txt filled up with unrelated past cases. The KB-wide count is
+    still printed per indicator, which is the prevalence signal an analyst wants anyway."""
+    cmd = [sys.executable, os.path.join(KB_TOOLS, "query.py"),
+           "--kb", KB, "--shared", "--min", str(min_shared)]
+    hosts = hosts if hosts is not None else _case_hosts(case_dir)
+    if hosts:
+        cmd += ["--domains", ",".join(hosts)]
+    r = _run(cmd, capture_output=True, text=True)
     with open(os.path.join(case_dir, "shared.txt"), "w", encoding="utf-8") as fh:
         fh.write(r.stdout or "")
+
+
+def _write_clusters(case_dir, case, hosts=None, min_shared=2, max_prevalence=8):
+    """Partition THIS case's collected hosts into same-operator components (strong edges only) and
+    persist them with the indicators binding each -> cases/<case>/clusters.json.
+
+    WHY: judgment does not scale per-CASE, it scales per-CLUSTER. A 200-domain case is not one
+    attribution question, it is N of them, and handing IntelAnalysis the undifferentiated case (plus
+    a KB-wide shared.txt) is what made large cases unfocused. This is the same partition the SDK
+    harness runs before judging (`orchestrator._compute_components` / `--parallel`), so both
+    front-ends judge the same units. Returns the cluster list (empty if the KB can't be read)."""
+    sys.path.insert(0, KB_TOOLS)
+    try:
+        from knowledge_base import KB as _KB  # noqa: E402
+        from query import _components  # noqa: E402
+    except Exception as e:
+        print(f"   note: cluster partition skipped ({e})")
+        return []
+    hosts = hosts if hosts is not None else _case_hosts(case_dir)
+    if not hosts:
+        return []
+    kb = _KB(KB)
+    restrict = {h.lower() for h in hosts}
+    comps = _components(kb, KB, max_prevalence, restrict)
+    shared = kb.shared_indicators(1)          # count in-cluster below; keep KB-wide as prevalence
+    # The reported binding must be the edges that ACTUALLY formed the component, so it is filtered
+    # by the same strong-edge rules _components uses — boilerplate rels (shared cache-plugin CSS /
+    # HTML comment / DOM skeleton), reference-benign values, and over-prevalent indicators. Without
+    # this the brief cites a template hash as the reason two domains are one operator.
+    NOISE_RELS = {"same_inline_css", "same_comment", "same_template"}
+    try:
+        from reference import benign_values  # noqa: E402
+        benign = benign_values(KB)
+    except Exception:
+        benign = set()
+    clusters = []
+    for i, members in enumerate(comps, 1):
+        mset = {m.lower() for m in members}
+        binding = []
+        for s in shared:
+            strong_rels = [r for r in s["rels"] if r not in NOISE_RELS]
+            if not strong_rels or s["indicator"] in benign or s["domain_count"] > max_prevalence:
+                continue
+            inside = sorted(d for d in s["domains"] if d.lower() in mset)
+            if len(inside) < min_shared:
+                continue
+            binding.append({"indicator": f"{s['indicator_type']}:{s['indicator']}",
+                            "rels": strong_rels, "domains_in_cluster": inside,
+                            "kb_wide_domains": s["domain_count"]})
+        # most distinctive first: rare KB-wide, but binding many of this cluster's domains
+        binding.sort(key=lambda b: (b["kb_wide_domains"], -len(b["domains_in_cluster"])))
+        clusters.append({"id": i, "size": len(mset), "domains": sorted(mset),
+                         "singleton": len(mset) == 1, "binding_indicators": binding[:15],
+                         "binding_total": len(binding)})
+    doc = {"case": case, "generated": _iso_now(), "scope_hosts": len(hosts),
+           "n_clusters": len(clusters), "max_prevalence": max_prevalence,
+           "note": ("Same-operator components over STRONG shared indicators (boilerplate / "
+                    "reference-benign / over-prevalent edges excluded). Judge each cluster "
+                    "separately with IntelAnalysis — a cluster, not the case, is one attribution "
+                    "question. kb_wide_domains >> domains_in_cluster means the indicator is "
+                    "prevalent noise, not an owner link."),
+           "clusters": clusters}
+    import json as _json
+    with open(os.path.join(case_dir, "clusters.json"), "w", encoding="utf-8") as fh:
+        _json.dump(doc, fh, indent=2, ensure_ascii=False)
+    multi = [c for c in clusters if not c["singleton"]]
+    print(f"   clusters: {len(clusters)} component(s) over {len(hosts)} host(s) — "
+          f"{len(multi)} multi-domain, {len(clusters) - len(multi)} singleton "
+          f"-> {os.path.relpath(os.path.join(case_dir, 'clusters.json'), ROOT)}")
+    for c in multi[:8]:
+        top = c["binding_indicators"][0]["indicator"] if c["binding_indicators"] else "—"
+        print(f"      c{c['id']} ({c['size']}): {', '.join(c['domains'][:5])}"
+              f"{' …' if c['size'] > 5 else ''}   via {top}")
+    return clusters
 
 
 _DOMAIN_RE = re.compile(r'\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,})\b', re.I)
@@ -350,7 +443,7 @@ def _domains_in_text(s):
     return {m.group(1).lower().rstrip(".") for m in _DOMAIN_RE.finditer(s or "")}
 
 
-def _render_assessment(case_dir, case, raw_files, fr, verdict, a):
+def _render_assessment(case_dir, case, raw_files, fr, verdict, a, clusters=None):
     """Write the human ICD-203 assessment.md, and a machine-readable assessment.json that conforms to
     the SAME schema the SDK/IntelAnalysis path uses (bluf, cluster, attribution_level, confidence,
     evidence, gaps, next_pivots[str]) — loop-specific detail lives under an additive `loop` key.
@@ -392,6 +485,15 @@ def _render_assessment(case_dir, case, raw_files, fr, verdict, a):
     sp = os.path.join(case_dir, "shared.txt")
     if os.path.isfile(sp):
         cluster = [l.strip() for l in open(sp, encoding="utf-8") if l.strip() and not l.startswith("#")][:100]
+    clusters = clusters or []
+    multi = [c for c in clusters if not c.get("singleton")]
+    # domain -> the indicators binding it inside its own cluster (schema's shared_artifacts)
+    by_domain = {}
+    for c in clusters:
+        for b in c.get("binding_indicators", []):
+            for d in b.get("domains_in_cluster", []):
+                by_domain.setdefault(d.lower(), []).append(b["indicator"])
+
     gaps = []
     if fr["candidate_total"]:
         gaps.append(f"{fr['candidate_total']} discovered apex(es) not yet collected "
@@ -399,32 +501,54 @@ def _render_assessment(case_dir, case, raw_files, fr, verdict, a):
     if fr["metered_leads"]:
         gaps.append(f"{len(fr['metered_leads'])} metered pivot(s) deferred for analyst approval "
                     f"(FOFA/WhoisXML) — would spend credits.")
+    if fr.get("co_tenancy_leads"):
+        gaps.append(f"{len(fr['co_tenancy_leads'])} co-tenancy lead(s) held back from seeding "
+                    f"(multi-tenant cert / shared or CDN hosting) — their co-names are other "
+                    f"customers; check a specific pair with cert_overlap if you suspect otherwise.")
+    if len(clusters) > 1:
+        gaps.append(f"Case splits into {len(clusters)} same-operator component(s) "
+                    f"({len(multi)} multi-domain) — this is {len(clusters)} attribution questions, "
+                    f"not one. Judge each cluster separately (see clusters.json).")
     if verdict["verdict"] == "CONVERGED":
         gaps.append("Free frontier exhausted / no new growth — cluster looks converged.")
     collected = sorted({(r.get("meta") or {}).get("host") for r in results if (r.get("meta") or {}).get("host")})
     # canonical next_pivots as STRINGS (schema parity); structured detail kept under loop.frontier
-    next_pivots = [f"collect {ap} (via {', '.join(fr['candidates'].get(ap, {}).get('sources', []))}) — free"
-                   for ap in fr["pending"]]
+    next_pivots = [f"judge cluster c{c['id']} with IntelAnalysis ({c['size']} domains: "
+                   f"{', '.join(c['domains'][:5])}{' …' if c['size'] > 5 else ''}) — bound by "
+                   f"{c['binding_indicators'][0]['indicator'] if c['binding_indicators'] else 'no strong indicator'}"
+                   for c in multi]
+    next_pivots += [f"collect {ap} (via {', '.join(fr['candidates'].get(ap, {}).get('sources', []))}) — free"
+                    for ap in fr["pending"]]
     next_pivots += [f"[metered — approve first] {ml['service']} {ml['query']} — {ml['why']}"
                     for ml in fr["metered_leads"]]
     doc = {
         "bluf": (f"Deterministic convergence loop, round {fr['round']}: {len(collected)} host(s) "
-                 f"collected, {verdict['verdict'].lower()}; {len(fr['pending'])} free lead(s) pending, "
+                 f"collected across {len(clusters) or 1} same-operator component(s), "
+                 f"{verdict['verdict'].lower()}; {len(fr['pending'])} free lead(s) pending, "
                  f"{len(fr['metered_leads'])} metered deferred. Attribution pending IntelAnalysis judgment."),
-        "cluster": [{"domain": h, "shared_artifacts": []} for h in collected],
+        "cluster": [{"domain": h, "shared_artifacts": sorted(set(by_domain.get(h.lower(), [])))[:8]}
+                    for h in collected],
         "attribution_level": "inconclusive",   # the mechanical loop never attributes — IntelAnalysis does
         "confidence": "low",
         "evidence": [f"convergence: {verdict['verdict']} ({verdict.get('rounds', 0)} round(s))",
-                     f"{len(cluster)} shared cluster seed(s) recorded in shared.txt"],
+                     f"{len(cluster)} shared cluster seed(s) recorded in shared.txt "
+                     f"(scoped to this case's hosts)",
+                     f"{len(clusters)} same-operator component(s) in clusters.json "
+                     f"({len(multi)} multi-domain)"],
         "gaps": gaps,
         "next_pivots": next_pivots,
         "_generator": "intel-loop",
         "loop": {
             "round": fr["round"], "generated": _iso_now(), "convergence": verdict,
             "collected": collected, "cluster_shared": cluster,
+            # the partition judgment should run over — one cluster is one attribution question
+            "clusters": [{"id": c["id"], "size": c["size"], "domains": c["domains"],
+                          "binding_indicators": [b["indicator"] for b in c["binding_indicators"][:5]]}
+                         for c in clusters],
             "frontier": [{"seed": ap, "why": fr["candidates"].get(ap, {}).get("sources", []),
                           "cost": "free"} for ap in fr["pending"]],
             "metered_leads": fr["metered_leads"],
+            "co_tenancy_leads": fr.get("co_tenancy_leads", []),
             "assessment_md": os.path.relpath(os.path.join(case_dir, "assessment.md"), ROOT),
         },
     }
@@ -515,7 +639,10 @@ def cmd_loop(a):
         raw_files = _all_raw(case_dir)
         # 2) ingest whole case (idempotent), 3) refresh shared cluster seeds --
         _ingest_case(raw_files)
-        _write_shared(case_dir, a.min)
+        case_hosts = _case_hosts(case_dir)
+        _write_shared(case_dir, a.min, case_hosts)
+        # 3b) partition into same-operator components — judgment scales per CLUSTER, not per case
+        clusters = _write_clusters(case_dir, case, case_hosts, min_shared=a.min)
         # 4) convergence snapshot (convergence.py owns rounds.jsonl) ----------
         _run([sys.executable, os.path.join(KB_TOOLS, "convergence.py"), "snapshot", case])
         verdict = cs.convergence_verdict(case, stale=a.stale)
@@ -523,7 +650,7 @@ def cmd_loop(a):
         fr = cs.frontier(case, max_new=a.max_new)
         st["collected"] = sorted(cs.collected_hosts(case_dir))
         st["metered_leads"] = fr["metered_leads"]
-        analyst_leads = _render_assessment(case_dir, case, raw_files, fr, verdict, a)
+        analyst_leads = _render_assessment(case_dir, case, raw_files, fr, verdict, a, clusters)
         st["history"].append({"round": st["round"], "collected": len(st["collected"]),
                               "new_hosts": verdict.get("new_hosts_recent"),
                               "verdict": verdict["verdict"], "ts": _iso_now()})
@@ -568,6 +695,33 @@ def cmd_loop(a):
           f"case_state.py reopen {case})")
 
 
+def cmd_clusters(a):
+    """Partition a case into same-operator components WITHOUT collecting anything — pure KB read.
+
+    This is the unit of judgment: run it before correlating a big case so each cluster is judged on
+    its own evidence instead of one unfocused pass over every domain."""
+    case_dir = os.path.join(ROOT, "cases", a.case)
+    if not os.path.isdir(os.path.join(case_dir, "raw")):
+        sys.exit(f"no such case: {os.path.relpath(case_dir, ROOT)}")
+    hosts = _case_hosts(case_dir)
+    clusters = _write_clusters(case_dir, a.case, hosts, min_shared=a.min,
+                               max_prevalence=a.max_prevalence)
+    if a.json:
+        import json as _json
+        print(_json.dumps(clusters, indent=2, ensure_ascii=False))
+        return
+    for c in clusters:
+        if c["singleton"] and not a.all:
+            continue
+        print(f"\nCLUSTER {c['id']}  ({c['size']} domain(s))")
+        print(f"  domains: {', '.join(c['domains'])}")
+        if not c["binding_indicators"]:
+            print("  bound by: (no strong shared indicator — singleton / weak component)")
+        for b in c["binding_indicators"][:6]:
+            print(f"  bound by: {b['indicator']}  [{len(b['domains_in_cluster'])} in cluster, "
+                  f"{b['kb_wide_domains']} KB-wide]")
+
+
 def cmd_status(a):
     case_dir = os.path.join(ROOT, "cases", a.case)
     raw_dir = os.path.join(case_dir, "raw")
@@ -577,7 +731,7 @@ def cmd_status(a):
     print(f"case '{a.case}': {len(raw)} raw host file(s)")
     for h in raw:
         print(f"   raw  {h}")
-    for extra in ("shared.txt", "case_graph.json", "network.html"):
+    for extra in ("shared.txt", "clusters.json", "case_graph.json", "network.html"):
         mark = "yes" if os.path.isfile(os.path.join(case_dir, extra)) else "MISSING"
         print(f"   {extra:16} {mark}")
 
@@ -624,6 +778,15 @@ def main():
     lp.add_argument("--analyst", default=None)
     lp.add_argument("--classification", default="UNCLASSIFIED//FOR OFFICIAL USE ONLY")
     lp.set_defaults(func=cmd_loop)
+
+    c = sub.add_parser("clusters", help="partition a case into same-operator components (no collection)")
+    c.add_argument("case")
+    c.add_argument("--min", type=int, default=2, help="domains an indicator must bind to be listed")
+    c.add_argument("--max-prevalence", type=int, default=8,
+                   help="an indicator on more than this many KB domains is generic noise")
+    c.add_argument("--all", action="store_true", help="also list singleton clusters")
+    c.add_argument("--json", action="store_true")
+    c.set_defaults(func=cmd_clusters)
 
     s = sub.add_parser("status", help="audit an existing case's persisted outputs")
     s.add_argument("case")

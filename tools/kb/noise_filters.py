@@ -82,8 +82,64 @@ REGISTRAR_EMAIL_DOMAINS = (
 )
 
 
+# Registrable apexes that are shared infrastructure — CDN, analytics, social, SaaS, registrar,
+# parking, marketplace. Matched exact-or-parent, so `foo.cloudfront.net` is caught by
+# `cloudfront.net`. Never an operator lead: an expired case domain resolves or redirects here, so
+# passive-DNS / urlscan report it as "related" when it is the landlord, not a sibling.
+SHARED_INFRA_APEXES = frozenset({
+    # search / analytics / tag managers
+    "google.com", "googleapis.com", "gstatic.com", "gstatic.cn", "googletagmanager.com",
+    "google-analytics.com", "googleusercontent.com", "goog.gl", "storage.googleapis.com",
+    "doubleclick.net", "recaptcha.net", "bing.com", "youtube.com",
+    # CDNs / cloud edge / script hosts
+    "cloudflare.com", "cloudflare.net", "cloudflareinsights.com", "cdnjs.com", "jsdelivr.net",
+    "unpkg.com", "jquery.com", "bootstrapcdn.com", "fontawesome.com", "amazonaws.com",
+    "cloudfront.net", "azureedge.net", "akamai.net", "akamaihd.net", "akamaized.net",
+    "fastly.net", "fbcdn.net", "gravatar.com",
+    # social / link shorteners / mail
+    "facebook.com", "fb.com", "instagram.com", "twitter.com", "x.com", "t.co", "linktr.ee",
+    "bit.ly", "gg.gg", "gmail.com",
+    # platforms & vendor apexes (the BARE apex only — see SAAS_TENANT_SUFFIXES for tenants)
+    "microsoft.com", "office.com", "live.com", "windows.net", "sentry.io", "hotjar.com",
+    "wixpress.com", "wix.com", "squarespace.com", "shopify.com", "wp.com", "wordpress.org",
+    # registrars, parking and domain marketplaces
+    "godaddy.com", "sedo.com", "sedoparking.com", "dan.com", "afternic.com", "hugedomains.com",
+    "namecheap.com", "namesilo.com", "porkbun.com", "dynadot.com", "bodis.com",
+    "parkingcrew.net", "above.com", "fabulous.com", "uniregistry.com", "buydomains.com",
+    "domainmarket.com", "undeveloped.com", "namebright.com", "uk.com",
+})
+
+# Platforms where the APEX is infrastructure but `<tenant>.<suffix>` is a REAL, separately-owned
+# site — scam operators host on these constantly. Suffix-matching these as shared infra would
+# silently drop live targets, so they are matched EXACTLY (bare apex = noise, tenant = keep).
+SAAS_TENANT_SUFFIXES = frozenset({
+    "pages.dev", "workers.dev", "r2.dev", "vercel.app", "netlify.app", "github.io", "github.dev",
+    "web.app", "firebaseapp.com", "appspot.com", "herokuapp.com", "onrender.com", "glitch.me",
+    "repl.co", "replit.dev", "surge.sh", "azurewebsites.net", "pythonanywhere.com",
+    "myshopify.com", "wixsite.com", "weebly.com", "blogspot.com", "webflow.io", "carrd.co",
+    "notion.site", "bubbleapps.io", "framer.website", "translate.goog",
+})
+
+
 def _host(x: str) -> str:
     return (x or "").strip().lower().rstrip(".")
+
+
+def is_shared_infra_apex(apex: str) -> bool:
+    """True if a registrable apex is shared infrastructure and must never become an investigation
+    seed. Exact-or-parent for SHARED_INFRA_APEXES; EXACT-only for SAAS_TENANT_SUFFIXES, because
+    `victim-shop.myshopify.com` / `kit.pages.dev` are real targets while the bare platform apex is
+    not. Also defers to is_parking_host for the parking/marketplace substrings."""
+    a = _host(apex)
+    if not a or "." not in a:
+        return True
+    if a in SAAS_TENANT_SUFFIXES:          # bare platform apex — noise
+        return True
+    if any(a.endswith("." + s) for s in SAAS_TENANT_SUFFIXES):
+        return False                       # a tenant on that platform — a real, separate target
+    if any(a == d or a.endswith("." + d) for d in SHARED_INFRA_APEXES):
+        return True
+    return is_parking_host(a)
 
 
 def is_managed_dns(nameserver: str) -> bool:

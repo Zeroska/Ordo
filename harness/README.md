@@ -285,7 +285,7 @@ front-ends share one typed, permission-gated surface.
 
 - **Zero duplication / no drift** — it re-implements nothing. It imports `tools.py` and
   auto-discovers every `@tool` (`pivot_extract`, `kb_cluster`, `cert_overlap`, `impersonation_hunt`,
-  `search_pivot`, `case_frontier`/`case_loop`/`case_reopen`, … — all 22); the handlers and the CLIs
+  `search_pivot`, `case_clusters`/`case_frontier`/`case_loop`/`case_reopen`, … — all 23); the handlers and the CLIs
   under them stay the source of truth. Add a tool to `tools.py` and it appears here automatically.
 - **Wired up** by the repo-root `.mcp.json` (`command: ./harness/mcp-server`). The shim runs the
   server under the **WebPivot venv** (tools.py imports `claude_agent_sdk`); edit `PY` in the shim if

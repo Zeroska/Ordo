@@ -1,14 +1,15 @@
 export const meta = {
   name: 'cti-fanout-case',
-  description: 'Fan-out CTI case: reactive collector per seed, then adversarially-verified correlate + assess',
-  whenToUse: 'Work a case whose seeds each deserve reactive per-seed collection (hostile/CF/empty handling) but should run concurrently, with every same-operator link adversarially refuted before it is committed — the Claude-Code mirror of orchestrator.collect_fanout (--fanout) + the adversarial verify phase.',
+  description: 'Fan-out CTI case: reactive collector per seed, partition into clusters, then adversarially-verified judgement per cluster',
+  whenToUse: 'Work a case whose seeds each deserve reactive per-seed collection (hostile/CF/empty handling) but should run concurrently, then be judged CLUSTER BY CLUSTER with every same-operator link adversarially refuted before it is committed — the Claude-Code mirror of orchestrator.collect_fanout (--fanout) + --parallel cluster judgement + the adversarial verify phase. args: { case, seeds:[...], keywords?:[...], expand?:bool, engines?:str, maxClusters?:int=3, maxLinks?:int=6 }.',
   phases: [
     { title: 'Search-expand', detail: 'multi-engine search on seeds/keywords → new candidate hosts (opt-in)' },
     { title: 'Collect', detail: 'one WebPivot collector agent per seed, concurrently' },
     { title: 'Ingest', detail: 'ingest all raw pivot JSON into the KB once' },
-    { title: 'Correlate', detail: 'cluster + emit the same-operator links as structured pairs' },
-    { title: 'Verify', detail: 'panel of skeptics refutes each link; 2-of-3 kills it' },
-    { title: 'Assess', detail: 'ICD-203 assessment over the SURVIVING links only' },
+    { title: 'Partition', detail: 'split the case into same-operator clusters — the unit of judgement' },
+    { title: 'Correlate', detail: 'per cluster: emit its same-operator links as structured pairs' },
+    { title: 'Verify', detail: 'per cluster: 3 lens-skeptics refute the links; 2-of-3 kills one' },
+    { title: 'Assess', detail: 'per cluster: ICD-203 assessment over the SURVIVING links only' },
   ],
 }
 
@@ -92,77 +93,109 @@ await agent(
   { label: 'ingest', phase: 'Ingest' }
 )
 
-// ── Phase 3: CORRELATE — cluster + emit every same-operator link as a structured pair ──
-phase('Correlate')
+// ── Phase 3: PARTITION — split the case into same-operator clusters BEFORE judging ──
+// The unit of judgment is the CLUSTER, not the case. One correlate agent holding every seed is
+// unfocused and blows context once a case passes ~10 domains; it is also N attribution questions
+// pretending to be one. case_clusters is a pure KB read (no collection, no credits).
+phase('Partition')
+const CLUSTER_SCHEMA = {
+  type: 'object',
+  properties: {
+    clusters: {
+      type: 'array',
+      description: 'Same-operator components, largest first',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' },
+          domains: { type: 'array', items: { type: 'string' } },
+          binding_indicators: {
+            type: 'array',
+            description: 'Indicators binding the cluster, most distinctive first, with KB-wide prevalence',
+            items: { type: 'string' },
+          },
+        },
+        required: ['id', 'domains'],
+      },
+    },
+    n_singletons: { type: 'integer', description: 'components with a single domain (nothing to correlate)' },
+  },
+  required: ['clusters'],
+}
+const partition = await agent(
+  `Partition case ${CASE} into same-operator clusters. Call the intel MCP tool ` +
+  `case_clusters(case="${CASE}") (find it with ToolSearch) and return its components.\n` +
+  `Report ONLY multi-domain clusters in \`clusters\` (a singleton has nothing to correlate) and put ` +
+  `the singleton count in n_singletons. Preserve each binding indicator's KB-wide prevalence in the ` +
+  `string — an indicator binding 3 domains here but sitting on 400 KB-wide is noise, and the ` +
+  `verifier needs to see that.`,
+  { label: 'partition', phase: 'Partition', schema: CLUSTER_SCHEMA }
+)
+let clusters = ((partition && partition.clusters) || []).filter((c) => (c.domains || []).length > 1)
+clusters.sort((a, b) => (b.domains || []).length - (a.domains || []).length)
+const nSingletons = (partition && partition.n_singletons) || 0
+// CAPS: bound the fan-out so a 200-domain case cannot spawn hundreds of agents. Both are
+// args-overridable, and whatever they drop is logged — a silent cap reads as full coverage.
+const MAX_CLUSTERS = (args && args.maxClusters) || 3
+const MAX_LINKS = (args && args.maxLinks) || 6
+if (clusters.length > MAX_CLUSTERS) {
+  const dropped = clusters.slice(MAX_CLUSTERS)
+  log(
+    `CAP: judging the ${MAX_CLUSTERS} largest of ${clusters.length} multi-domain clusters. ` +
+    `NOT judged: ${dropped.map((c) => `c${c.id}(${c.domains.length})`).join(', ')} — ` +
+    `re-run with args.maxClusters to cover them.`
+  )
+  clusters = clusters.slice(0, MAX_CLUSTERS)
+}
+log(`partition: ${clusters.length} cluster(s) to judge, ${nSingletons} singleton(s) skipped`)
+if (!clusters.length) {
+  log('no multi-domain cluster — nothing to correlate. Collection is still ingested and on disk.')
+  return { case: CASE, seeds: SEEDS, collected, clusters: [], results: [] }
+}
+
+// ── Phases 4-6: per-cluster CORRELATE → VERIFY → ASSESS, pipelined ──
+// pipeline (not parallel): cluster B starts correlating while cluster A is already being verified.
+// No barrier is needed — clusters are independent by construction.
 const CORRELATE_SCHEMA = {
   type: 'object',
   properties: {
     links: {
       type: 'array',
-      description: 'Every candidate same-operator link: a pair of domains + the shared artifact tying them',
+      description: 'Every candidate same-operator link INSIDE this cluster: a domain pair + the shared artifact',
       items: {
         type: 'object',
         properties: {
           a: { type: 'string' },
           b: { type: 'string' },
-          indicator: { type: 'string', description: 'e.g. favicon:123456789, ga:G-XXXXXXXXXX, cert-SAN, GTM-XXXXXXX' },
+          indicator: { type: 'string', description: 'e.g. favicon:123456789, ga:G-XXXXXXXXXX, cert-SAN' },
           tier: { type: 'string', description: 'owner-set | infra | boilerplate' },
         },
         required: ['a', 'b', 'indicator'],
       },
     },
-    clusters: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
   },
-  required: ['links', 'clusters'],
+  required: ['links'],
 }
-const correlate = await agent(
-  `Correlate case ${CASE} over the ingested KB using the intel MCP tools (kb_cluster with strong=true, ` +
-  `kb_entity, cert_overlap, reference_check, which_cases — find them with ToolSearch). Apply the noise ` +
-  `discipline (--strong only; treat managed DNS / parking favicons / registrar-privacy emails as NON-links). ` +
-  `Seeds: ${SEEDS.join(', ')}\n` +
-  `Emit EVERY candidate same-operator link as a {a, b, indicator, tier} pair, and the clusters they form. ` +
-  `Do not pre-filter borderline links here — the next phase adversarially refutes them.`,
-  { label: 'correlate', phase: 'Correlate', schema: CORRELATE_SCHEMA }
-)
-const links = (correlate && correlate.links) || []
-log(`correlate proposed ${links.length} same-operator link(s)`)
-
-// ── Phase 4: VERIFY — panel of 3 skeptics per link; 2-of-3 REFUTED kills it (default: refute) ──
-phase('Verify')
 const REFUTE_SCHEMA = {
   type: 'object',
   properties: {
-    refuted: { type: 'boolean', description: 'true if this is NOT a genuine same-operator link' },
-    reason: { type: 'string', description: 'the benign/prevalence/competing-explanation that broke it, or why it survived' },
+    verdicts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          a: { type: 'string' },
+          b: { type: 'string' },
+          indicator: { type: 'string' },
+          refuted: { type: 'boolean', description: 'true if this is NOT a genuine same-operator link' },
+          reason: { type: 'string', description: 'the benign / prevalence / competing explanation that broke it, or why it survived' },
+        },
+        required: ['a', 'b', 'indicator', 'refuted', 'reason'],
+      },
+    },
   },
-  required: ['refuted', 'reason'],
+  required: ['verdicts'],
 }
-const LENSES = ['benign/prevalence', 'competing-explanation', 'TLS/infra']
-const verified = await parallel(links.map((lk) => () =>
-  parallel(LENSES.map((lens) => () =>
-    agent(
-      `Case ${CASE}. Adversarially REFUTE this candidate same-operator link via the "${lens}" lens.\n` +
-      `Link: ${lk.a} <-> ${lk.b} via ${lk.indicator} (tier: ${lk.tier || 'unknown'}).\n` +
-      `Use the intel MCP tools (reference_check the indicator; kb_entity/kb_query_shared for PREVALENCE; ` +
-      `cert_overlap for TLS — find them with ToolSearch). A BENIGN verdict, an over-prevalent indicator ` +
-      `(managed DNS / parking favicon / registrar-privacy email / platform GA-GTM / default template), or a ` +
-      `shared CA-not-SAN cert all REFUTE the link. Default to refuted=true when uncertain — the burden is on ` +
-      `the link to survive.`,
-      { label: `refute:${lk.a}~${lk.b}:${lens}`, phase: 'Verify', schema: REFUTE_SCHEMA }
-    )
-  )).then((votes) => {
-    const v = votes.filter(Boolean)
-    const nRefuted = v.filter((x) => x.refuted).length
-    const survives = nRefuted < 2 // 2-of-3 refuted kills the link
-    return { ...lk, survives, nRefuted, reasons: v.map((x) => x.reason) }
-  })
-))
-const surviving = verified.filter(Boolean).filter((l) => l.survives)
-const refuted = verified.filter(Boolean).filter((l) => !l.survives)
-log(`verify: ${surviving.length} link(s) survived, ${refuted.length} refuted (2-of-3 vote)`)
-
-// ── Phase 5: ASSESS — ICD-203 assessment over the SURVIVING links only ──
-phase('Assess')
 const ASSESS_SCHEMA = {
   type: 'object',
   properties: {
@@ -176,14 +209,100 @@ const ASSESS_SCHEMA = {
   },
   required: ['bluf', 'attribution_level', 'confidence', 'evidence', 'gaps', 'next_pivots'],
 }
-const assessment = await agent(
-  `Write the ICD-203 assessment for case ${CASE}. Use an estimative word in the BLUF (assessed / likely / ` +
-  `possible). Base the attribution ONLY on the links that SURVIVED adversarial refutation; cite the refuted ` +
-  `links in gaps as competing explanations ruled in. If most links were refuted, drop the attribution level ` +
-  `and confidence accordingly.\n\n` +
-  `SURVIVING LINKS:\n${JSON.stringify(surviving, null, 2)}\n\n` +
-  `REFUTED LINKS (state these as ruled-out competing explanations in gaps):\n${JSON.stringify(refuted, null, 2)}`,
-  { label: 'assess', phase: 'Assess', schema: ASSESS_SCHEMA }
+// One skeptic per LENS per cluster (not per link): 3 agents regardless of link count, and each
+// sees the whole cluster — which is what prevalence reasoning actually needs. Still a 2-of-3
+// panel vote per link, and it matches the SDK harness's single cluster-wide verify phase.
+const LENSES = [
+  'benign/prevalence — reference_check the indicator, and kb_entity/kb_query_shared it for how many UNRELATED domains carry it',
+  'competing-explanation — shared host / CDN / registrar / SaaS platform / brand coincidence; if it explains the overlap as well as "same operator", the link is at best same-kit',
+  'TLS/infra — cert_overlap the specific pair; only a SAN cross-cover survives, a shared CA or a managed wildcard cert does not',
+]
+const key = (l) => `${[l.a, l.b].sort().join('~')}|${l.indicator}`
+
+const results = await pipeline(
+  clusters,
+  // 4. CORRELATE this cluster only
+  (c) =>
+    agent(
+      `Correlate CLUSTER c${c.id} of case ${CASE} — these domains ONLY: ${c.domains.join(', ')}\n` +
+      `Binding indicators from the partition: ${(c.binding_indicators || []).join('; ') || '(none reported)'}\n` +
+      `Use the intel MCP tools (kb_cluster, kb_entity, cert_overlap, reference_check, which_cases — ` +
+      `find them with ToolSearch). Apply the noise discipline: managed DNS, parking favicons and ` +
+      `registrar-privacy emails are NOT operator links.\n` +
+      `Emit EVERY candidate same-operator link inside this cluster as {a, b, indicator, tier}. Do NOT ` +
+      `pre-filter borderline links — the next phase refutes them.`,
+      { label: `correlate:c${c.id}`, phase: 'Correlate', schema: CORRELATE_SCHEMA }
+    ),
+  // 5. VERIFY — 3 lenses over this cluster's links, 2-of-3 refuted kills a link
+  async (corr, c) => {
+    let links = (corr && corr.links) || []
+    if (links.length > MAX_LINKS) {
+      log(`CAP: c${c.id} proposed ${links.length} links; verifying the first ${MAX_LINKS}. ` +
+          `The rest are reported unverified and must NOT be treated as established.`)
+      links = links.slice(0, MAX_LINKS)
+    }
+    if (!links.length) return { cluster: c, links: [], surviving: [], refuted: [] }
+    const panels = (await parallel(LENSES.map((lens) => () =>
+      agent(
+        `Case ${CASE}, CLUSTER c${c.id}. Adversarially REFUTE these candidate same-operator links ` +
+        `through ONE lens: ${lens}\n` +
+        `Links:\n${JSON.stringify(links, null, 2)}\n` +
+        `Use the intel MCP tools (reference_check, kb_entity, kb_query_shared, cert_overlap — find ` +
+        `them with ToolSearch). Return a verdict for EVERY link above. Default to refuted=true when ` +
+        `uncertain — the burden is on the link to survive.`,
+        { label: `refute:c${c.id}:${lens.split(' ')[0]}`, phase: 'Verify', schema: REFUTE_SCHEMA }
+      )
+    ))).filter(Boolean)
+    const votes = {}
+    for (const p of panels) {
+      for (const v of p.verdicts || []) {
+        const k = key(v)
+        votes[k] = votes[k] || { refuted: 0, total: 0, reasons: [] }
+        votes[k].total += 1
+        if (v.refuted) votes[k].refuted += 1
+        votes[k].reasons.push(v.reason)
+      }
+    }
+    const judged = links.map((l) => {
+      const v = votes[key(l)] || { refuted: 0, total: 0, reasons: ['no verdict returned'] }
+      // 2-of-3 refuted kills it; a link no panel voted on has not survived anything
+      return { ...l, survives: v.total > 0 && v.refuted < 2, nRefuted: v.refuted, nVotes: v.total, reasons: v.reasons }
+    })
+    return {
+      cluster: c,
+      links: judged,
+      surviving: judged.filter((l) => l.survives),
+      refuted: judged.filter((l) => !l.survives),
+    }
+  },
+  // 6. ASSESS this cluster over the SURVIVING links only
+  async (v, c) => {
+    if (!v.links.length) {
+      return { cluster: c, assessment: null, note: 'no candidate links proposed for this cluster' }
+    }
+    log(`c${c.id}: ${v.surviving.length}/${v.links.length} link(s) survived the 2-of-3 panel`)
+    const assessment = await agent(
+      `Write the ICD-203 assessment for CLUSTER c${c.id} of case ${CASE} (domains: ${c.domains.join(', ')}).\n` +
+      `Use an estimative word in the BLUF (assessed / likely / possible). Base the attribution ONLY on ` +
+      `links that SURVIVED refutation; cite the refuted ones in gaps as competing explanations ruled ` +
+      `out. If most links were refuted, drop the attribution level and confidence accordingly — ` +
+      `"inconclusive" is a valid, honest answer.\n\n` +
+      `SURVIVING LINKS:\n${JSON.stringify(v.surviving, null, 2)}\n\n` +
+      `REFUTED LINKS:\n${JSON.stringify(v.refuted, null, 2)}`,
+      { label: `assess:c${c.id}`, phase: 'Assess', schema: ASSESS_SCHEMA }
+    )
+    return { cluster: c, assessment, surviving: v.surviving, refuted: v.refuted }
+  }
 )
 
-return { case: CASE, seeds: SEEDS, collected, links, surviving, refuted, assessment }
+const ok = results.filter(Boolean)
+log(`done: ${ok.length} cluster assessment(s); ${nSingletons} singleton(s) never judged`)
+return {
+  case: CASE,
+  seeds: SEEDS,
+  collected,
+  n_clusters_judged: ok.length,
+  n_singletons: nSingletons,
+  caps: { maxClusters: MAX_CLUSTERS, maxLinks: MAX_LINKS },
+  results: ok,
+}

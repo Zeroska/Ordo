@@ -9,26 +9,14 @@ description: Website content & DOM analysis for OSINT and cybercrime investigati
 > `cases/` / `knowledge/` / `MEMORY/`. In examples use placeholders (`example.com`,
 > `G-XXXXXXXXXX`, `CASE-0001`). See the repo-root `CLAUDE.md` for the full rule.
 
-## Customization & API keys
-
-**Before executing, check `~/.claude/PAI/USER/SKILLCUSTOMIZATIONS/WebPivot/`** — if it exists, load
-and apply any `PREFERENCES.md`, API keys, or resources there (they override defaults). If not, use
-skill defaults.
+## API keys
 
 **Optional API keys enable live pivoting** (`URLSCAN_API_KEY`, `FOFA_KEY`/`FOFA_EMAIL`,
 `WHOISXML_API_KEY`, `PDNS_USERNAME`/`PDNS_PASSWORD`, and for IPPivot `IPINFO_TOKEN` / `SHODAN_KEY`) —
-read from env first, then a `chmod 600` `.env`. **No keys → keyless mode, unchanged.** Full setup,
-what each key + urlscan-Pro unlocks, passive-DNS, and the standalone `whois_enrich.py` tool are in
-**`references/Setup.md`** — read it when wiring up keys or running reverse-WHOIS.
-
-## Voice notification (before any action)
-
-When this skill is invoked, first fire (non-blocking) then print the same line:
-```bash
-curl -s -X POST http://localhost:8888/notify -H "Content-Type: application/json" \
-  -d '{"message": "Running the WORKFLOWNAME workflow in the WebPivot skill to ACTION"}' >/dev/null 2>&1 &
-```
-Then output: `Running the **WorkflowName** workflow in the **WebPivot** skill to ACTION...`
+read from the environment first, then from the first `chmod 600` `.env` found: the invocation
+directory, the repo root, then a skill-local `.env`. **No keys → keyless mode, unchanged.** Full
+setup, what each key + urlscan-Pro unlocks, passive-DNS, and the standalone `whois_enrich.py` tool
+are in **`references/Setup.md`** — read it when wiring up keys or running reverse-WHOIS.
 
 ---
 

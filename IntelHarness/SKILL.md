@@ -258,6 +258,18 @@ infra/noise filtered) → checkpoint. It **stops** when `convergence.py` says **
 `--stale` rounds added nothing), the frontier is empty (**cold**), or the round cap is hit
 (**awaiting-analyst**).
 
+Each round also writes **`clusters.json`** — this case's hosts partitioned into same-operator
+components (strong edges only, the same partition `orchestrator.py --parallel` judges over) with the
+indicators binding each one and their **KB-wide prevalence**. Judge **per cluster, not per case**: a
+200-domain case is N attribution questions, not one, and `assessment.json.next_pivots` now names each
+multi-domain cluster as its own judgement task. `shared.txt` is scoped to the case's hosts for the
+same reason — unscoped it reported every past case's indicators.
+
+The frontier will **not auto-seed co-tenancy**: a multi-tenant TLS cert, a shared/bulk-hosting or CDN
+IP, and a bulk or privacy/registrar registrant term all name other *customers*, so they are held back
+as `co_tenancy_leads` (free to check by hand with `cert_overlap`) instead of collected. This matters
+more than a wasted fetch — a bad seed gets **ingested**, and then pollutes every later case.
+
 Two persisted artifacts drive it (both under `cases/<CASE>/`):
 - **`state.json`** — the stage machine: `status` (expanding · converged · cold · awaiting-analyst),
   round cursor, the `collected` / `pending` / `consumed` queues, deferred `metered_leads`, and history.
@@ -295,12 +307,15 @@ that ties them together with resumable state + gap-chasing.)*
 
 ## Scale — many domains (10s–100s)
 
-Don't loop one giant reasoning pass over 100 domains. **Partition first, judge per cluster:**
+Don't loop one giant reasoning pass over 100 domains. **Partition first, judge per cluster** — use
+the `case_clusters` MCP tool, or the CLI:
 ```bash
-DOMS=$(for f in cases/<CASE>/raw/*.json; do basename "$f" .json; done | paste -sd, -)
-python3 tools/kb/query.py --kb "${HARNESS_KB:-knowledge}" --components --domains "$DOMS"
+python3 tools/intel.py clusters <CASE>            # components + the indicators binding each
+python3 tools/intel.py clusters <CASE> --json     # machine-readable (also written to clusters.json)
 ```
-Each `COMPONENT` line is one same-operator cluster (strong edges only). Then, per cluster:
+Each cluster lists its binding indicators with their **KB-wide prevalence**, so an indicator binding
+3 domains here but sitting on 400 KB-wide is visibly noise. (The raw form is
+`query.py --components --domains "$DOMS"`.) Then, per cluster:
 - if **every** member is already attributed (`operator_registry.py find`) → reuse the prior verdict, **skip judgement**;
 - else run Phase 2 + Phase 3 for **just that cluster's domains**, and snapshot it.
 
@@ -313,9 +328,15 @@ thread-pool — fast, but it runs one fixed `pivot_extract` per seed with no per
 seeds each need the *reactive* tradecraft (empty→`fallback_probe`, hostile→passive, CF→render) **and**
 you want it concurrent, `orchestrator.py --fanout [--collect-conc N]` spins one WebPivot collector
 agent per seed (the wired `agents.py` `collector` persona, `collect_fanout`) under a semaphore, then
-ingests once. In Claude Code, the `cti-fanout-case` **workflow** (`.claude/workflows/`) is the same
-shape over the MCP `intel` tools. Use `--parallel` for large/mechanical sweeps, `--fanout` for
-small–medium seed sets where per-seed collection judgement matters.
+ingests once. Use `--parallel` for large/mechanical sweeps, `--fanout` for small–medium seed sets
+where per-seed collection judgement matters.
+
+In Claude Code, the `cti-fanout-case` **workflow** (`.claude/workflows/`) mirrors both: collector
+per seed → ingest → **`case_clusters` partition** → then Correlate → Verify → Assess **per cluster**,
+pipelined. Verification is a 3-lens skeptic panel per cluster (benign/prevalence ·
+competing-explanation · TLS/infra), 2-of-3 refuted kills a link. Fan-out is capped
+(`args.maxClusters` default 3, `args.maxLinks` default 6) and **whatever a cap drops is logged** —
+an unjudged cluster or an unverified link must never be reported as established.
 
 ---
 
@@ -365,5 +386,5 @@ future collections that hit a `signal` fingerprint or an attributed domain resol
 | evidence manifest | `case_store.py manifest` | `_append_manifest` |
 | converge | `convergence.py snapshot/status` | `--continue` loop |
 | **gap-chasing loop (resumable)** | `intel.py loop <CASE>` = collect(free-only)→assess→`case_state.py frontier`→repeat, checkpointed to `state.json` (`case_frontier`/`case_loop`/`case_reopen` MCP tools) | `run_case` / `run_case_parallel` (`--continue`) |
-| scale | `query.py --components` + per-cluster judge | `--parallel` / `run_case_parallel` |
+| scale | `intel.py clusters <CASE>` (`case_clusters`) + per-cluster judge | `--parallel` / `run_case_parallel` |
 | learn | `operator_registry.py add`, `reference.py ingest-case` | close-out step |

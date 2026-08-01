@@ -2,9 +2,6 @@
 
 Extract every pivot artifact from one page and produce ranked leads.
 
-## Voice
-`curl -s -X POST http://localhost:8888/notify -H "Content-Type: application/json" -d '{"message": "Running the AnalyzePage workflow in the WebPivot skill to extract pivot artifacts"}' >/dev/null 2>&1 &`
-
 ## Steps
 
 1. **Authorization check.** Confirm the target is in scope (`../EthicalFramework.md`). For adversarial infra, prefer passive acquisition (step 2b) and non-attributable egress.

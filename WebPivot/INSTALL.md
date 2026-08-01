@@ -117,9 +117,9 @@ Windows Credential Manager — or just export the env vars in your shell profile
 
 ### Simpler — a `.env` file (plaintext, lock it down)
 
-The tools also read `~/.claude/PAI/USER/SKILLCUSTOMIZATIONS/WebPivot/.env` if present
-(PAI setups). On a plain machine you can instead export the vars, or point your own
-`.env` via your shell. Whatever file you use:
+The tools load the first `.env` they find: the **invocation directory** (normally the repo
+root you run from), the **repo root** relative to the script, then a **skill-local** `.env`
+next to `WebPivot/`. A real environment variable always wins. Whatever file you use:
 
 ```bash
 chmod 600 .env          # owner-only

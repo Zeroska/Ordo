@@ -3,9 +3,6 @@
 You already have one artifact (a favicon, a tracking ID, a wallet, an email) and
 want to know everywhere else it appears.
 
-## Voice
-`curl -s -X POST http://localhost:8888/notify -H "Content-Type: application/json" -d '{"message": "Running the PivotFromArtifact workflow in the WebPivot skill to expand one artifact"}' >/dev/null 2>&1 &`
-
 ## Steps
 
 1. **Normalize the artifact.**

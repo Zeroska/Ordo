@@ -13,9 +13,6 @@ per-site JSON. Skills stay code-only; investigations are data.
 cases/<case>/raw/*.json   case_graph.json   <case>_network.html   history.json
 ```
 
-## Voice
-`curl -s -X POST http://localhost:8888/notify -H "Content-Type: application/json" -d '{"message": "Running the NetworkGraph workflow in the WebPivot skill to build a clustered link graph"}' >/dev/null 2>&1 &`
-
 ## Steps
 
 1. **Extract every site** (live, or passive via Wayback/urlscan) into per-site JSON:

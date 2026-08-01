@@ -44,6 +44,9 @@ python3 tools/intel.py open mycase cases/mycase/domains.txt --render --operator 
 
 # audit what the case has persisted so far:
 python3 tools/intel.py status mycase
+
+# partition the case into same-operator clusters (pure KB read — judge one cluster at a time):
+python3 tools/intel.py clusters mycase
 ```
 
 **Or run it as a resumable convergence loop** — collect → assess → chase the *free* frontier → repeat,
@@ -58,11 +61,17 @@ python3 tools/intel.py loop mycase --max-rounds 6 --max-new 8 --stale 2   # tune
 
 A round that adds no new shared artifact for `--stale` rounds (default 2) means **CONVERGED**;
 the loop writes `assessment.json` (gaps / next_pivots / metered_leads) so you can see what a paid
-pivot would buy before spending.
+pivot would buy before spending. It never auto-seeds **co-tenancy** — a multi-tenant TLS cert, a
+shared/CDN hosting IP, or a bulk/privacy registrant term names other *customers*, so those are held
+back as `co_tenancy_leads` rather than collected (a bad seed is ingested, and then pollutes every
+later case).
 
 **It produces** (all under `cases/mycase/`):
 - `raw/<host>.json` — one pivot-extract JSON per domain (overwrites on re-run → reproducible)
-- `shared.txt` — the cluster seeds (shared indicators across ≥2 domains)
+- `shared.txt` — the cluster seeds (shared indicators across ≥2 domains), **scoped to this case's
+  hosts**, with each indicator's KB-wide count alongside as the prevalence/noise signal
+- `clusters.json` — the case partitioned into **same-operator components** + the indicators binding
+  each. Judge **per cluster, not per case**; a big case is N attribution questions, not one
 - `case_graph.json` + `network.html` — the clustered graph (unless `--no-graph`)
 - and the whole run **ingested into `knowledge/`** so IntelAnalysis can reason over it.
 

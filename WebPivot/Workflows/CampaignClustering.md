@@ -3,9 +3,6 @@
 Given many URLs (a list of suspected scam/phishing sites), group them into
 operator clusters by shared artifacts.
 
-## Voice
-`curl -s -X POST http://localhost:8888/notify -H "Content-Type: application/json" -d '{"message": "Running the CampaignClustering workflow in the WebPivot skill to cluster sites by shared artifacts"}' >/dev/null 2>&1 &`
-
 ## Steps
 
 1. **Batch-extract.** Run the harness over every URL, one JSON per site:

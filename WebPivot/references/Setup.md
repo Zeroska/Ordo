@@ -3,18 +3,12 @@
 Load this when you need to wire up live pivoting (keys), understand what each key unlocks, or run
 the standalone WHOIS client. **No keys → keyless mode, everything below is simply skipped.**
 
-## Customization
-
-**Before executing, check for user customizations at:**
-`~/.claude/PAI/USER/SKILLCUSTOMIZATIONS/WebPivot/`
-
-If this directory exists, load and apply any PREFERENCES.md, API keys, or resources found there.
-These override default behavior. If the directory does not exist, proceed with skill defaults.
-
 ## API keys (optional — enables live pivoting)
 
-`pivot_extract.py` reads keys from the environment first, then from a `chmod 600` `.env` in the
-customization dir (env wins). Recognized: `URLSCAN_API_KEY`, `FOFA_KEY` (or `FOFA_API_KEY`),
+`pivot_extract.py` reads keys from the environment first, then from the first `chmod 600` `.env` it
+finds — the **invocation directory** (normally the repo root you run from), the **repo root**
+relative to the script, then a **skill-local** `.env` next to `WebPivot/`. A real environment
+variable always wins; among files, the earlier one wins. Recognized: `URLSCAN_API_KEY`, `FOFA_KEY` (or `FOFA_API_KEY`),
 `FOFA_EMAIL`, `WHOISXML_API_KEY`, `PDNS_USERNAME` + `PDNS_PASSWORD` (passive DNS, optional
 `PDNS_URL`), and — for IPPivot — `IPINFO_TOKEN` (richer IPinfo ASN/abuse) and `SHODAN_KEY` (host
 ports/services). Both optional.
@@ -69,8 +63,8 @@ attached to the domain pivot as `live_results.pdns` and counted toward corrobora
 Basic auth against `PDNS_URL` (default CIRCL `https://www.circl.lu/pdns/query`); point `PDNS_URL`
 at any COF-compatible instance. No creds → the lookup is simply skipped (keyless mode unchanged).
 
-**No keys → keyless mode, unchanged.** Prefer macOS Keychain over a plaintext `.env`;
-see `SKILLCUSTOMIZATIONS/WebPivot/PREFERENCES.md` for setup.
+**No keys → keyless mode, unchanged.** Prefer your OS keychain over a plaintext `.env` —
+see `INSTALL.md §5` for the macOS/Linux/Windows recipes.
 
 ## WHOIS tool — `tools/whois_enrich.py`
 
