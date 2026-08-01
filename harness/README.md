@@ -44,11 +44,39 @@ Three phases; each is one `query()` call, wired so consistency comes from the sc
 - Each run prints its **cost breakdown** (SDK `total_cost_usd`, per phase + total) to stderr,
   so stdout stays clean JSON. Use it to measure real cost-per-case on your first runs.
 
+## Swappable reasoning backend (`HARNESS_BACKEND`)
+The orchestrator is written against the Anthropic Agent SDK, but the reasoning model is **not**
+hard-wired to Anthropic. `harness/sdk_compat.py` reads `HARNESS_BACKEND` and transparently swaps in
+`harness/openai_backend.py` — a drop-in shim over the slice of `claude_agent_sdk` the orchestrator
+uses — so the *same* Collect→Correlate→Assess driver runs against **any OpenAI-compatible
+`/chat/completions` endpoint**. The orchestrator code is untouched.
+
+```bash
+HARNESS_BACKEND=deepseek  python3 harness/orchestrator.py CASE-0001 https://site-a.example
+# HARNESS_BACKEND ∈ { claude (default) | openai | deepseek | kimi | local }
+```
+- Unset / `claude` → the real Anthropic SDK (schema-forced `output_format`, prompt cache, cost meter).
+- `openai|deepseek|kimi|local` → the shim, pointed at the matching base URL + `*_API_KEY`.
+- Note: some reasoning models (e.g. `deepseek-reasoner`) don't do tool-calling, so the tool-driven
+  phases stay on a chat model (e.g. `deepseek-chat`). Use for cost control or air-gapped/local runs.
+
+## Reactive fan-out + adversarial verify (`--fanout`, `--no-verify`)
+Two quality levers on top of the base loop:
+- **`--fanout`** replaces the single sequential Collect session with **one reactive collector agent
+  per seed**, run concurrently (`collect_fanout`). Each seed gets its own hostile/Cloudflare/empty
+  handling instead of sharing one context — better coverage, and faster on multi-seed cases.
+- **Adversarial verify** (on by default; `HARNESS_VERIFY=0` or `--no-verify` to skip) inserts a phase
+  between Correlate and Assess that tries to **refute** every proposed same-operator link before it's
+  committed — a skeptic pass so a plausible-but-wrong cluster edge doesn't survive into the
+  assessment. `HARNESS_VERIFY_MODEL` / `HARNESS_VERIFY_EFFORT` tune it.
+
 ## Files
 - `cli.py` — the `intel` console entrypoint (`open` / `continue` / `status`); `../intel` is the shim.
 - `tools.py` — your CLI scripts wrapped as in-process `@tool`s (+ the egress guardrail).
 - `schemas.py` — the `Assessment` Pydantic model (the structured checkpoint).
-- `orchestrator.py` — the Collect→Correlate→Assess driver + CLI.
+- `orchestrator.py` — the Collect→Correlate→Assess driver + CLI (incl. `--fanout` + adversarial verify).
+- `sdk_compat.py` — the `HARNESS_BACKEND` switch: real `claude_agent_sdk`, or the OpenAI-compat shim.
+- `openai_backend.py` — the drop-in shim that runs the driver on any `/chat/completions` endpoint.
 - `prompts/` — the per-phase **task** prompts (`collect.md` / `correlate.md` / `assess.md`), the
   single editable source of truth for what each phase instructs. `orchestrator._prompt(name, **kw)`
   loads and fills them (`{{token}}`); the phase *system* prompt still comes from the SKILL body.
@@ -237,6 +265,8 @@ why a run's Domain Summary WHOIS columns come back blank.
 ## Collection behavior & outputs
 Every `pivot_extract` call now, by default:
 - runs **full enrichment** — WHOIS + FOFA + urlscan (needs the API keys in `.env`); `HARNESS_NO_ENRICH=1` turns it off for cheap smoke runs only;
+- resolves **WHOIS with no key** — keyless RDAP (rdap.org bootstrap) + a `.vn` port-43 fallback fill registrar/dates/NS/status on every domain; `WHOISXML_API_KEY` only adds registrant history;
+- emits an active **JARM TLS-stack fingerprint** (`artifacts.jarm`) + a `jarm:<hash>` pivot on Shodan `ssl.jarm:` — it survives a full domain+cert rotation, so it re-finds an operator's origin. Suppressed under `--proxy` (raw-socket probe);
 - **saves the raw DOM** to `cases/<case>/dom/<host>.html` so you can manually analyze it or re-run a pivoting script over it;
 - **detects Cloudflare** (`meta.cloudflare`) and auto-retries the bypass — a real browser via `--render` (uses `WebPivot/.venv`), or FlareSolverr if `HARNESS_FLARESOLVERR=http://host:8191/v1` is set.
 
@@ -254,9 +284,9 @@ server** that serves the *same* `tools.py` tool objects to Claude Code (or any M
 front-ends share one typed, permission-gated surface.
 
 - **Zero duplication / no drift** — it re-implements nothing. It imports `tools.py` and
-  auto-discovers every `@tool` (`pivot_extract`, `kb_cluster`, `cert_overlap`, … — all 13); the
-  handlers and the CLIs under them stay the source of truth. Add a tool to `tools.py` and it appears
-  here automatically.
+  auto-discovers every `@tool` (`pivot_extract`, `kb_cluster`, `cert_overlap`, `impersonation_hunt`,
+  `search_pivot`, `case_frontier`/`case_loop`/`case_reopen`, … — all 22); the handlers and the CLIs
+  under them stay the source of truth. Add a tool to `tools.py` and it appears here automatically.
 - **Wired up** by the repo-root `.mcp.json` (`command: ./harness/mcp-server`). The shim runs the
   server under the **WebPivot venv** (tools.py imports `claude_agent_sdk`); edit `PY` in the shim if
   your SDK venv lives elsewhere.

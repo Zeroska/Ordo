@@ -64,7 +64,7 @@ Six skills — three that **collect**, one that **thinks**, two that **publish**
 
 | Skill | Role | What it does |
 |---|---|---|
-| **WebPivot** | 🔎 Web collector | Pulls pivot artifacts from a page — favicon hash, tracking/analytics IDs, WHOIS, crypto wallets, TLS cert, CORS-trusted backend origins, SaaS/no-code operator tokens, Telegram, footer address — and emits ready-to-run pivot queries (Shodan, PublicWWW, crt.sh, urlscan…). Flags app-download funnels. |
+| **WebPivot** | 🔎 Web collector | Pulls pivot artifacts from a page — favicon hash, tracking/analytics IDs, keyless-RDAP WHOIS, crypto wallets, TLS cert **+ JARM TLS-stack fingerprint**, CORS-trusted backend origins, SaaS/no-code operator tokens, Telegram, footer address — and emits ready-to-run pivot queries (Shodan, PublicWWW, crt.sh, urlscan…). Runs the full **Pivot Matrix** on every seed, flags app-download funnels, and hunts typosquat/lookalike domains. |
 | **BinaryPivot** | 📦 File collector | Static IOC extraction from the binary a scam site serves (APK / `.exe` / `.dmg` / `.msi`): file hash, APK signing-cert, package, embedded backend/C2 hosts, Firebase tenant, wallets. Emits **WebPivot-shaped JSON** so the app clusters with the web infra. |
 | **IntelAnalysis** | 🧠 Analyst | Correlates, attributes (same-kit / same-operator / same-actor), calibrates confidence, decides the next pivot. Reasons over the KB — it does **not** collect. |
 | **IntelGraph** | 📈 Visualizer | Charts, timelines, and clustered interactive network graphs from the case data. |
@@ -124,7 +124,7 @@ npm i -g @mermaid-js/mermaid-cli         # only for Mermaid flows
 </details>
 
 > [!TIP]
-> **API keys are optional.** Without them everything still works (extraction + query generation + passive Wayback/urlscan). Keys unlock live pivoting. Read from the environment first, then a `chmod 600 ./.env` at the repo root: `URLSCAN_API_KEY`, `FOFA_KEY`, `FOFA_EMAIL`, `WHOISXML_API_KEY`, `PDNS_*`. Full keychain setup in `WebPivot/INSTALL.md`.
+> **API keys are optional.** Without them everything still works (extraction + query generation + **keyless-RDAP WHOIS** + passive Wayback/urlscan). WHOIS now runs on *every* domain with no key — keyless RDAP (rdap.org bootstrap) with a port-43 fallback for TLDs like `.vn`; `WHOISXML_API_KEY` only *enriches* it with registrant history. Keys unlock live pivoting. Read from the environment first, then a `chmod 600 ./.env` at the repo root: `URLSCAN_API_KEY`, `FOFA_KEY`, `FOFA_EMAIL`, `WHOISXML_API_KEY`, `PDNS_*`. Full keychain setup in `WebPivot/INSTALL.md`.
 
 ### 2. Run a case — three ways, same result
 
@@ -139,6 +139,10 @@ printf 'suspicious-site.example\nother-domain.example\n' > "$CASE/domains.txt"
 python3 tools/intel.py open mycase "$CASE/domains.txt"                     # extract → ingest → cluster
 python3 tools/intel.py open mycase "$CASE/domains.txt" --render --operator "name"  # + network graph
 python3 tools/intel.py status mycase                                      # audit what persisted
+
+# or drive it as a resumable convergence loop — collect → assess → chase the free frontier → repeat:
+python3 tools/intel.py loop mycase "$CASE/domains.txt"                    # first run (free-only pivots → zero credits)
+python3 tools/intel.py loop mycase                                        # resume exactly where it paused (state.json)
 ```
 
 **(b) Conversationally, in Claude Code** — best for judgment and letting the agent choose the next pivot:
@@ -158,6 +162,9 @@ python3 harness/orchestrator.py CASE-0001 --parallel --continue --depth 4 seed1.
 > [!NOTE]
 > **Convergence is the stop condition, not a fixed depth.** A case is *done* when a collect/pivot round adds no new shared artifact to the cluster (`--continue` detects `CONVERGED` vs `EXPANDING`). `--parallel` scales to many domains by judging **clusters, not individual domains**.
 
+> [!TIP]
+> **The reasoning backend is swappable.** Set `HARNESS_BACKEND=openai|deepseek|kimi|local` and the SDK driver runs against any OpenAI-compatible `/chat/completions` endpoint (`harness/openai_backend.py` shim) — the orchestrator is untouched. Unset / `claude` uses the real Anthropic SDK. Useful for cost control or air-gapped runs.
+
 ---
 
 ## Under the hood
@@ -170,8 +177,11 @@ Every extracted artifact is chosen because it **survives re-skinning** — an op
 - **Favicon hash** — same icon across unrelated domains = shared kit/operator. Emitted per engine with the right algorithm (Shodan/FOFA = mmh3, Censys = md5, Netlas = sha256).
 - **Analytics / operator tokens** — GA4 `G-`, `GTM-`, AdSense `pub-`, plus SaaS/no-code account IDs. An account ID ties every property the operator ever wired to it, even scrubbed ones.
 - **Live TLS certificate** — SANs on a *different* registrable domain are a cross-brand operator link; the fingerprint finds every host serving that exact cert.
+- **JARM TLS-stack fingerprint** — an *active* hash of the server's TLS stack (cipher/extension ordering), **not** the leaf cert. It survives a full domain **and** certificate rotation, so it re-finds an operator's origin on Shodan `ssl.jarm:` after they reissue everything. Suppressed under `--proxy` — it's a raw-socket probe.
 - **CORS policy** — an active probe sends a foreign `Origin` and reads `Access-Control-Allow-Origin`. A literal allowed origin names a **backend host the app trusts that never appears in the page HTML**.
 - **Redirect chains, wallets (incl. QR-hidden), Telegram, WHOIS registrant** — each an independent thread back to the operator.
+
+WebPivot harvests **all** of these on every seed (the **Pivot Matrix**, `PivotMatrix.md`) rather than opportunistically — attribution is only as strong as your *strongest* shared artifact, so anchoring on WHOIS while a JARM or account-token link sits unread in the same DOM is the classic report weakness. It can also invert the seed: `--hunt-impersonation` sweeps typosquats, TLD permutations, and crt.sh keyword hits to surface lookalike domains **before** they're reported.
 
 Every pivot carries a **confidence** (high/medium/low) reflecting how uniquely it identifies an operator.
 
@@ -199,6 +209,7 @@ cases/<case>/
   domains.txt          seed list                     raw/<host>.json    one pivot-JSON per host/binary
   shared.txt           cluster seeds (fast path)      dom/<host>.html    collected DOM
   SUMMARY.md           current assessment             assessments/<UTC>_*  immutable snapshots (audit)
+  state.json           resumable-loop cursor          assessment.json    gaps / next_pivots / metered_leads
   run_cost.jsonl       per-run Anthropic model cost   evidence/manifest.jsonl + master_pivots.csv
 knowledge/             the attributed KB (facts, entities, edges, reports/)
 MEMORY/api_usage.jsonl third-party API credit ledger
@@ -279,6 +290,7 @@ WebPivot/.venv/bin/python3 harness/mcp_server.py   # send a tools/list JSON-RPC;
 | **`PIPELINE.md`** | Step-by-step runbook for collect → correlate → visualize, a flags cheat-sheet, and a worked example. |
 | **`harness/README.md`** | The Agent-SDK driver in depth — model cascade, cost levers, convergence, parallel cluster judgment, the egress guardrail. |
 | **`WebPivot/INSTALL.md`** | Deeper WebPivot setup — API-key management (keychain, Linux/Windows), rendering, proxies. |
-| **`WebPivot/SKILL.md`** + `references/` | The full pivot-artifact catalogue (incl. TLS, CORS/HTTP) and per-engine query syntax. |
+| **`WebPivot/SKILL.md`** + `references/` | The full pivot-artifact catalogue (incl. TLS, JARM, CORS/HTTP) and per-engine query syntax. |
+| **`WebPivot/references/PivotMatrix.md`** | The "run every dimension on every seed" discipline — the artifact strength hierarchy (dispositive → corroborating) that ranks attribution. |
 | **`IntelHarness/SKILL.md`** | The in-Claude case-runner playbook — phases, when to reject, when to stop. |
 | each **`SKILL.md`** + `Workflows/` | Per-skill tradecraft and worked flows. |

@@ -24,7 +24,7 @@ cd /path/to/intelligence_assist          # the project root — run ALL commands
 set -a; [ -f .env ] && source .env; set +a   # load FOFA / URLSCAN / WHOISXML keys (optional)
 ```
 
-- No keys? Everything still works (extraction + query generation + passive Wayback/urlscan).
+- No keys? Everything still works (extraction + query generation + **keyless-RDAP WHOIS** + passive Wayback/urlscan). WHOIS now resolves on every domain with no key (keyless RDAP + `.vn` port-43 fallback); `WHOISXML_API_KEY` only adds registrant *history*.
 - With keys, the HIGH-confidence pivots run live. Key setup: `WebPivot/INSTALL.md §5`.
 
 ---
@@ -45,6 +45,20 @@ python3 tools/intel.py open mycase cases/mycase/domains.txt --render --operator 
 # audit what the case has persisted so far:
 python3 tools/intel.py status mycase
 ```
+
+**Or run it as a resumable convergence loop** — collect → assess → chase the *free* frontier → repeat,
+pausing at a round cap and resuming exactly where it left off (per-case `state.json`). The default
+pivots are free-only, so a loop spends **zero** API credits until you hand it a metered lead:
+
+```bash
+python3 tools/intel.py loop mycase cases/mycase/domains.txt   # first run (or add evidence)
+python3 tools/intel.py loop mycase                            # resume where it paused
+python3 tools/intel.py loop mycase --max-rounds 6 --max-new 8 --stale 2   # tune the stop condition
+```
+
+A round that adds no new shared artifact for `--stale` rounds (default 2) means **CONVERGED**;
+the loop writes `assessment.json` (gaps / next_pivots / metered_leads) so you can see what a paid
+pivot would buy before spending.
 
 **It produces** (all under `cases/mycase/`):
 - `raw/<host>.json` — one pivot-extract JSON per domain (overwrites on re-run → reproducible)
@@ -149,10 +163,21 @@ The skills persist to the same `cases/` + `knowledge/` folders, so CLI and chat 
 | `--min N` | `--shared` threshold (default 2) |
 | `--timeout S` | per-fetch timeout (default 20) |
 
+**`tools/intel.py loop <case> [seeds]`** — resumable convergence loop (omit seeds to resume)
+| Flag | Effect |
+|---|---|
+| `--max-rounds N` | round cap before pausing (default 6) |
+| `--max-new N` | new frontier seeds collected per round (default 8) |
+| `--stale N` | consecutive zero-growth rounds = CONVERGED (default 2) |
+| `--render-extract` | render post-JS DOM per page (needs Playwright) |
+| `--jobs N` / `--min N` / `--timeout S` | as in `open` |
+
 **`WebPivot/tools/pivot_extract.py <url|file|->`**
 | Flag | Effect |
 |---|---|
 | `--render` | render the post-JS **page DOM** (needs Playwright) |
+| `--free-only` | emit only free/keyless pivots — spends **zero** API credits (the loop's default) |
+| `--hunt-impersonation` | sweep typosquats / TLD permutations / crt.sh keyword hits for lookalike domains of the seed |
 | `--leads` | print ranked pivot leads (markdown) instead of JSON |
 | `--pretty` | pretty-print the JSON |
 | `-o PATH` | write the artifacts+pivots JSON to a file |
