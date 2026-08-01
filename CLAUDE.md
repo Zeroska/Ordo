@@ -79,3 +79,25 @@ the tooling, not a case.
   ```
 - If a tool needs case-specific behavior, take it as a **parameter/CLI arg**, don't bake
   the case into the code.
+
+## Where things live (context map)
+
+Jump to the right file instead of re-deriving structure each session. All paths are
+tracked code/docs — **case data is never here** (see RULE 1); it lives only in the
+git-ignored stores.
+
+| When you need… | Read / edit |
+|---|---|
+| How a case runs end-to-end (Collect → Correlate → Assess) | `PIPELINE.md`, `harness/README.md` |
+| The collector engine (pivot artifacts, WHOIS, JARM, impersonation) | `WebPivot/tools/pivot_extract.py` + the `WebPivot/tools/wp_*.py` modules |
+| The analyst / judgment layer (correlation, attribution, confidence) | `IntelAnalysis/` |
+| The knowledge base (entities, clusters, noise filters, reference) | `tools/kb/` |
+| Case state / resumable convergence loop | `tools/case_state.py`, `tools/intel.py` |
+| Register a tool or skill for the MCP + SDK (RULE 2) | `harness/tools.py` (auto-discovered by `harness/mcp_server.py`) |
+| The two harness front-ends (SDK vs Claude-Code-native) | `harness/orchestrator.py`, `IntelHarness/` |
+| Agent roles & phase prompts | `harness/agents.py`, `harness/prompts/` |
+| Alternate model backend (DeepSeek/Kimi/local) | `harness/openai_backend.py` |
+| The regression gate before changing `pivot_extract` | `tools/eval/run_eval.py` |
+| Report / diagram rendering | `IntelReport/`, `IntelGraph/`, `harness/render.py` |
+| The MCP surface exposed to Claude Code | `.mcp.json` (server `intel`), `harness/mcp_server.py` |
+| Anthropic-model cost ledger vs third-party API credits | `cases/<case>/run_cost.jsonl` vs `MEMORY/api_usage.jsonl` (see **Cost visibility**) |
