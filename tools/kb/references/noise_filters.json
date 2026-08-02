@@ -1,0 +1,139 @@
+{
+  "_comment": "Tunable shared-infrastructure denylists for tools/kb/noise_filters.py. GENERIC public knowledge only (managed-DNS providers, parking services, registrar/privacy-proxy contacts, CDN/SaaS apexes) — NEVER case data, per repo CLAUDE.md RULE 1. This file is DATA: analysts edit it directly, no code change and no redeploy. noise_filters.py holds only the matching LOGIC. Entries are a starter set, not exhaustive — extend as you meet new providers.",
+
+  "managed_dns_suffixes": {
+    "_comment": "Managed/registrar DNS whose nameservers are shared by millions of unrelated domains. A `uses_nameserver` edge to one of these must NOT create a same-operator cluster. Dotted entries match as exact-or-parent domain; bare labels (e.g. 'awsdns') match only as a whole dot/dash-delimited label, so an operator's own NS that merely CONTAINS a provider string is not wrongly dropped.",
+    "values": [
+      "ns.cloudflare.com",
+      "cloudflare.com",
+      "dnsowl.com",
+      "domaincontrol.com",
+      "registrar-servers.com",
+      "namecheaphosting.com",
+      "dns-parking.com",
+      "secureserver.net",
+      "awsdns",
+      "azure-dns.com",
+      "azure-dns.net",
+      "azure-dns.org",
+      "azure-dns.info",
+      "googledomains.com",
+      "google.com",
+      "dnsmadeeasy.com",
+      "nsone.net",
+      "dns.he.net",
+      "name-services.com",
+      "worldnic.com",
+      "sedoparking.com",
+      "sedo.com",
+      "parkingcrew.net",
+      "bodis.com",
+      "above.com",
+      "fabulous.com",
+      "dan.com",
+      "afternic.com",
+      "uniregistrymarket.link",
+      "hichina.com",
+      "alidns.com",
+      "cloudns.net"
+    ]
+  },
+
+  "parking_favicon_mmh3": {
+    "_comment": "Favicon mmh3 (Shodan/FOFA) hashes of parking / for-sale / marketplace pages. Sharing one clusters PARKED domains, not an operator. 0 = empty/missing favicon.",
+    "values": [643372374, 0]
+  },
+
+  "parking_host_substrings": {
+    "_comment": "Host substrings marking parking / sinkhole / marketplace infra (not operator infra). Matched as a plain substring — keep entries distinctive enough not to hit real domains.",
+    "values": [
+      "sedoparking.com", "sedo.com", "parkingcrew", "bodis.com", "above.com",
+      "fabulous.com", "dan.com", "afternic", "hugedomains.com", "namesilo.com",
+      "uniregistry", "voodoo.com", "parklogic", "skenzo", "domainsponsor",
+      "img.sedoparking.com"
+    ]
+  },
+
+  "role_email_localparts": {
+    "_comment": "Email local-parts that mark a registrar/registry ROLE mailbox rather than a registrant. Matched exactly, plus any local-part starting with 'abuse'.",
+    "values": [
+      "abuse", "registry-abuse", "domainabuse", "abuse-contact", "abusecomplaints",
+      "hostmaster", "postmaster", "compliance", "legal", "noc", "dns"
+    ]
+  },
+
+  "registrar_email_domains": {
+    "_comment": "Email domains belonging to registrars and privacy proxies. An address here is the provider's contact, shared by every domain they front — never the registrant.",
+    "values": [
+      "cloudflare.com", "tucows.com", "namecheap.com", "godaddy.com", "enom.com",
+      "namesilo.com", "publicdomainregistry.com", "name.com", "gandi.net", "ovh.net",
+      "key-systems.net", "1api.net", "registrar-servers.com", "google.com", "markmonitor.com",
+      "csctld.com", "cscglobal.com", "porkbun.com", "dynadot.com", "hostinger.com",
+      "whoisguard.com", "withheldforprivacy.com", "privacyguardian.org",
+      "contactprivacy.com", "domainsbyproxy.com", "identity-protect.org", "privacyprotect.org"
+    ]
+  },
+
+  "privacy_email_tokens": {
+    "_comment": "Substrings marking a WHOIS privacy-proxy email domain, whatever the provider — catches the long tail without enumerating every proxy. Also reused to detect a privacy-proxy registrant ORG string. Keep conservative so real consumer mail domains pass.",
+    "values": [
+      "privacy", "protect", "whois", "redact", "withheld", "proxy", "gdpr", "anonym",
+      "yinsibaohu", "data-protect", "domain-contact", "dnstination", "identity-protect",
+      "whoisguard", "contactprivacy", "domainsbyproxy", "secureserver"
+    ]
+  },
+
+  "privacy_proxy_phones": {
+    "_comment": "Registrant phones published by a privacy/proxy provider across EVERY domain it fronts, so a `registered_by -> phone` edge would merge thousands of unrelated domains. Digits only, no '+' or separators — the matcher normalises input. ONLY add numbers you have actually OBSERVED published as a named privacy org's contact block, never guesses. Note the general rule in noise_filters.is_noise_phone covers unlisted providers when you pass the record's registrant email/org.",
+    "values": [
+      "3544212434",
+      "18022274003"
+    ]
+  },
+
+  "placeholder_phones": {
+    "_comment": "Filler typed to satisfy a required WHOIS field. Exact matches only — a general 'sequential digits' test would eat real numbers.",
+    "values": [
+      "0000000000", "00000000000", "1111111111", "5555555555", "15555555555",
+      "1234567890", "0123456789", "9999999999", "1234567", "12345678901"
+    ]
+  },
+
+  "phone_length": {
+    "_comment": "A phone shorter than min or longer than max digits cannot be a real MSISDN (E.164 caps at 15).",
+    "min_digits": 7,
+    "max_digits": 15
+  },
+
+  "shared_infra_apexes": {
+    "_comment": "Registrable apexes that are shared infrastructure — CDN, analytics, social, SaaS, registrar, parking, marketplace. Matched exact-or-parent, so `foo.cloudfront.net` is caught by `cloudfront.net`. Never an operator lead.",
+    "values": [
+      "google.com", "googleapis.com", "gstatic.com", "gstatic.cn", "googletagmanager.com",
+      "google-analytics.com", "googleusercontent.com", "goog.gl", "storage.googleapis.com",
+      "doubleclick.net", "recaptcha.net", "bing.com", "youtube.com",
+      "cloudflare.com", "cloudflare.net", "cloudflareinsights.com", "cdnjs.com", "jsdelivr.net",
+      "unpkg.com", "jquery.com", "bootstrapcdn.com", "fontawesome.com", "amazonaws.com",
+      "cloudfront.net", "azureedge.net", "akamai.net", "akamaihd.net", "akamaized.net",
+      "fastly.net", "fbcdn.net", "gravatar.com",
+      "facebook.com", "fb.com", "instagram.com", "twitter.com", "x.com", "t.co", "linktr.ee",
+      "bit.ly", "gg.gg", "gmail.com",
+      "microsoft.com", "office.com", "live.com", "windows.net", "sentry.io", "hotjar.com",
+      "wixpress.com", "wix.com", "squarespace.com", "shopify.com", "wp.com", "wordpress.org",
+      "godaddy.com", "sedo.com", "sedoparking.com", "dan.com", "afternic.com", "hugedomains.com",
+      "namecheap.com", "namesilo.com", "porkbun.com", "dynadot.com", "bodis.com",
+      "parkingcrew.net", "above.com", "fabulous.com", "uniregistry.com", "buydomains.com",
+      "domainmarket.com", "undeveloped.com", "namebright.com", "uk.com"
+    ]
+  },
+
+  "saas_tenant_suffixes": {
+    "_comment": "Platforms where the APEX is infrastructure but `<tenant>.<suffix>` is a REAL, separately-owned site — scam operators host on these constantly. Matched EXACTLY (bare apex = noise, tenant = keep), so suffix-matching never silently drops a live target.",
+    "values": [
+      "pages.dev", "workers.dev", "r2.dev", "vercel.app", "netlify.app", "github.io", "github.dev",
+      "web.app", "firebaseapp.com", "appspot.com", "herokuapp.com", "onrender.com", "glitch.me",
+      "repl.co", "replit.dev", "surge.sh", "azurewebsites.net", "pythonanywhere.com",
+      "myshopify.com", "wixsite.com", "weebly.com", "blogspot.com", "webflow.io", "carrd.co",
+      "notion.site", "bubbleapps.io", "framer.website", "translate.goog"
+    ]
+  }
+}

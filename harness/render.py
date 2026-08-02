@@ -9,6 +9,13 @@ import os
 
 from schemas import Assessment
 
+# Resolve `tools/` from THIS FILE, never from a caller-supplied root: `save_markdown(root=…)` is
+# the case-store root, which is not always the repo (tests and ad-hoc runs pass a temp dir).
+import sys as _sys
+_sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 "tools"))
+from case_state import may_overwrite_assessment, HARNESS_RENDER_MD  # noqa: E402
+
 try:
     from rich import box
     from rich.console import Console
@@ -106,8 +113,15 @@ def render_markdown(a: Assessment, table_md: str = "") -> str:
 
 
 def save_markdown(a: Assessment, case: str, root: str, table_md: str = "") -> str:
+    """Write the SDK front-end's assessment, WITHOUT clobbering someone else's.
+
+    `cases/<case>/assessment.md` is also written by the analyst and by the intel.py loop, so this
+    only overwrites a file it recognises as its OWN previous render; anything else keeps the path
+    and this render lands in `loop_assessment.md`. Returns the path actually written."""
     path = os.path.join(root, "cases", case, "assessment.md")
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    if not may_overwrite_assessment(path, HARNESS_RENDER_MD):
+        path = os.path.join(root, "cases", case, "loop_assessment.md")
     with open(path, "w", encoding="utf-8") as f:
         f.write(render_markdown(a, table_md))
     return path

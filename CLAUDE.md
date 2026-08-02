@@ -38,6 +38,46 @@ which auto-discovers every `@tool`). Do NOT leave a new capability reachable onl
 - **Smoke-check registration:** `WebPivot/.venv/bin/python3 harness/mcp_server.py` then send a
   `tools/list` JSON-RPC — the new tool must be listed. In Claude Code, confirm with `/mcp`.
 
+## RULE 3 — Separate DATA from LOGIC: reference lists live in JSON, never in code
+
+An analyst must be able to tune a denylist, threshold or lookup table **without editing Python
+and without a redeploy**. Code holds the *matching logic*; the values it matches against are data.
+
+- **Any list, map or threshold an analyst may reasonably want to extend goes in a JSON file** —
+  denylists/allowlists (managed DNS, parking hosts, privacy-proxy contacts, noise phones), scoring
+  thresholds, ASN/CIDR tables, brand/keyword sets, provider registries. If you catch yourself
+  appending a literal to a Python tuple/set/dict, it belongs in JSON instead.
+- **Where it lives:** `<module>/references/<name>.json` — e.g. `WebPivot/references/cdn_ranges.json`,
+  `IntelAnalysis/references/risk_indicators.json`, `tools/kb/references/noise_filters.json`.
+- **Shape:** a top-level `_comment` explaining the file, then one object per group with its own
+  `_comment` and a `values` array (or named scalars for thresholds). The `_comment` keys are the
+  analyst's documentation — write them for a human who has never read the code. Keys beginning
+  with `_` are ignored by loaders.
+- **Loading:** use the shared loader — `wp_refs.py` (WebPivot), `kb_refs.py` (`tools/kb`),
+  `bp_refs.py` (BinaryPivot), `ig_refs.py` (IntelGraph):
+  `load_ref(ref_path(__file__, "<name>.json"), _FALLBACK)`. It
+  **falls back to your minimal embedded default on missing/malformed/incomplete input and warns
+  on stderr**. Never fail open silently — a filter that quietly returns `False` everywhere
+  manufactures false clusters, which is worse than crashing. Keep the existing module-level
+  constant names so importers don't break. The four loaders are **byte-identical copies on
+  purpose** (each skill is imported standalone, so it can't depend on a repo-root package) with
+  **distinct module names on purpose** (`tools/kb` and `WebPivot/tools` both land on `sys.path`
+  in the same process, so a shared `refs.py` would collide); `tests/test_references.py` asserts
+  they stay in sync.
+- **One group, one owner.** If two modules match the same values, they read the same JSON group —
+  never re-paste the list. That duplication is what let the registrant-noise denylists drift
+  across six modules before this layer existed.
+- **Normalise on load**, so analysts can enter values in any reasonable format (a phone as
+  `+354.421 2434` or `3544212434`; a host with or without a trailing dot).
+- **Test the data file itself** in `tests/test_references.py`: it asserts every `references/*.json`
+  parses and is documented (`_comment` at the top and per group), that each consumer's loaded
+  values are the JSON's and **not** the fallback's, and that a broken file degrades loudly. Add
+  your new file's consumers to its `consumers` list — a module silently running on its stub still
+  imports and still produces output, it just stops filtering. It runs in the eval gate too.
+- **RULE 1 still applies.** These JSON files are tracked and public-facing: generic provider/
+  infrastructure constants only, never case data. Case-specific tuning belongs in the git-ignored
+  `knowledge/` store.
+
 ## Cost visibility
 
 - **Anthropic model cost** (the agent's reasoning): the **SDK harness** captures the SDK's own
@@ -93,7 +133,11 @@ git-ignored stores.
 | The analyst / judgment layer (correlation, attribution, confidence) | `IntelAnalysis/` |
 | The knowledge base (entities, clusters, noise filters, reference) | `tools/kb/` |
 | Case state / resumable convergence loop | `tools/case_state.py`, `tools/intel.py` |
+| Where a case artifact belongs — `cases/` vs `knowledge/` | `README.md` § *`cases/` vs `knowledge/`*. Short version: **every per-case deliverable lives in `cases/<case>/`**; `knowledge/` is the cross-case KB only. `assessment.md` is the analyst's and is never overwritten; the loop's render goes to `loop_assessment.md` |
 | Register a tool or skill for the MCP + SDK (RULE 2) | `harness/tools.py` (auto-discovered by `harness/mcp_server.py`) |
+| Tunable reference DATA — denylists, thresholds, tables (RULE 3) | `<module>/references/*.json` — `tools/kb/` (`noise_filters`, `registrant_noise`), `WebPivot/` (`registrant_noise`, `third_party_noise`, `generic_labels`, `impersonation`, `mail_providers`, `pivot_tables`, `asn_registry`, `cdn_ranges`), `BinaryPivot/binary_indicators.json`, `IntelAnalysis/risk_indicators.json`, `IntelGraph/references/evidence_sources.json` (evidence permalinks, source grading, staleness) |
+| The reference-data loader + its gate | `wp_refs.py` / `kb_refs.py` / `bp_refs.py` / `ig_refs.py` (identical), `tests/test_references.py` |
+| The TEMPORAL layer — lifecycle timeline, hosting windows, expiry cohorts, evidence ledger | `IntelGraph/scripts/case_timeline.py` (tool) + `IntelAnalysis/SKILL.md` §1.5 & `Workflows/Timeline.md` (tradecraft) |
 | The two harness front-ends (SDK vs Claude-Code-native) | `harness/orchestrator.py`, `IntelHarness/` |
 | Agent roles & phase prompts | `harness/agents.py`, `harness/prompts/` |
 | Alternate model backend (DeepSeek/Kimi/local) | `harness/openai_backend.py` |

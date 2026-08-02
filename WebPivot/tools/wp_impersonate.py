@@ -31,6 +31,7 @@ import socket
 import concurrent.futures
 
 from wp_common import *  # noqa  — strip_www, uniq, _registrable, _MULTI_TLDS, DEFAULT_UA, _secret
+from wp_refs import ref_path, load_ref  # noqa — reference DATA lives in references/*.json
 try:
     import api_usage                      # licensed-API credit ledger
 except Exception:  # noqa: BLE001
@@ -53,26 +54,25 @@ def split_registrable(domain: str):
 
 
 # --- permutation engine -----------------------------------------------------
+# The whole search space this hunt sweeps is DATA, in references/impersonation.json — tune it
+# per campaign (add the TLDs a ring actually uses, or the affixes it bolts onto the brand) and
+# the next hunt covers them without touching this module. The fallback below is deliberately
+# tiny: if the file is unreadable the hunt still runs, visibly narrower, with a stderr warning.
+_IMP_FALLBACK = {
+    "tld_sweep": ["com", "net", "org", "io", "co", "xyz", "top", "vip", "online", "shop"],
+    "combo_affixes": ["login", "secure", "account", "verify", "official", "app", "wallet"],
+    "qwerty_adjacency": {"q": "wa", "w": "qeas", "e": "wrsd", "r": "etdf", "t": "ryfg"},
+    "homoglyphs": {"o": ["0"], "0": ["o"], "l": ["1"], "i": ["1"], "e": ["3"], "a": ["4"]},
+    "homoglyph_sequences": [["m", "rn"], ["rn", "m"], ["w", "vv"]],
+}
+_IMP_REF = load_ref(ref_path(__file__, "impersonation.json"), _IMP_FALLBACK)
+
 # QWERTY physical adjacency — bounds insertion/replacement to plausible fat-finger typos
 # instead of the whole alphabet (keeps the candidate count sane).
-_QWERTY = {
-    "q": "wa", "w": "qeas", "e": "wrsd", "r": "etdf", "t": "ryfg", "y": "tugh",
-    "u": "yihj", "i": "uojk", "o": "ipkl", "p": "ol",
-    "a": "qwsz", "s": "awedxz", "d": "serfcx", "f": "drtgvc", "g": "ftyhbv",
-    "h": "gyujnb", "j": "huikmn", "k": "jiolm", "l": "kop",
-    "z": "asx", "x": "zsdc", "c": "xdfv", "v": "cfgb", "b": "vghn",
-    "n": "bhjm", "m": "njk",
-    "0": "9o", "1": "2q", "2": "13", "3": "24", "4": "35", "5": "46",
-    "6": "57", "7": "68", "8": "79", "9": "80",
-}
+_QWERTY = dict(_IMP_REF["qwerty_adjacency"])
 # ASCII visual confusables (single-char); multi-char confusables handled separately.
-_HOMOGLYPH = {
-    "o": ["0"], "0": ["o"], "l": ["1", "i"], "1": ["l", "i"], "i": ["1", "l"],
-    "e": ["3"], "a": ["4"], "s": ["5"], "b": ["8"], "g": ["9"], "t": ["7"],
-    "z": ["2"], "q": ["9"], "5": ["s"], "3": ["e"],
-}
-_HOMOGLYPH_MULTI = [("m", "rn"), ("rn", "m"), ("w", "vv"), ("vv", "w"),
-                    ("d", "cl"), ("cl", "d"), ("nn", "m")]
+_HOMOGLYPH = {k: list(v) for k, v in _IMP_REF["homoglyphs"].items()}
+_HOMOGLYPH_MULTI = [tuple(p) for p in _IMP_REF["homoglyph_sequences"]]
 _VOWELS = "aeiou"
 
 
@@ -122,19 +122,11 @@ def _typo_variants(label: str):
 
 
 # Curated scam-heavy + common TLD list for the sweep (brand label swapped across these).
-TLD_SWEEP = [
-    "com", "net", "org", "io", "co", "info", "biz", "me", "tv", "cc", "xyz", "top",
-    "vip", "online", "site", "website", "app", "pro", "club", "shop", "store", "live",
-    "fun", "icu", "cyou", "sbs", "autos", "cfd", "bond", "asia", "us", "co.uk",
-    "vn", "com.vn", "id", "co.id", "ph", "in", "br", "com.br", "ng", "my", "com.my",
-    "th", "co.th", "cn", "com.cn", "ru", "de", "app",
-]
+# DATA: references/impersonation.json -> tld_sweep
+TLD_SWEEP = list(_IMP_REF["tld_sweep"])
 # Combosquat affixes an operator bolts onto a brand (login pages, wallets, regional splits).
-COMBO_AFFIXES = [
-    "login", "secure", "account", "verify", "support", "help", "official", "app",
-    "web", "wallet", "pay", "online", "vn", "my", "get", "portal", "auth", "id",
-    "user", "vip", "global",
-]
+# DATA: references/impersonation.json -> combo_affixes
+COMBO_AFFIXES = list(_IMP_REF["combo_affixes"])
 
 
 def generate_variants(domain: str, tlds=None, affixes=None, max_variants: int = 600):

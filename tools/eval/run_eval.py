@@ -230,7 +230,11 @@ def main():
         ("test_whois_parallel", "whois_summary parallelizes current+history (speed)"),
         ("test_frontier_guards", "frontier co-tenancy guards — multi-tenant cert / shared IP / bulk registrant"),
         ("test_assets_layer", "asset layer — JS bundle select / sourcemap dev-identity / API+build-env / well-known"),
+        ("test_references", "reference DATA layer — files documented, consumers not on fallback, no drift"),
+        ("test_timeline", "temporal layer — format parsing / overlap vs shared value / expiry cohort / online citations"),
     ]
+    # tests/ modules follow the same check() contract; make them importable here too.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HERE)), "tests"))
     for modname, desc in unit_mods:
         try:
             mod = __import__(modname)

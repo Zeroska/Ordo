@@ -34,6 +34,10 @@ import concurrent.futures
 import urllib.request
 import urllib.error
 from urllib.parse import urlencode
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # importable from anywhere
+from wp_refs import ref_path, load_ref    # noqa: E402 — reference DATA in references/*.json
+
 try:
     import api_usage                      # licensed-API credit ledger
 except Exception:
@@ -79,14 +83,19 @@ def _key():
 # Privacy-proxy / registrar-role markers — these are NOT the real owner and must
 # never become a same-operator hub or trigger a reverse-WHOIS (which would return
 # thousands of unrelated domains and waste credits).
-_PRIVACY_MARKERS = (
-    "privacy", "redacted", "whoisguard", "data protected", "withheld", "not disclosed",
-    "domains by proxy", "domainsbyproxy", "registration private", "private by design",
-    "identity protect", "contact privacy", "perfect privacy", "gdpr masked", "statutory masking")
-_ROLE_PREFIXES = ("abuse@", "hostmaster@", "noc@", "registrar-abuse@", "postmaster@")
-_PROXY_DOMAINS = ("porkbun.com", "godaddy.com", "namecheap.com", "domainsbyproxy.com",
-                  "withheldforprivacy.com", "privacyprotect.org", "1and1.com",
-                  "contactprivacy.com", "whoisprivacyprotect.com", "privacyguardian.org")
+# DATA: references/registrant_noise.json. Add a proxy provider THERE — it takes effect for
+# every WebPivot consumer at once, and costs nothing to get wrong in the safe direction.
+_WHOIS_FALLBACK = {
+    "privacy_markers": ("privacy", "redacted", "whoisguard", "data protected", "withheld",
+                        "not disclosed", "domains by proxy", "statutory masking"),
+    "role_email_prefixes": ("abuse@", "hostmaster@", "noc@", "postmaster@"),
+    "proxy_email_domains": ("godaddy.com", "namecheap.com", "domainsbyproxy.com",
+                            "withheldforprivacy.com", "privacyprotect.org"),
+}
+_WHOIS_REF = load_ref(ref_path(__file__, "registrant_noise.json"), _WHOIS_FALLBACK)
+_PRIVACY_MARKERS = tuple(_WHOIS_REF["privacy_markers"])
+_ROLE_PREFIXES = tuple(_WHOIS_REF["role_email_prefixes"])
+_PROXY_DOMAINS = tuple(_WHOIS_REF["proxy_email_domains"])
 
 
 def is_privacy(value):

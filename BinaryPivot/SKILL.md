@@ -114,6 +114,14 @@ a URL) so the artifact anchors onto the site that served it.
 - Host extraction is **noise-filtered**: reverse-DNS package names (`com.x.y`), class names,
   permission constants, and resource filenames (`config.json`, `libapp.so`) are rejected; hosts
   pulled from a real `http(s)://` URL are trusted.
+- **All of those tables are data, in `references/binary_indicators.json` — extend it, not the
+  Python.** Protectors and installers ship new signatures far faster than this tool changes, so
+  when a sample comes back `protection: none` but is obviously wrapped, add the `.so` name /
+  section name / byte signature to the right group and rerun. Groups: `fake_tlds` and
+  `package_prefixes` (what is a filename, not a host), `pe_section_packers`,
+  `installer_signatures`, `android_protectors`. Each carries a `_comment` with its match
+  semantics (exact vs regex, and which order first-hit-wins applies in).
+  If the tool prints a `[refs] WARNING` it is running on a stub table — fix the file.
 - Static only — dead-code strings and library boilerplate can appear; corroborate a backend host by
   actually resolving/pivoting it before asserting it's live operator infra.
 - **Packer / obfuscation triage** is entropy + signature based (`protection` block in the JSON;

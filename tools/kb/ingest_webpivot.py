@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import kb_refs  # noqa: E402 — reference DATA lives in references/*.json (RULE 3)
 from knowledge_base import KB  # noqa: E402
 from noise_filters import (is_managed_dns, is_parking_favicon, is_noise_email,  # noqa: E402
                            is_noise_indicator)
@@ -78,14 +79,29 @@ def _epoch_day(v):
 COLLECTOR = "webpivot/pivot_extract"
 
 _IP_HOST_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}(?:[:_]\d+)?$")
+
+# ---------------------------------------------------------------- reference data (RULE 3)
+# Every registrant-noise denylist below is DATA in references/registrant_noise.json — the SAME
+# file clean_kb.py, hypothesize.py and ingest_report.py read. Before it existed these lists were
+# pasted into each of those modules and drifted, so a proxy one module knew about kept slipping
+# through another. Add a value there; never re-paste a list into a module.
+_RN_FALLBACK = {
+    "org_suffixes": (" ltd", " llc", " inc", " corp", " gmbh", " limited", " group", " company"),
+    "name_junk": ("registrant state", "registrant country", "reactivation period",
+                  "pending delete", "redemption period"),
+    "role_name_placeholders": ("domain admin", "domain administrator", "registrant", "admin",
+                               "administrator", "hostmaster", "not available", "unknown"),
+    "privacy_markers": ("privacy", "redacted", "whoisguard", "data protected", "withheld",
+                        "not disclosed", "domains by proxy"),
+    "proxy_email_domains": ("godaddy.com", "namecheap.com", "domainsbyproxy.com",
+                            "withheldforprivacy.com", "privacyprotect.org"),
+}
+_RN = kb_refs.load_ref(kb_refs.ref_path(__file__, "registrant_noise.json"), _RN_FALLBACK)
+
 # corporate suffixes → the registrant is an ORG, not a natural person (route to type 'org')
-_ORG_SUFFIX = (" ltd", " ltd.", " llc", " inc", " inc.", " co.", " corp", " gmbh", " pty",
-               " limited", " group", " s.r.o", " pte", " b.v", " co ltd", " company",
-               " technologies", " technology", " systems", " media", " holdings", " sarl")
+_ORG_SUFFIX = tuple(_RN["org_suffixes"])
 # WHOIS field-label / status junk mis-captured as a registrant name
-_NAME_JUNK = ("registrant state", "registrant province", "registrant country", "registrant city",
-              "registrant_", "state/province", "reactivation period", "pending delete",
-              "redemption period", "pending renewal", "on behalf of", "domain buyer")
+_NAME_JUNK = tuple(_RN["name_junk"])
 
 
 def _is_ip_host(host):
@@ -128,11 +144,9 @@ REL = {
     "facebook_pixel":       ("uses_pixel",     "high"),
     "yandex_metrica":       ("uses_analytics", "high"),
 }
-_PRIV = ("privacy", "redacted", "whoisguard", "data protected", "withheld",
-         "not disclosed", "domains by proxy", "domainsbyproxy", "registration private",
-         "private by design", "identity protect", "contact privacy", "perfect privacy")
-_PROXY_DOM = ("porkbun.com", "godaddy.com", "namecheap.com", "domainsbyproxy.com",
-              "withheldforprivacy.com", "privacyprotect.org", "contactprivacy.com")
+# DATA: references/registrant_noise.json -> privacy_markers / proxy_email_domains
+_PRIV = tuple(_RN["privacy_markers"])
+_PROXY_DOM = tuple(_RN["proxy_email_domains"])
 
 # Generic registrant ROLE placeholders. Distinct from _PRIV, which matches privacy-SIGNALLING
 # words ("privacy", "redacted", "withheld"). These strings contain no such word, so _PRIV misses
@@ -144,15 +158,8 @@ _PROXY_DOM = ("porkbun.com", "godaddy.com", "namecheap.com", "domainsbyproxy.com
 # EXACTLY, never as a substring — a substring rule would eat legitimate registrant orgs such as
 # "Admin Solutions GmbH" or "Domain Manager Services Ltd". Exactness is the safety property here:
 # over-filtering silently destroys real attribution, which is the costlier direction.
-_ROLE_NAME_PLACEHOLDERS = frozenset({
-    "domain admin", "domain admins", "domain administrator", "domain administrators",
-    "domainadmin", "domain manager", "domain name administrator", "domain owner",
-    "domain registrant", "registrant", "dns admin", "dns administrator",
-    "admin", "administrator", "hostmaster", "postmaster", "webmaster",
-    "statutory masking enabled", "non public data", "nonpublic data",
-    "not available", "not applicable", "na", "n a", "none", "null", "unknown",
-    "no name", "anonymous", "customer", "client", "owner", "registry",
-})
+# DATA: references/registrant_noise.json -> role_name_placeholders
+_ROLE_NAME_PLACEHOLDERS = frozenset(_RN["role_name_placeholders"])
 
 
 def _norm_name(v):

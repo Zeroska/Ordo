@@ -33,6 +33,7 @@ from wp_net import *  # noqa
 from wp_recon import *  # noqa
 from wp_extract import *  # noqa
 from wp_pivots import *  # noqa
+from wp_refs import ref_path, load_ref  # noqa — reference DATA lives in references/*.json
 import wp_extract  # for the QR_DECODE_IMAGES toggle main() sets
 import wp_assets   # asset layer: JS bundles, source maps, well-known files, API endpoints
 try:
@@ -469,13 +470,13 @@ def classify_ip(ip: str):
 
 _DISTINCTIVE_RE = re.compile(r"\d{6,}|[A-Za-z0-9]{8,}")
 
-_GENERIC_SEGMENTS = {
-    "jquery", "bootstrap", "angular", "react", "vue", "lodash", "moment",
-    "analytics", "gtag", "gtm", "fbevents", "fbq", "hotjar", "clarity",
-    "runtime", "polyfills", "vendor", "vendors", "common", "commons", "chunk",
-    "main", "index", "app", "style", "styles", "script", "scripts", "bundle",
-    "widget", "install", "min", "esm", "umd", "core", "util", "utils", "js", "css",
-}
+# DATA: references/generic_labels.json -> resource_basename_segments. Loaded independently of
+# wp_pivots (which reads the same file for subdomain_labels) so neither module depends on the
+# other's import order.
+_SEG_FALLBACK = {"resource_basename_segments": ["jquery", "bootstrap", "vendor", "main", "index",
+                                                "app", "bundle", "min", "js", "css"]}
+_GENERIC_SEGMENTS = frozenset(
+    load_ref(ref_path(__file__, "generic_labels.json"), _SEG_FALLBACK)["resource_basename_segments"])
 
 def _is_distinctive_basename(base: str) -> bool:
     """A resource basename worth a urlscan filename: reverse — one carrying a build

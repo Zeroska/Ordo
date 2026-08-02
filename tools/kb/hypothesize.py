@@ -27,6 +27,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import kb_refs  # noqa: E402 — reference DATA lives in references/*.json (RULE 3)
 from knowledge_base import KB  # noqa: E402
 
 # artifact tier by relationship (mirrors IntelAnalysis §1 triage ladder)
@@ -41,22 +42,24 @@ CORROBORATING = {"uses_contact", "same_template", "same_inline_css", "same_comme
                  "uses_theme", "uses_favicon", "uses_tracker", "shows_email"}
 NOISE = {"uses_nameserver"}
 
+# ---------------------------------------------------------------- reference data (RULE 3)
 # privacy-proxy / registrar-role / protected-whois emails — shared by thousands of UNRELATED
-# domains, so they must never drive clustering (they'd chain the whole KB into one blob).
-# Mirrors WebPivot/tools/whois_enrich.py's privacy list + the >N-domain reseller rule.
-_PROXY_EMAIL = ("privacy", "protect", "proxy", "whoisguard", "redacted", "data-protected",
-                "domain-contact", "domainabuse", "abuse@", "yinsibaohu", "gname.com",
-                "withheld", "contactprivacy", "not.disclosed", "namecheap", "tucows",
-                "domainsbyproxy", "registrar", "noreply", "no-reply")
-
-
-# placeholder registrants (never a real owner) + empty-hash parser artifacts — junk, never link.
-_PLACEHOLDER_PERSON = ("domain admin", "c/o id#", "redacted", "privacy", "whois", "not disclosed",
-                       "registration private", "domain expired", "statutory masking",
-                       "reactivation period", "pending delete", "redemption period", "pending renewal")
-_JUNK_HASH = ("da39a3ee5e6b4b0d",              # sha1("")
-              "e3b0c44298fc1c14",              # sha256("") prefix
-              "d41d8cd98f00b204", "g-recaptcha")   # md5("") ; mis-parsed recaptcha as GA id
+# domains, so they must never drive clustering (they'd chain the whole KB into one blob) —
+# plus placeholder registrants and empty-hash parser artifacts. All DATA, in
+# references/registrant_noise.json, shared with ingest_webpivot.py and ingest_report.py.
+_H_FALLBACK = {
+    "proxy_email_tokens": ("privacy", "protect", "proxy", "whoisguard", "redacted", "withheld",
+                           "abuse@", "registrar", "noreply", "no-reply"),
+    "placeholder_person_markers": ("domain admin", "redacted", "privacy", "whois",
+                                   "not disclosed", "reactivation period", "pending delete"),
+    "junk_hash_prefixes": ("da39a3ee5e6b4b0d", "e3b0c44298fc1c14", "d41d8cd98f00b204",
+                           "g-recaptcha"),
+}
+_H_REF = kb_refs.load_ref(kb_refs.ref_path(__file__, "registrant_noise.json"), _H_FALLBACK)
+_PROXY_EMAIL = tuple(_H_REF["proxy_email_tokens"])
+_PLACEHOLDER_PERSON = tuple(_H_REF["placeholder_person_markers"])
+# sha1("") / sha256("") prefix / md5("") ; plus recaptcha mis-parsed as a GA id
+_JUNK_HASH = tuple(_H_REF["junk_hash_prefixes"])
 
 
 def _is_proxy(indicator_type, indicator):

@@ -29,32 +29,25 @@ import urllib.request
 import urllib.error
 from wp_common import *  # noqa
 from wp_extract import *  # noqa
+from wp_refs import ref_path, load_ref  # noqa — reference DATA lives in references/*.json
 
-SAAS_PIVOTS = {
-    "gohighlevel_location": ("high", "GoHighLevel sub-account (location) ID. Same GHL tenant = same operator; find its whole portfolio."),
-    "google_sheet": ("high", "Backend Google Sheet ID embedded in the page. Same sheet = same operator — and it may be publicly readable (check for exposed leads/PII)."),
-    "google_doc": ("high", "Backend Google Doc ID embedded in the page. Same doc = same operator — and it may be publicly readable."),
-    "google_slides": ("high", "Backend Google Slides ID embedded in the page. Same deck = same operator."),
-    "google_form": ("high", "Google Form the page collects leads with — operator-controlled. Same form = same operator (responses may be readable)."),
-    "google_drive": ("high", "Google Drive folder/file ID referenced by the page — operator asset store. Same ID = same operator."),
-    "make_webhook": ("high", "Make.com automation webhook — operator-controlled endpoint. Same token = same operator."),
-    "integromat_webhook": ("high", "Integromat/Make automation webhook — operator-controlled. Same token = same operator."),
-    "zapier_webhook": ("high", "Zapier catch hook — operator-controlled automation endpoint. Same token = same operator."),
-    "apps_script": ("high", "Google Apps Script web-app the form posts to — operator-controlled. Same deployment = same operator."),
-    "trustedform": (None, "TrustedForm (TCPA lead certification) — signals a lead-generation funnel; not an operator pivot."),
+# ---------------------------------------------------------------- reference data (RULE 3)
+# How much a pivot artifact is WORTH (SaaS-token confidence) and which URL params carry
+# affiliate attribution are analyst judgments that change with tradecraft, so they live in
+# references/pivot_tables.json. Tune that file — not this module.
+_PIVOT_FALLBACK = {
+    "saas_pivots": {"google_sheet": ["high", "Backend Google Sheet ID — same sheet = same operator."]},
+    "affiliate_params": ["affid", "aff", "ref", "clickid", "btag"],
 }
+_PIVOT_REF = load_ref(ref_path(__file__, "pivot_tables.json"), _PIVOT_FALLBACK)
 
+# artifact kind -> (confidence|None, analyst note). None = signals a funnel type, never clusters.
+SAAS_PIVOTS = {k: (v[0], v[1]) for k, v in _PIVOT_REF["saas_pivots"].items()}
 
 # Query params that carry affiliate / referral / campaign attribution. A redirector's
 # destination usually stamps the promoter's code here (affid=…, 8c=…, ref=…) — that code
 # is the real pivot: source-search it to find where the affiliate promotes the link.
-
-AFFILIATE_PARAMS = {
-    "affid", "aff", "aff_id", "affiliate", "affiliateid", "ref", "refid", "ref_id",
-    "referral", "referralcode", "partner", "partnerid", "pid", "subid", "sub_id",
-    "clickid", "click_id", "btag", "a_aid", "a_bid", "promo", "promocode", "invite",
-    "invitecode", "agent", "agentid", "ib", "8c",
-}
+AFFILIATE_PARAMS = frozenset(_PIVOT_REF["affiliate_params"])
 
 def _maybe_b64(v: str):
     """If v is base64 that decodes to a short printable ASCII string, return it, else None."""
@@ -180,18 +173,15 @@ def add_pivot(pivots: list, kind, value, confidence, queries, note="", live=None
 
 # Subdomain labels that are generic infrastructure/service names — a shared one clusters nothing,
 # so they are NOT treated as a distinctive same-operator signal.
-_GENERIC_SUBLABELS = {
-    "www", "www2", "www3", "web", "m", "mobile", "wap", "amp", "api", "api2", "app", "apps",
-    "mail", "email", "webmail", "smtp", "imap", "pop", "pop3", "mx", "mx1", "mx2", "autodiscover",
-    "autoconfig", "ns", "ns1", "ns2", "ns3", "ns4", "dns", "cpanel", "whm", "webdisk", "ftp",
-    "sftp", "cdn", "cdn1", "cdn2", "static", "assets", "img", "images", "media", "js", "css",
-    "files", "download", "downloads", "dl", "admin", "portal", "dashboard", "panel", "my",
-    "account", "accounts", "login", "signin", "sso", "auth", "secure", "vpn", "remote", "gw",
-    "gateway", "proxy", "blog", "news", "shop", "store", "support", "help", "docs", "wiki",
-    "status", "stats", "test", "dev", "staging", "stage", "uat", "demo", "beta", "sandbox",
-    "local", "localhost", "go", "link", "links", "l", "t", "track", "click", "e", "c", "s",
-    "server", "host", "vps", "cloud", "edge", "origin",
+# DATA: references/generic_labels.json -> subdomain_labels (add a label there, not here).
+_LABELS_FALLBACK = {
+    "subdomain_labels": ["www", "mail", "api", "app", "cdn", "static", "admin", "ns1", "ns2",
+                         "shop", "blog", "test", "dev", "m", "web"],
+    "resource_basename_segments": ["jquery", "bootstrap", "vendor", "main", "index", "app",
+                                   "bundle", "min", "js", "css"],
 }
+_LABELS_REF = load_ref(ref_path(__file__, "generic_labels.json"), _LABELS_FALLBACK)
+_GENERIC_SUBLABELS = frozenset(_LABELS_REF["subdomain_labels"])
 
 
 def _distinctive_subdomain(host: str):

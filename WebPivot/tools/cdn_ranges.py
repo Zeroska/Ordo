@@ -132,6 +132,14 @@ def update():
             seen.add(r["cidr"])
             uniq.append(r)
     doc = {
+        "_comment": (
+            "GENERATED CACHE — do not hand-edit; rerun `python3 cdn_ranges.py --refresh` to "
+            "rebuild from each provider's published ip-ranges endpoint. Unlike the other "
+            "references/*.json files this one is NOT an analyst-tunable list. It answers one "
+            "question: is this IP a shared CDN/cloud EDGE (noise — thousands of unrelated "
+            "tenants) or a plausible ORIGIN (signal — worth clustering on)? Providers that "
+            "publish no CIDR list are recorded under `no_public_list` and must be classified "
+            "by ASN instead (see WebPivot/references/asn_registry.json)."),
         "updated": datetime.now(timezone.utc).isoformat(),
         "count": len(uniq),
         "per_provider": per,

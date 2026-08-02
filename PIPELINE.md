@@ -116,7 +116,12 @@ This stage is **judgment**, so run it inside Claude Code (it reasons; it doesn't
 or invoke the skill directly: `/IntelAnalysis`. It will:
 - query the KB for shared indicators (`tools/kb/query.py --shared`),
 - triage them (attribution-grade vs corroborating vs noise), attribute (same-kit / same-operator / same-actor),
-- and **save a cited assessment** to `knowledge/reports/mycase/assessment.md`.
+- and **save a cited assessment** to `cases/mycase/assessment.md`.
+
+Everything a case produces lives under `cases/<case>/` — raw collection, DOM, figures, and the
+assessment. `knowledge/` is the cross-case KB only (entities, edges, cached payloads); it holds no
+per-case deliverables. If the convergence loop has also run, its machine-rendered view sits beside
+yours as `loop_assessment.md` — the loop never overwrites a hand-written `assessment.md`.
 
 The raw correlation math is also available directly:
 ```bash
@@ -143,6 +148,17 @@ python3 ~/.claude/skills/IntelGraph/scripts/render_network.py \
 Open `network.html` in a browser — it's a self-contained interactive graph
 (node size = centrality, color = cluster, red edges = same-operator).
 
+**Then time-order it — the graph shows *what* is connected, not *whether it was connected at the
+same time*.** Build the lifecycle timeline + evidence ledger before writing the assessment:
+```bash
+python3 ~/.claude/skills/IntelGraph/scripts/case_timeline.py cases/mycase/out/*.json \
+    --stem cases/mycase/timeline --markdown --title "Infrastructure lifecycle"
+```
+Emits the swimlane figure (registration spans, registrant eras, hosting windows, cert validity),
+`timeline_events.json` and a paste-ready evidence table where every row cites **when · source · an
+online link** (Wayback / urlscan / crt.sh / RDAP / BGP) — plus the derived expiry/renewal cohorts
+and IP-tenancy overlaps. Tradecraft: `IntelAnalysis` §1.5 + `Workflows/Timeline.md`.
+
 ---
 
 ## 5. Driving the whole thing from inside Claude Code (no CLI)
@@ -152,7 +168,7 @@ You can skip the terminal entirely — just ask:
 1. **Collect:** "Analyze `https://target.example` with WebPivot and save it to the **mycase** case."
    (add "render the page" for JS-heavy funnels)
 2. **Correlate:** "Correlate the mycase case — build the operator cluster and assess confidence."
-3. **Visualize:** "Render the mycase network graph."
+3. **Visualize:** "Render the mycase network graph, then build the mycase timeline."
 
 The skills persist to the same `cases/` + `knowledge/` folders, so CLI and chat are interchangeable.
 

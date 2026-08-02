@@ -327,7 +327,8 @@ def cmd_open(a):
     print(f"   case dir : {os.path.relpath(case_dir, ROOT)}/  (raw/, shared.txt, clusters.json"
           + ("" if a.no_graph else ", case_graph.json")
           + (", network.html" if a.render and not a.no_graph else "") + ")")
-    print(f"   next     : IntelAnalysis over knowledge/ -> knowledge/reports/{a.case}/assessment.md")
+    print(f"   next     : IntelAnalysis over knowledge/ -> cases/{a.case}/assessment.md "
+          f"(hand-written; this loop's render stays in loop_assessment.md)")
 
 
 def _all_raw(case_dir):
@@ -443,6 +444,20 @@ def _domains_in_text(s):
     return {m.group(1).lower().rstrip(".") for m in _DOMAIN_RE.finditer(s or "")}
 
 
+def _is_loop_authored_md(path):
+    """True when `path` is absent or holds THIS loop's own render — i.e. safe to overwrite.
+
+    The loop re-renders assessment.md every round, so an analyst's hand-written markdown parked
+    at that path would be destroyed silently on the next run. `assessment.json` has had this
+    guard since it was written; the markdown did not, which is the gap this closes.
+
+    The ownership rule and the conservative failure mode live in case_state — this loop renders
+    through evidence_report, so it claims only evidence_report's output."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import case_state as cs
+    return cs.may_overwrite_assessment(path, cs.EVIDENCE_REPORT_MD)
+
+
 def _render_assessment(case_dir, case, raw_files, fr, verdict, a, clusters=None):
     """Write the human ICD-203 assessment.md, and a machine-readable assessment.json that conforms to
     the SAME schema the SDK/IntelAnalysis path uses (bluf, cluster, attribution_level, confidence,
@@ -463,8 +478,16 @@ def _render_assessment(case_dir, case, raw_files, fr, verdict, a, clusters=None)
         import evidence_report
         md = evidence_report.render_cluster_report(
             results, case=case, analyst=a.analyst, classification=a.classification)
-        with open(os.path.join(case_dir, "assessment.md"), "w", encoding="utf-8") as fh:
-            fh.write(md)
+        # Never clobber a hand-written assessment — the SAME rule assessment.json follows below.
+        mdpath = os.path.join(case_dir, "assessment.md")
+        if _is_loop_authored_md(mdpath):
+            with open(mdpath, "w", encoding="utf-8") as fh:
+                fh.write(md)
+        else:
+            with open(os.path.join(case_dir, "loop_assessment.md"), "w", encoding="utf-8") as fh:
+                fh.write(md)
+            print("   analyst assessment.md present — not overwritten; "
+                  "loop view -> loop_assessment.md")
     except Exception as e:
         print(f"   note: assessment.md render failed ({e}); skipped.")
 

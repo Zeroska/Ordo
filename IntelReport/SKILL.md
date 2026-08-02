@@ -43,8 +43,10 @@ enforces the typography (Roman numbering, compact tables, wrapped code); YOU enf
      sites are run by one operator."*
 2. **Table → info → context, in that order.** In every finding section, put the structured table
    first, then the tight bullet/number facts, then the prose context. Never open with a paragraph.
-3. **Overview → Details in every long section.** If a section runs long, split it: a `## X.1 Overview`
-   (2–4 lines) then `## X.2 Details`. The reader gets the gist without reading the whole section.
+3. **Overview → Details in every long section.** If a section runs long, split it: a `## Overview`
+   (2–4 lines) then `## Details`. The reader gets the gist without reading the whole section.
+   **Write the heading text only — never type the number.** The template numbers sections itself,
+   so `## 4.1 Overview` renders as "4.1 4.1 Overview". Same for appendix sub-headings.
 4. **Roman top-level, arabic sub.** Use `#` for top-level sections (rendered `I`, `II`, …) and `##`
    for sub-sections (`I.1`, `I.2`). Appendices come after a raw-LaTeX `\appendix` marker and render
    as `Appendix A`, `Appendix B` (see below).
@@ -136,23 +138,48 @@ enforces the typography (Roman numbering, compact tables, wrapped code); YOU enf
     (start from seeds → **pivot** outward → form a **hypothesis** → **prove or disprove** it against
     independent data sources → weight owner-controlled evidence, state the alternative ruled out),
     never the specific tools/commands. The NATO + ICD reference tables still follow.
-15. **Figures are centred, and regenerated on every render (IntelReport ⇄ IntelGraph chain).**
-    Emit the figure as a centred block; the renderer sets `\graphicspath` so a raw
-    ` ```{=latex}\begin{center}\includegraphics[...]{fig.png}\end{center}``` ` resolves. The report
-    declares its figures in a sibling **`figures.json`** —
-    `{"figures":[{"raw":["../raw/a.json", …], "graph":"case_graph.json", "stem":"case_diagram",
-    "title":"…", "direction":"LR", "legend":true, "drop_types":["nameserver","registrar","template",
-    "theme","email"]}]}` (paths relative to the md dir). Before rendering, `render_report.py` rebuilds
-    each figure via WebPivot `graph_build.py` → IntelGraph `graph_to_diagram.py --drop-types …`, so the
-    chart is **never stale**. Prune noise node types (`--drop-types`) so the meaningful nodes render
-    large. Opt out with `--no-figures`.
-    - **Prefer MULTIPLE focused figures over one dense overview.** `figures.json` takes a *list* — give
-      each major section its own small chart built from just that section's domains (e.g. a tenant
-      figure, a platform figure, a second-cluster figure), each with its own `graph`/`stem`, then embed
-      each PNG in its section. Keep one whole-case overview at the end. A reader follows three small
-      graphs far more easily than one 30-node hairball.
+15. **EVERY findings section carries a figure. This is MANDATORY, not a nicety.** Invoking
+    IntelReport ALWAYS chains to IntelGraph. A report that renders with zero figures has failed the
+    checklist — go back and author them before presenting. The rule is **one figure per top-level
+    findings section** (III onward: the seed, each cluster/entity, the attribution argument, the
+    rejected links), plus one whole-case overview at the end. Executive Summary and Methodology
+    need none.
+    - **The figure's job is to show HOW the connection was made, not to decorate.** A reader should
+      be able to read the picture alone and follow *observed artifact → link it creates → what we
+      concluded → with what confidence*. Label the EDGES with the evidence (`shared favicon
+      123456789`, `same-day registration`, `regulator register`), not with vague verbs.
+    - **Mark the verdict on the graph.** Confirmed links solid, assessed/probable links dashed,
+      **rejected links dotted and struck through with the reason** (`✗ parking IP — co-tenancy
+      noise`). A figure that shows only what survived hides the analysis; showing the discarded
+      branch is what makes the attribution credible.
+16. **Two figure kinds — use both.** `figures.json` (sibling of the markdown) takes a *list*, and
+    `render_report.py` rebuilds every entry through IntelGraph immediately before rendering, so no
+    chart is ever stale. Opt out only with `--no-figures`.
+    - **COLLECTED — a case graph from the raw collection JSON.** Best for "these N hosts share these
+      artifacts". Prune noise node types so the meaningful nodes render large:
+      `{"raw":["../raw/a.json", …], "graph":"cluster_a.json", "stem":"fig_cluster_a",
+      "title":"…", "direction":"LR", "legend":true,
+      "drop_types":["nameserver","registrar","template","theme","email"]}`
+    - **REASONING — a hand-authored Mermaid source.** Best for the argument a collected graph cannot
+      express: corporate/entity structure, an ownership timeline, the inference chain from artifact
+      to attribution, the alternative hypothesis that was ruled out:
+      `{"mmd":"fig_attribution.mmd", "stem":"fig_attribution", "theme":"neutral"}`
+      Author the `.mmd` next to the markdown (`flowchart LR`, or `timeline` / `gantt` for chronology)
+      and let the renderer produce the PNG/SVG triple.
+    - Embed the result as a centred block; the renderer sets `\graphicspath` so a raw
+      ` ```{=latex}\begin{center}\includegraphics[width=...]{fig_x_hires.png}\end{center}``` `
+      resolves. Follow every figure with a one-line italic caption stating what it proves.
+    - **Multiple small figures beat one dense overview.** Three focused graphs are followed far more
+      easily than one 30-node hairball. Build each section's figure from only that section's hosts.
+    - **Keep labels short or the figure prints unreadable.** A figure is scaled to the text block
+      (~16 cm), so its rendered PIXEL WIDTH sets the type size: at 1000 px wide the labels print
+      around 7 pt; at 1700 px they print under 4 pt and no one can read them. Cap node labels at
+      ~8 words / 3 short lines, collapse a fan of sibling nodes into one multi-line node, and switch
+      `LR`→`TB` when a chain runs long. **Check the rendered width** — if `<stem>_hires.png` comes
+      back wider than ~1200 px, cut text or restructure, don't just shrink the `includegraphics`
+      width. The detail belongs in the prose; the figure carries the argument.
 
-16. **Always include per-domain profiles.** A report must carry a "Domain & infrastructure profiles"
+17. **Always include per-domain profiles.** A report must carry a "Domain & infrastructure profiles"
     appendix — one small **Field · Value** table per domain covering, at minimum: status
     (live / dead / parked), registrar + **created** date, registrant (country / org, noting privacy
     masking), nameservers, origin host (IP · ASN), and the **distinctive artifacts** found on that
@@ -296,6 +323,10 @@ Word/LibreOffice, and keep it case-data-free.
 ## Quality checklist before presenting
 
 - Both requested files exist (PDF and/or DOCX).
+- **Figures rendered and embedded (Rule 15) — check this FIRST, it is the most-skipped step.**
+  `figures.json` exists, the render log printed `figure refreshed:` for every entry, every findings
+  section from III onward embeds one, and each figure's edges are labelled with the EVIDENCE that
+  creates the link. Zero figures = the report is not finished.
 - Cover shows the right title, case id, and classification; NO analyst name.
 - Vietnamese text renders with correct diacritics (no tofu boxes).
 - Embedded figures appear (use the `_hires.png`); tables render with rules.

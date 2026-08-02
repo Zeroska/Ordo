@@ -162,15 +162,26 @@ def _sibling_script(*rel):
 
 GRAPH_TO_DIAGRAM = _sibling_script("IntelGraph", "scripts", "graph_to_diagram.py")
 GRAPH_BUILD = _sibling_script("WebPivot", "tools", "graph_build.py")
+RENDER_MERMAID = _sibling_script("IntelGraph", "scripts", "render_mermaid.py")
 
 
 def regenerate_figures(md_dir):
     """Rebuild every figure declared in <md_dir>/figures.json BEFORE rendering.
 
-    figures.json = {"figures": [{"raw": [paths], "graph": "case_graph.json",
-      "stem": "case_diagram", "title": "...", "direction": "LR", "legend": true,
-      "drop_types": ["nameserver", ...]}]}  — paths are relative to the md dir.
-    Best-effort: a figure that fails to build leaves the previous PNG in place."""
+    Two figure kinds, both rendered through IntelGraph:
+
+    1) COLLECTED — a case graph derived from the raw collection JSON:
+       {"raw": [paths], "graph": "case_graph.json", "stem": "case_diagram",
+        "title": "...", "direction": "LR", "legend": true,
+        "drop_types": ["nameserver", ...]}
+    2) REASONING — a hand-authored Mermaid source, for the argument a case graph
+       cannot express (entity structure, ownership timeline, the inference chain
+       from artifact to attribution, links tested and rejected):
+       {"mmd": "fig_attribution.mmd", "stem": "fig_attribution",
+        "theme": "neutral", "width": 2400}
+
+    Paths are relative to the md dir. Best-effort: a figure that fails to build
+    leaves the previous PNG in place."""
     recipe = os.path.join(md_dir, "figures.json")
     if not os.path.isfile(recipe):
         return
@@ -183,8 +194,21 @@ def regenerate_figures(md_dir):
         sys.stderr.write("IntelGraph graph_to_diagram.py not found — figures not refreshed\n")
         return
     for fig in spec.get("figures", []):
-        graph = os.path.join(md_dir, fig["graph"])
         stem = os.path.join(md_dir, fig["stem"])
+        if fig.get("mmd"):                            # REASONING figure — hand-authored Mermaid
+            if not RENDER_MERMAID:
+                sys.stderr.write("IntelGraph render_mermaid.py not found — %s skipped\n"
+                                 % fig["stem"])
+                continue
+            cmd = [sys.executable, RENDER_MERMAID,
+                   os.path.join(md_dir, fig["mmd"]), stem,
+                   "--theme", str(fig.get("theme", "neutral"))]
+            if fig.get("width"):
+                cmd += ["--width", str(fig["width"])]
+            print("figure %s: %s" % ("refreshed" if run(cmd) else "FAILED",
+                                     os.path.basename(stem)))
+            continue
+        graph = os.path.join(md_dir, fig["graph"])    # COLLECTED figure — case graph
         raw = [os.path.normpath(os.path.join(md_dir, r)) for r in (fig.get("raw") or [])]
         if fig.get("raw_glob"):    # auto-include every current raw file (new domains picked up)
             raw += sorted(glob.glob(os.path.join(md_dir, fig["raw_glob"])))

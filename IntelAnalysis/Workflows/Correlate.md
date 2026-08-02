@@ -17,6 +17,12 @@ Turn a knowledge base full of facts into an attributed cluster assessment.
 3. **Group into clusters.** Domains connected by ≥1 attribution-grade indicator are one
    cluster candidate. Use `--cluster <domain>` to expand a seed.
 
+3b. **Time-order the cluster before you believe it (`Workflows/Timeline.md`, §1.5).** Build the
+   timeline (`IntelGraph/scripts/case_timeline.py … --markdown`) and check each shared indicator
+   for **window overlap** on both hosts. No overlap = sequential tenancy / resold kit, not one
+   operator — drop or downgrade the link and record why. Pick up the expiry-cohort and
+   cert-batch signals here too.
+
 4. **Apply the corroboration rule (§2).** For each cluster, count *independent*
    attribution-grade artifacts. Decide the claim level: same-kit / same-operator / same-actor.
 

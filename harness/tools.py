@@ -779,6 +779,50 @@ async def render_diagram(args: dict[str, Any]) -> dict[str, Any]:
 
 
 @tool(
+    "case_timeline",
+    "THE TEMPORAL VIEW of a case — run this before asserting any same-operator link, because a "
+    "shared artifact only links two hosts if BOTH carried it at the same time. Reads the case's "
+    "pivot_extract JSON (out/*.json) and extracts every dated fact: registration span "
+    "(created→expires), registrant eras from WHOIS history, hosting windows from passive DNS "
+    "(which IP served the name, between which dates), certificate validity windows from CT, "
+    "Wayback archive spans + per-artifact presence windows, and point observations (WHOIS "
+    "updates, urlscan scans, recovered snapshots). Then derives the correlations: registration "
+    "cohorts, EXPIRY/renewal cohorts (aligned expiry from DIFFERENT creation dates = one payer, "
+    "the billing-account tell), same-day WHOIS updates, certificate issuance batches, IP-tenancy "
+    "OVERLAP (co-tenancy vs sequential tenancy of a recycled address), shared-artifact window "
+    "overlap, and abandonment cohorts. Emits a swimlane figure (PNG+SVG+thumb), a "
+    "<stem>_events.json evidence ledger and, with markdown=true, a paste-ready evidence table "
+    "where every row carries when (UTC) + source + Admiralty grade + an ONLINE permalink "
+    "(Wayback / urlscan / crt.sh / RDAP / BGP) — never a local case-store path. Required: inputs "
+    "(list of JSON paths or a glob), stem (output path, no extension). Optional: title, subtitle, "
+    "history (wayback_ga.py JSON paths), markdown=true, lang (en|vi), source, grading, "
+    "max_certs (default 12), max_lanes (default 24), no_figure=true.",
+    {"inputs": list, "stem": str},
+)
+async def case_timeline(args: dict[str, Any]) -> dict[str, Any]:
+    inputs = args["inputs"]
+    if isinstance(inputs, str):
+        inputs = sorted(glob.glob(inputs)) or [inputs]
+    cmd = [PY, os.path.join("IntelGraph", "scripts", "case_timeline.py"),
+           *[str(i) for i in inputs], "--stem", str(args["stem"])]
+    for key, flag in (("title", "--title"), ("subtitle", "--subtitle"), ("lang", "--lang"),
+                      ("source", "--source"), ("grading", "--grading"),
+                      ("max_certs", "--max-certs"), ("max_lanes", "--max-lanes")):
+        if args.get(key):
+            cmd += [flag, str(args[key])]
+    hist = args.get("history")
+    if hist:
+        cmd += ["--history", *[str(h) for h in (hist if isinstance(hist, list) else [hist])]]
+    if args.get("markdown"):
+        cmd += ["--markdown"]
+    if args.get("no_figure"):
+        cmd += ["--no-figure"]
+    r = _run(cmd, timeout=300)
+    return {"content": [{"type": "text", "text": (r.stdout or "") + (r.stderr or "") or "no output"}],
+            "is_error": r.returncode != 0}
+
+
+@tool(
     "render_report",
     "TYPOGRAPHY ONLY — this renders a markdown file you have ALREADY written to the house structure; "
     "it does NOT make a report conformant. LOAD THE `IntelReport` SKILL FIRST and author the markdown "
@@ -911,7 +955,7 @@ ANALYZE_SERVER = create_sdk_mcp_server(
                       reverse_whois, cert_overlap, reference_check, reference_add,
                       which_cases, domain_verdict, api_usage,
                       case_clusters, case_frontier, case_loop, case_reopen,
-                      render_diagram, render_report])
+                      render_diagram, case_timeline, render_report])
 
 COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__analyze_artifact",
                  "mcp__collect__fallback_probe", "mcp__collect__impersonation_hunt",
@@ -925,4 +969,5 @@ ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__case_clusters", "mcp__analyze__case_frontier",
                  "mcp__analyze__case_loop",
                  "mcp__analyze__case_reopen",
-                 "mcp__analyze__render_diagram", "mcp__analyze__render_report"]
+                 "mcp__analyze__render_diagram", "mcp__analyze__case_timeline",
+                 "mcp__analyze__render_report"]

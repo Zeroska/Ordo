@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+"""
+test_references.py — the gate on the reference DATA layer (contributor RULE 3).
+
+Run:  python3 tests/test_references.py              (zero deps, no pytest needed)
+      .venv/bin/pytest tests/test_references.py -q   (also works)
+      python3 tools/eval/run_eval.py                 (runs as part of the regression gate)
+
+WHAT THIS PROTECTS
+------------------
+Reference files are how an analyst tunes the tooling without editing Python. That only works if
+four things hold, and each has a failure mode that is SILENT in production:
+
+  1. Every file parses and is documented. A `_comment` an analyst can't read is a list they will
+     not touch — and an undocumented denylist is one nobody dares extend.
+  2. Every consumer actually LOADS the file. `load_ref` degrades to a minimal embedded fallback
+     when a file is missing or malformed, and warns on stderr — but a warning scrolls past in a
+     long run. A module quietly running on its 10-entry fallback instead of its 100-entry data
+     file filters almost nothing, and a filter that returns False everywhere MANUFACTURES false
+     clusters. So we assert the loaded values are strictly richer than the fallback.
+  3. Denylists that exist in more than one module stay in sync. WebPivot ships standalone, so it
+     carries its own copy of the registrant-noise data; a provider added to one copy and not the
+     other is exactly the drift this layer was built to end.
+  4. A broken data file degrades LOUDLY. Returning an empty dict would turn every downstream
+     `any(... for x in LIST)` filter into False and start clustering on registrar boilerplate.
+
+Also checks the vendored loaders (wp_refs / kb_refs / bp_refs) have not diverged.
+"""
+import contextlib
+import glob
+import io
+import json
+import os
+import sys
+import shutil
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Generated caches, not analyst-tunable lists: exempt from the per-group `_comment` rule (they
+# still need the top-level one). `asn_registry` documents itself through a richer `_meta` block
+# and grows by upsert from wp_ippivot, so its single `asns` group is exempt too.
+GENERATED = {"cdn_ranges.json", "asn_registry.json"}
+
+# Proxies/registrars seen often enough that a registrant-noise copy missing one is a real gap,
+# not a stylistic difference. Add a provider to BOTH data files, then add it here.
+MUST_KNOW = ["domainsbyproxy", "withheldforprivacy", "privacyprotect", "namecheap", "godaddy"]
+
+# The three vendored copies of the loader. They must stay byte-identical below the module-name
+# line in the docstring: each skill is imported onto other machines standalone, so the loader
+# cannot live in a shared package — and distinct module NAMES are required because tools/kb and
+# WebPivot/tools both land on sys.path in the same process (ingest_webpivot inserts both), where
+# a shared `refs.py` would collide.
+LOADERS = ["WebPivot/tools/wp_refs.py", "tools/kb/kb_refs.py", "BinaryPivot/tools/bp_refs.py",
+           "IntelGraph/scripts/ig_refs.py"]
+
+
+def _loader_body(relpath):
+    lines = open(os.path.join(ROOT, relpath), encoding="utf-8").read().splitlines(True)
+    start = next(i for i, l in enumerate(lines) if l.startswith("import copy"))
+    return "".join(lines[start:])
+
+
+def check():
+    """Return (passed, failed, [(status, label)]) — the tools/eval unit-module contract."""
+    out, passed, failed = [], 0, 0
+
+    def ok(cond, label):
+        nonlocal passed, failed
+        if cond:
+            passed += 1
+            out.append(("ok", label))
+        else:
+            failed += 1
+            out.append(("FAIL", label))
+
+    for p in (os.path.join(ROOT, "WebPivot", "tools"),
+              os.path.join(ROOT, "tools", "kb"),
+              os.path.join(ROOT, "BinaryPivot", "tools"),
+              os.path.join(ROOT, "IntelGraph", "scripts")):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+
+    # --- 1. every reference file parses, is documented, has no empty group ------------------
+    files = sorted(glob.glob(os.path.join(ROOT, "*", "references", "*.json")) +
+                   glob.glob(os.path.join(ROOT, "*", "*", "references", "*.json")))
+    ok(len(files) >= 8, f"found the reference data files ({len(files)})")
+    for path in files:
+        rel = os.path.relpath(path, ROOT)
+        base = os.path.basename(path)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except Exception as exc:
+            ok(False, f"{rel} parses ({exc})")
+            continue
+        ok(isinstance(doc, dict), f"{rel} is a JSON object")
+        ok(isinstance(doc.get("_comment"), str) and len(doc["_comment"]) > 40,
+           f"{rel} has a top-level _comment an analyst can act on")
+        groups = [k for k in doc if not k.startswith("_")]
+        ok(bool(groups), f"{rel} defines at least one group")
+        if base in GENERATED:
+            continue
+        for g in groups:
+            node = doc[g]
+            if not isinstance(node, dict):
+                continue
+            ok(isinstance(node.get("_comment"), str) and len(node["_comment"]) > 20,
+               f"{rel}:{g} documented")
+            payload = node.get("values", node.get("entries"))
+            if payload is not None:
+                ok(len(payload) > 0, f"{rel}:{g} is non-empty")
+            # A `values` group is a membership/iteration list — a repeat is always an editing
+            # slip, never meaningful, and it silently inflates the candidate counts that a
+            # bounded sweep (generate_variants' max_variants) budgets against.
+            vals = node.get("values")
+            if isinstance(vals, list):
+                hashable = [v for v in vals if isinstance(v, (str, int, float, bool))]
+                dups = sorted({v for v in hashable if hashable.count(v) > 1})
+                ok(not dups, f"{rel}:{g} has no duplicate values"
+                             + (f" (found {dups[:4]})" if dups else ""))
+
+    # --- 2. the vendored loaders have not diverged ------------------------------------------
+    ref = _loader_body(LOADERS[0])
+    for p in LOADERS[1:]:
+        ok(_loader_body(p) == ref, f"{p} is identical to {LOADERS[0]}")
+
+    # --- 3. every consumer loaded its DATA FILE, not its embedded fallback -------------------
+    # This is the check that matters most: a module silently on its fallback still imports, still
+    # runs, still produces output — it just stops filtering. Comparing against the fallback size
+    # catches that, and unlike a hardcoded count it does not rot as analysts extend a list.
+    import wp_pivots, wp_analyze, wp_assets, wp_recon, wp_ippivot, wp_impersonate  # noqa: E401
+    import whois_enrich, evidence_report                                           # noqa: E401
+    import ingest_webpivot, hypothesize, ingest_report, noise_filters              # noqa: E401
+    import analyze_artifact                                                        # noqa: E401
+    import case_timeline                                                           # noqa: E401
+
+    consumers = [
+        ("wp_pivots._GENERIC_SUBLABELS", wp_pivots._GENERIC_SUBLABELS,
+         wp_pivots._LABELS_FALLBACK["subdomain_labels"]),
+        ("wp_pivots.AFFILIATE_PARAMS", wp_pivots.AFFILIATE_PARAMS,
+         wp_pivots._PIVOT_FALLBACK["affiliate_params"]),
+        ("wp_pivots.SAAS_PIVOTS", wp_pivots.SAAS_PIVOTS,
+         wp_pivots._PIVOT_FALLBACK["saas_pivots"]),
+        ("wp_analyze._GENERIC_SEGMENTS", wp_analyze._GENERIC_SEGMENTS,
+         wp_analyze._SEG_FALLBACK["resource_basename_segments"]),
+        ("wp_assets._BACKEND_NOISE_SUFFIXES", wp_assets._BACKEND_NOISE_SUFFIXES,
+         wp_assets._BACKEND_FALLBACK["backend_noise_suffixes"]),
+        ("wp_recon.MAIL_PROVIDERS", wp_recon.MAIL_PROVIDERS,
+         wp_recon._MAIL_FALLBACK["mx_providers"]),
+        ("wp_recon.SPF_ESP", wp_recon.SPF_ESP, wp_recon._MAIL_FALLBACK["spf_esp_hosts"]),
+        ("wp_recon.DMARC_VENDORS", wp_recon.DMARC_VENDORS,
+         wp_recon._MAIL_FALLBACK["dmarc_report_vendors"]),
+        ("wp_ippivot._MANAGED_MX", wp_ippivot._MANAGED_MX,
+         wp_ippivot._MX_FALLBACK["managed_mx_suffixes"]),
+        ("wp_impersonate.TLD_SWEEP", wp_impersonate.TLD_SWEEP,
+         wp_impersonate._IMP_FALLBACK["tld_sweep"]),
+        ("wp_impersonate.COMBO_AFFIXES", wp_impersonate.COMBO_AFFIXES,
+         wp_impersonate._IMP_FALLBACK["combo_affixes"]),
+        ("wp_impersonate._QWERTY", wp_impersonate._QWERTY,
+         wp_impersonate._IMP_FALLBACK["qwerty_adjacency"]),
+        ("wp_impersonate._HOMOGLYPH", wp_impersonate._HOMOGLYPH,
+         wp_impersonate._IMP_FALLBACK["homoglyphs"]),
+        ("whois_enrich._PRIVACY_MARKERS", whois_enrich._PRIVACY_MARKERS,
+         whois_enrich._WHOIS_FALLBACK["privacy_markers"]),
+        ("whois_enrich._PROXY_DOMAINS", whois_enrich._PROXY_DOMAINS,
+         whois_enrich._WHOIS_FALLBACK["proxy_email_domains"]),
+        ("evidence_report._NOISE_EMAIL_SUBSTR", evidence_report._NOISE_EMAIL_SUBSTR,
+         evidence_report._RN_FALLBACK["noise_email_substrings"]),
+        ("ingest_webpivot._ROLE_NAME_PLACEHOLDERS", ingest_webpivot._ROLE_NAME_PLACEHOLDERS,
+         ingest_webpivot._RN_FALLBACK["role_name_placeholders"]),
+        ("ingest_webpivot._ORG_SUFFIX", ingest_webpivot._ORG_SUFFIX,
+         ingest_webpivot._RN_FALLBACK["org_suffixes"]),
+        ("hypothesize._PROXY_EMAIL", hypothesize._PROXY_EMAIL,
+         hypothesize._H_FALLBACK["proxy_email_tokens"]),
+        ("ingest_report._NOISE_DOMAINS", ingest_report._NOISE_DOMAINS,
+         ingest_report._IR_FALLBACK["report_noise_domains"]),
+        ("noise_filters.MANAGED_DNS_SUFFIXES", noise_filters.MANAGED_DNS_SUFFIXES,
+         noise_filters._FALLBACK["managed_dns_suffixes"]),
+        ("noise_filters.SHARED_INFRA_APEXES", noise_filters.SHARED_INFRA_APEXES,
+         noise_filters._FALLBACK["shared_infra_apexes"]),
+        ("analyze_artifact._FAKE_TLD", analyze_artifact._FAKE_TLD,
+         analyze_artifact._BP_FALLBACK["fake_tlds"]),
+        ("analyze_artifact._PE_SECTION_PACKERS", analyze_artifact._PE_SECTION_PACKERS,
+         analyze_artifact._BP_FALLBACK["pe_section_packers"]),
+        ("analyze_artifact._ANDROID_PROTECTORS", analyze_artifact._ANDROID_PROTECTORS,
+         analyze_artifact._BP_FALLBACK["android_protectors"]),
+        # The timeline's citation layer: on the fallback, an evidence table still renders — it
+        # just cites four services instead of twenty, and silently drops the link for everything
+        # else. A dated claim with no public link is the failure this whole layer exists to stop.
+        ("case_timeline.TEMPLATES", case_timeline.TEMPLATES,
+         case_timeline._EV_FALLBACK["permalink_templates"]),
+        ("case_timeline.GRADING", case_timeline.GRADING,
+         case_timeline._EV_FALLBACK["source_grading"]),
+    ]
+    for name, loaded, fallback in consumers:
+        ok(len(loaded) > len(fallback),
+           f"{name} came from JSON ({len(loaded)} loaded > {len(fallback)} fallback)")
+
+    # --- 4. cross-module drift on the registrant-noise copies --------------------------------
+    wp_rn = json.load(open(os.path.join(ROOT, "WebPivot/references/registrant_noise.json")))
+    kb_rn = json.load(open(os.path.join(ROOT, "tools/kb/references/registrant_noise.json")))
+
+    def blob(doc, keys):
+        return " | ".join(str(v).lower() for k in keys
+                          for v in doc.get(k, {}).get("values", []))
+
+    wp_blob = blob(wp_rn, ["proxy_email_domains", "noise_email_substrings", "privacy_markers"])
+    kb_blob = blob(kb_rn, ["proxy_email_domains", "proxy_email_tokens", "privacy_markers"])
+    for token in MUST_KNOW:
+        ok(token in wp_blob, f"WebPivot registrant_noise knows {token!r}")
+        ok(token in kb_blob, f"tools/kb registrant_noise knows {token!r}")
+
+    # --- 5. a broken data file degrades loudly, never silently --------------------------------
+    import wp_refs                                                                # noqa: E401
+    fb = {"alpha": ["a", "b"], "beta": {"n": 1}}
+
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        got = wp_refs.load_ref(os.path.join(ROOT, "does", "not", "exist.json"), fb)
+    ok(got == fb, "missing data file -> embedded fallback values")
+    ok("WARNING" in err.getvalue(), "missing data file -> stderr WARNING (never silent)")
+
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        fh.write("{ this is not json")
+        broken = fh.name
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        got = wp_refs.load_ref(broken, fb)
+    ok(got == fb, "malformed data file -> embedded fallback values")
+    ok("WARNING" in err.getvalue(), "malformed data file -> stderr WARNING")
+
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        json.dump({"alpha": {"_comment": "x", "values": ["a", "b", "c"]}}, fh)
+        partial = fh.name
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        got = wp_refs.load_ref(partial, fb)
+    ok(got["alpha"] == ["a", "b", "c"], "partial data file -> present group read from JSON")
+    ok(got["beta"] == {"n": 1}, "partial data file -> absent group from fallback")
+    ok("beta" in err.getvalue(), "partial data file -> WARNING names the missing group")
+
+    for p in (broken, partial):
+        os.unlink(p)
+
+    # --- 6. assessment.md ownership: a writer overwrites ONLY its own output ------------------
+    # Both front-ends render to cases/<case>/assessment.md, and so does the analyst by hand. The
+    # loop used a plain open(...,"w") and destroyed hand-written assessments silently. Each writer
+    # now claims only its own signature; everything else is diverted to loop_assessment.md.
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    sys.path.insert(0, os.path.join(ROOT, "harness"))
+    import case_state as cs                                                    # noqa: E401
+
+    shapes = {
+        "evidence_report cluster": ("UNCLASSIFIED//FOUO\n\n# Cluster Intelligence Assessment — c\n",
+                                    True, False),
+        "evidence_report single":  ("# Intelligence Assessment — host.example\n", True, False),
+        "harness render_markdown": ("# Assessment\n\n**BLUF —** x\n", False, True),
+        "analyst titled":          ("# Assessment — my case\n\n## BLUF\n", False, False),
+        "analyst other heading":   ("# site.example — infrastructure assessment\n", False, False),
+        "analyst html-comment":    ("<!-- round 3 -->\n# Assessment\n", False, False),
+    }
+    for label, (text, loop_may, sdk_may) in shapes.items():
+        with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
+            fh.write(text)
+            p = fh.name
+        ok(cs.may_overwrite_assessment(p, cs.EVIDENCE_REPORT_MD) == loop_may,
+           f"loop {'may' if loop_may else 'must NOT'} overwrite: {label}")
+        ok(cs.may_overwrite_assessment(p, cs.HARNESS_RENDER_MD) == sdk_may,
+           f"sdk  {'may' if sdk_may else 'must NOT'} overwrite: {label}")
+        os.unlink(p)
+
+    ok(cs.may_overwrite_assessment(os.path.join(ROOT, "no", "such.md"), cs.EVIDENCE_REPORT_MD),
+       "absent assessment.md is writable")
+
+    # the SDK writer must resolve tools/ from its own location, not the caller's `root`
+    import render                                                              # noqa: E401
+    from schemas import Assessment                                             # noqa: E401
+    a = Assessment(bluf="t", attribution_level="inconclusive", confidence="low",
+                   cluster=[], evidence=[], gaps=[], next_pivots=[])
+    T = tempfile.mkdtemp()
+    os.makedirs(os.path.join(T, "cases", "c1"))
+    ok(os.path.basename(render.save_markdown(a, "c1", T)) == "assessment.md",
+       "save_markdown writes assessment.md on a fresh case (root != repo)")
+    with open(os.path.join(T, "cases", "c1", "assessment.md"), "w") as fh:
+        fh.write("# Assessment — hand written\n\nMINE\n")
+    ok(os.path.basename(render.save_markdown(a, "c1", T)) == "loop_assessment.md",
+       "save_markdown diverts when an analyst file is present")
+    ok("MINE" in open(os.path.join(T, "cases", "c1", "assessment.md")).read(),
+       "save_markdown left the analyst file byte-intact")
+    shutil.rmtree(T)
+
+    return passed, failed, out
+
+
+_PASSED, _FAILED, _LINES = check()
+
+
+def test_references():
+    """pytest entry point — the module body does the work at import time."""
+    assert not _FAILED, [l for s, l in _LINES if s != "ok"]
+
+
+if __name__ == "__main__":
+    for status, label in _LINES:
+        print(f"{'  ok  ' if status == 'ok' else '  FAIL'} {label}")
+    print()
+    if _FAILED:
+        print(f"FAIL — {_FAILED} reference check(s) failed")
+        sys.exit(1)
+    print(f"PASS — reference layer green ({_PASSED} checks: data files documented, "
+          f"{len(LOADERS)} loaders identical, consumers verified loading real data)")

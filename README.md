@@ -211,11 +211,38 @@ cases/<case>/
   SUMMARY.md           current assessment             assessments/<UTC>_*  immutable snapshots (audit)
   state.json           resumable-loop cursor          assessment.json    gaps / next_pivots / metered_leads
   run_cost.jsonl       per-run Anthropic model cost   evidence/manifest.jsonl + master_pivots.csv
-knowledge/             the attributed KB (facts, entities, edges, reports/)
+knowledge/             the attributed cross-case KB (entities, edges, cached payloads)
 MEMORY/api_usage.jsonl third-party API credit ledger
 ```
 
 Everything under `cases/` and `knowledge/` is git-ignored.
+
+### `cases/` vs `knowledge/` — different axes, one-way flow
+
+`cases/<case>/` is **one investigation's** working directory; `knowledge/` is the **single
+cross-case store** every case feeds into (`ingest_webpivot.py` reads `cases/*/raw/*.json` and
+merges facts in). Neither is a superset — `knowledge/` has no DOM, figures or per-run cost, and a
+case folder has no cross-case entity merge, which is what makes `which_cases` and prior-overlap
+alerts work.
+
+**All case deliverables live in `cases/<case>/`** — assessment, graphs, report. Nothing
+per-case belongs in `knowledge/`.
+
+Two naming traps worth knowing:
+
+- **`evidence/` means two different things.** `knowledge/evidence/<source>/<target>/<day>.json` is
+  the raw cached third-party payloads, deduped across every case that fetched them.
+  `cases/<case>/evidence/` is `manifest.jsonl` + `master_pivots.csv` — an *index* of what that one
+  case collected, no payloads. Same word, different artifact.
+- **`assessment.md` is the analyst's; `loop_assessment.md` is the machine's.** Three parties write
+  that path — you, `tools/intel.py`'s convergence loop, and the SDK front-end
+  (`harness/render.py`). The rule (`tools/case_state.may_overwrite_assessment`) is that **a writer
+  may overwrite only output it recognises as its own**; anything else it leaves alone and renders
+  to `loop_assessment.md` instead. Recognition is by leading signature, so the practical
+  constraint when writing by hand is: **don't open your assessment with a renderer's signature** —
+  `# Cluster Intelligence Assessment — `, `# Intelligence Assessment — `, or a bare `# Assessment`
+  followed by `**BLUF —**`. Any other opening is safe. Unreadable files are never overwritten.
+  (The same principle already governed `assessment.json` / `loop_assessment.json`.)
 
 ---
 

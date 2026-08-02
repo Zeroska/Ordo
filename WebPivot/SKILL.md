@@ -203,3 +203,35 @@ same state every time.
 
 *(Artifact-reliability notes — UA/GA4, crt.sh overload, Validin, Chainabuse — moved to
 `references/Capabilities.md` § Notes on artifact reliability.)*
+
+---
+
+## Tuning the tool without editing code — `references/*.json`
+
+Every denylist, provider registry and permutation table the collector matches against is **data,
+not code**. When a run produces a bad link or misses one, the fix is usually a one-line edit to a
+JSON file — no Python, no redeploy. Each file opens with a `_comment` explaining what it is for
+and which direction is the safe one to be wrong in; every group has its own `_comment`.
+
+| File | Edit it when |
+|---|---|
+| `references/registrant_noise.json` | a WHOIS privacy proxy / registrar role mailbox got treated as a registrant, or a reverse-WHOIS burned credits on boilerplate |
+| `references/third_party_noise.json` | an analytics/CDN endpoint scraped from a JS bundle was reported as the operator's backend, or a managed MX/NS showed up as operator infra |
+| `references/generic_labels.json` | a generic subdomain (`api.`, `cdn.`) or a library filename (`jquery.min.js`) created a false same-operator link |
+| `references/impersonation.json` | `--hunt-impersonation` is missing the TLDs or affixes a ring actually uses — **this is the per-campaign tuning knob** |
+| `references/mail_providers.json` | an MX / SPF include / DMARC `rua` host came back unclassified |
+| `references/pivot_tables.json` | a SaaS token's confidence is wrong (a vendor started sharing tenant ids → set it to `null`), or a new affiliate param appeared |
+| `references/asn_registry.json` | an ASN's `noise` / `kind` call is wrong. Grows automatically — `wp_ippivot` banks each new ASN it meets |
+| `references/cdn_ranges.json` | **never by hand** — generated cache; rerun `python3 tools/cdn_ranges.py --refresh` |
+
+Two rules that keep this safe:
+
+- **Over-filtering is the costlier direction.** A value added to a denylist silently destroys real
+  attribution. Adding a *provider* is cheap; adding anything that could be an operator's own asset
+  is not. The exact-vs-substring semantics of each group are stated in its `_comment` — read it.
+- **A broken file degrades loudly, never silently.** If a JSON is missing or malformed, the module
+  falls back to a minimal embedded list and prints a `[refs] WARNING` to stderr. Never ignore that
+  warning: a filter running on the stub is a filter that manufactures false clusters.
+
+`python3 tests/test_references.py` (also run by `tools/eval/run_eval.py`) proves every file parses,
+is documented, and is actually being loaded rather than silently falling back.

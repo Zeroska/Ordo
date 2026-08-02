@@ -28,6 +28,7 @@ import urllib.error
 from urllib.parse import urlencode
 
 from wp_common import *      # noqa  — DEFAULT_UA, _secret, uniq, strip_www, _registrable
+from wp_refs import ref_path, load_ref  # noqa — reference DATA lives in references/*.json
 from wp_recon import fofa_search
 from wp_analyze import classify_ip
 try:
@@ -35,16 +36,15 @@ try:
 except Exception:
     api_usage = None
 
-_ASN_REGISTRY = os.path.join(os.path.dirname(__file__), "..", "references", "asn_registry.json")
+_ASN_REGISTRY = ref_path(__file__, "asn_registry.json")
 
 # MX hostnames that belong to a managed mail provider — a shared one is NOT an operator pivot.
-_MANAGED_MX = (
-    "google.com", "googlemail.com", "l.google.com", "outlook.com", "protection.outlook.com",
-    "microsoft.com", "office365.com", "zoho.com", "zohomail.com", "yandex.net", "mail.ru",
-    "qq.com", "163.com", "mxhichina.com", "aliyun.com", "amazonses.com", "amazonaws.com",
-    "sendgrid.net", "mailgun.org", "pphosted.com", "mimecast.com", "secureserver.net",
-    "improvmx.com", "forwardemail.net", "yahoodns.net", "icloud.com", "cloudflare.com",
-)
+# DATA: references/third_party_noise.json -> managed_mx_suffixes (add providers there).
+_MX_FALLBACK = {"managed_mx_suffixes": [
+    "google.com", "googlemail.com", "outlook.com", "protection.outlook.com", "zoho.com",
+    "yandex.net", "qq.com", "163.com", "amazonaws.com", "secureserver.net", "cloudflare.com"]}
+_MANAGED_MX = tuple(
+    load_ref(ref_path(__file__, "third_party_noise.json"), _MX_FALLBACK)["managed_mx_suffixes"])
 
 
 # --------------------------------------------------------------------------- input detection

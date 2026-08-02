@@ -43,6 +43,7 @@ standards. Directory brute-forcing is a different (loud, active) capability and
 deliberately does not live here.
 """
 from wp_common import *  # noqa
+from wp_refs import ref_path, load_ref  # noqa — reference DATA lives in references/*.json
 from wp_net import fetch  # noqa
 from wp_extract import (extract_trackers, extract_saas, extract_crypto,  # noqa
                         extract_socials, extract_telegram, EMAIL_RE,
@@ -118,19 +119,14 @@ _API_HOST_HINT_RE = re.compile(
 # Infrastructure we never treat as the operator's backend (analytics/CDN/SaaS endpoints
 # every site talks to). Kept separate from the HTML-side CDN list because bundles reference
 # far more third-party endpoints than the document does.
-_BACKEND_NOISE_SUFFIXES = (
-    "googleapis.com", "gstatic.com", "google.com", "google-analytics.com",
-    "googletagmanager.com", "doubleclick.net", "facebook.com", "facebook.net",
-    "cloudflare.com", "cloudflareinsights.com", "jsdelivr.net", "unpkg.com",
-    "cdnjs.com", "bootstrapcdn.com", "fontawesome.com", "jquery.com",
-    "w3.org", "schema.org", "github.com", "githubusercontent.com", "npmjs.org",
-    "sentry.io", "ingest.sentry.io", "bugsnag.com", "newrelic.com", "hotjar.com",
-    "clarity.ms", "segment.io", "segment.com", "mixpanel.com", "amplitude.com",
-    "intercom.io", "crisp.chat", "tawk.to", "zendesk.com", "youtube.com",
-    "vimeo.com", "twitter.com", "x.com", "linkedin.com", "instagram.com",
-    "apple.com", "microsoft.com", "mozilla.org", "adobe.com", "wixpress.com",
-    "shopify.com", "squarespace.com", "webflow.com", "wp.com", "gravatar.com",
-)
+# DATA: references/third_party_noise.json -> backend_noise_suffixes (add providers there).
+_BACKEND_FALLBACK = {"backend_noise_suffixes": [
+    "googleapis.com", "gstatic.com", "google-analytics.com", "googletagmanager.com",
+    "doubleclick.net", "facebook.net", "cloudflare.com", "jsdelivr.net", "unpkg.com",
+    "sentry.io", "w3.org", "schema.org", "githubusercontent.com"]}
+_BACKEND_NOISE_SUFFIXES = tuple(
+    load_ref(ref_path(__file__, "third_party_noise.json"),
+             _BACKEND_FALLBACK)["backend_noise_suffixes"])
 
 
 def _skip_backend(host: str) -> bool:
