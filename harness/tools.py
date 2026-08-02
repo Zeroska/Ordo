@@ -152,7 +152,30 @@ def _ok(text: str) -> dict[str, Any]:
     "host into a mail_server pivot and an M365 routing host into an m365_tenant pivot, and flags a "
     "no-MX domain as a throwaway/parked tell; and reads SPF + DMARC (apex/_dmarc TXT) — custom SPF "
     "includes and ip4/ip6 senders become spf_include/mail_sender_ip pivots, and DMARC rua/ruf "
-    "addresses not at a monitoring vendor become dmarc_contact attribution pivots) OR a "
+    "addresses not at a monitoring vendor become dmarc_contact attribution pivots; plus the ASSET "
+    "layer, which is what makes an SPA/white-label kit readable — it fetches the page's OWN JS "
+    "bundles (config/env-named files and hashed build artifacts first, known libraries skipped) and "
+    "re-runs every extractor over the bundle source, because on a modern kit the shell HTML is empty "
+    "and the operator's config lives only there: an off-apex api_endpoint / websocket_endpoint (the "
+    "backend the front end was compiled against — the strongest same-operator link in a white-label "
+    "kit, since every front rotates but the backend does not), build_env:<KEY> tokens inlined by the "
+    "bundler (a VUE_APP_BRAND/REACT_APP_TENANT value is the platform naming its own customer — same "
+    "value = same tenant, same KEY with a different value = same PLATFORM not same operator), and a "
+    "js_bundle_sha256 kit fingerprint that survives a favicon/DOM re-skin; from those same "
+    "already-fetched bundles it also recovers the SPA ROUTE TABLE (Vue/React/Angular route "
+    "literals, Next.js sortedPages/__NEXT_DATA__) at ZERO extra requests and with no path "
+    "brute-forcing — a spa_route_signature (sha256 over the sorted route set: an identical route "
+    "inventory elsewhere = the same compiled app, same-KIT not same-operator), plus spa_route:admin "
+    "leads (the operator panel the public funnel never links to) and spa_route:funnel leads "
+    "(deposit/withdraw/KYC/referral — the scam's mechanics, read without walking the funnel); "
+    "discovered routes are NEVER fetched, they are leads for the analyst to judge; it then follows "
+    "sourceMappingURL to the .js.map for dev_username / dev_project / dev_path — the operator's own "
+    "build machine and internal project name, which survive every re-brand; and it reads the fixed "
+    "list of published policy files (robots.txt, sitemap.xml, ads.txt, app-ads.txt, security.txt, "
+    "humans.txt, apple-app-site-association) yielding adstxt_publisher (an owner-registered AdSense "
+    "pub- account, Tier-A like a GSC/GA4 token), apple_team_id + ios_bundle_id, security_contact and "
+    "robots_disallow leads. All of it is free/keyless and on by default; disable with "
+    "no_assets=true / no_well_known=true, or cap the bundle count with assets_max=<N>) OR a "
     "bare IP (IPPivot: passive IP recon — IPinfo ASN/abuse, FOFA ip= ports/services/co-hosted "
     "domains, Shodan host, dig MX/NS/TXT/PTR; a shared CDN/hosting IP is marked information not a "
     "same-operator pivot, and its ASN is banked to references/asn_registry.json). If ALREADY "
@@ -165,7 +188,10 @@ def _ok(text: str) -> dict[str, Any]:
 async def pivot_extract(args: dict[str, Any]) -> dict[str, Any]:
     res = collect_one(args["url"], args["case"], hostile=POLICY["hostile"],
                       passive=args.get("passive", False), proxy=args.get("proxy"),
-                      force=bool(args.get("force")))
+                      force=bool(args.get("force")),
+                      no_assets=bool(args.get("no_assets")),
+                      no_well_known=bool(args.get("no_well_known")),
+                      assets_max=args.get("assets_max"))
     if res.get("error"):
         return _err(res["error"])
     blob = json.dumps(res.get("data") or {}, ensure_ascii=False)
@@ -177,7 +203,8 @@ async def pivot_extract(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def collect_one(url: str, case: str, *, hostile: bool = False, passive: bool = False,
-                proxy: str | None = None, force: bool = False) -> dict[str, Any]:
+                proxy: str | None = None, force: bool = False, no_assets: bool = False,
+                no_well_known: bool = False, assets_max: int | None = None) -> dict[str, Any]:
     """Collect ONE host end-to-end (cache-reuse → live fetch + enrichment → evidence capture →
     manifest). Sync + self-contained (no globals beyond config) so it is safe to fan out across
     threads via collect_many. Returns a summary dict, never raises."""
@@ -209,6 +236,14 @@ def collect_one(url: str, case: str, *, hostile: bool = False, passive: bool = F
     base = [os.path.join("WebPivot", "tools", "pivot_extract.py"), url, "--pretty", "-o", out, "--save-dom", dom]
     if proxy:
         base += ["--proxy-range", proxy]
+    # Asset layer (JS bundles / source maps / well-known policy files) is ON by default in
+    # pivot_extract; these only ever turn it DOWN, so a caller can shrink the target footprint.
+    if no_assets:
+        base += ["--no-assets"]
+    if no_well_known:
+        base += ["--no-well-known"]
+    if assets_max is not None:
+        base += ["--assets-max", str(int(assets_max))]
     if SMOKE:
         base += ["--no-enrich", "--no-whois"]                # cheap smoke only
     elif not NO_ARCHIVE:

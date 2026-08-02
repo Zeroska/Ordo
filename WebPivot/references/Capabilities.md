@@ -291,6 +291,103 @@ unrelated tenants); only an **origin-candidate** IP gets reversed. Classificatio
 domain pivot's `live_results.dns.ip_classification`. If the range cache is missing the step degrades
 gracefully (old behaviour). Refresh ranges with `python3 WebPivot/tools/cdn_ranges.py --update`.
 
+## Asset layer — JS bundles, source maps, policy files (`--no-assets` / `--no-well-known`)
+
+**The problem it solves:** on a modern SPA / white-label kit the shell HTML is nearly empty. Every
+extractor in this document is pointed at the HTML document, so on exactly the kits that matter most
+they find nothing. The operator's real configuration lives in `/assets/index-<hash>.js` or a
+`config.js`, and the developer's own machine paths survive in the `.js.map`.
+
+**1. JS bundles** (default ON). Resolves the page's `<script src>` list, keeps only the seed's own
+registrable domain, skips known third-party libraries, and priority-orders the rest — config/env
+names first, then content-hashed build artifacts, then entry points — capped at `--assets-max`
+(default 6) and a 2 MB total budget. Each bundle is fetched exactly once; its **sha256 is a re-skin
+resistant kit fingerprint** (a rebrand changes the favicon and the DOM, not the compiled bundle).
+Every existing extractor (trackers, SaaS tokens, crypto, Telegram, socials, emails) is then re-run
+over the bundle source and merged into the normal artifact dicts, with provenance kept under
+`artifacts.assets.js_derived`. **Phone extraction is deliberately excluded** — minified JS is dense
+with numeric literals and would return pure garbage; crypto survives only because every candidate is
+checksum-validated.
+
+**2. Backend / API endpoints.** `baseURL` / `apiUrl` / `axios.create` assignments, `wss://` sockets,
+`/graphql` endpoints, and hostnames whose leftmost label reads as a backend tier (`api`, `gateway`,
+`svc`, `trade`, …). Split into **off-apex** `api_endpoint` (HIGH — in a white-label kit the backend
+is shared by every front and is the strongest same-operator link the front end can give you) vs
+`api_endpoint:same_site` (LOW — infrastructure context, not a cross-site pivot). Analytics/CDN/SaaS
+endpoints are filtered out, and a backend on a hosted-platform apex is rejected by the one noise
+policy (`noise_filters.is_noise_indicator`) so a shared BaaS never becomes a same-operator edge —
+the same same-KIT-not-same-OPERATOR trap as a shared nameserver.
+
+**3. Build-time env vars.** `VUE_APP_*` / `REACT_APP_*` / `NEXT_PUBLIC_*` / `VITE_*` values inlined
+by the bundler become `build_env:<KEY>` pivots. A brand/tenant-shaped key is HIGH: it is the
+white-label platform naming its own customer. **Read it carefully — the same KEY with the same VALUE
+is the same tenant; the same KEY with a DIFFERENT value is the same PLATFORM, not the same
+operator.** Empty and boolean values are dropped.
+
+**4. Source maps.** Follows `sourceMappingURL` (including inline `data:` maps) to the `.js.map` and
+parses `sources[]` for `dev_username` (the build machine's home directory — CI/runner accounts like
+`builder`, `jenkins`, `ubuntu` are rejected), `dev_project` (the internal, often un-rebranded name of
+the kit), and `dev_path`. `node_modules` entries are dependency noise and never contribute a project
+root. When the map ships `sourcesContent`, the **original un-minified source — with the operator's
+own comments, often in their native language — is recoverable from that one file.** These artifacts
+survive every front-end re-skin and are among the strongest passive attribution signals available.
+
+**5. SPA route table — passive path discovery.** A single-page app ships its *entire* routing
+table inside the bundle: Vue Router, React Router and Angular all compile to object literals
+carrying `path:"/…"`, and Next.js emits a `sortedPages` manifest (plus `__NEXT_DATA__` in the HTML).
+Because the bundle was already fetched for the steps above, **recovering the app's full URL
+inventory costs ZERO additional requests to the target** — no wordlist, no 404 storm, nothing for
+the operator to notice. This is the passive answer to "what paths exist here", and it is strictly
+better than brute-forcing: a router table lists the routes that actually exist, including ones no
+wordlist would guess.
+
+- `spa_route_signature` — sha256 over the **sorted** route set (order-independent, so a bundler
+  reshuffling declaration order between builds can't change it; needs ≥3 routes to be meaningful).
+  An identical route inventory on another domain means the same compiled application, which
+  survives a cosmetic re-skin. Like any kit fingerprint this is same-**KIT**; corroborate with an
+  owner-tied artifact before calling it same-**OPERATOR**.
+- `spa_route:admin` (LOW) — `/admin`, `/console`, `/backoffice`, `/staff`… the operator surface the
+  public funnel never links to.
+- `spa_route:funnel` (LOW) — `/deposit`, `/withdraw`, `/kyc`, `/invite/:code`, `/commission`… reads
+  out what the application *does to a victim* without walking the funnel.
+- `spa_route_name` (LOW) — named routes are the developer's own vocabulary; an unusual name reused
+  under another brand points at the same codebase.
+
+Angular declares routes without a leading slash and is normalized, so the same app yields the same
+signature across frameworks. SVG icon path data (`{path:"M0 0L10 10z"}` in icon libraries) is the
+single biggest false-positive source and is explicitly rejected, along with bundled asset paths,
+the root route, and catch-alls. **The tool never fetches a discovered route** — visiting an admin
+path found this way is an analyst decision and a separate authorization question; the emitted
+queries point at the Wayback archive first. In the KB, the signature is a `same_route_table` edge
+while individual admin/funnel routes are recorded as facts only, because `/admin` is universal and
+would false-cluster the entire internet.
+
+> **Note — unquoted HTML attributes.** Production builds minify the HTML and drop attribute quotes
+> (`<script src=/static/js/app.6c9e4bdf.js>`). The extractor's attribute regexes accept both forms;
+> a quote-mandatory pattern silently finds no scripts at all on exactly these built-SPA kits.
+
+**6. Well-known / policy files** (default ON; `--no-well-known`). A **fixed list of published
+standards** — `robots.txt`, `sitemap.xml`, `ads.txt`, `app-ads.txt`, `.well-known/security.txt`,
+`humans.txt`, `.well-known/apple-app-site-association`. **This is not a wordlist and it never grows
+at runtime — nothing here brute-forces paths.** An HTML body is rejected for all of them so a SPA
+catch-all route that 200s every path can't manufacture phantom policy files. Yields:
+
+| Artifact | Pivot | Why it matters |
+|---|---|---|
+| `ads.txt` / `app-ads.txt` | `adstxt_publisher` | An AdSense/AdManager `pub-…` id is an **owner-registered** monetization account — a stranger cannot declare yours. **Tier A**, same strength class as a GSC verification token or an own GA4 property. Reverse it for every property that operator monetizes |
+| `apple-app-site-association` | `apple_team_id`, `ios_bundle_id` | The iOS twin of `assetlinks.json`. A Team ID is one paid, identity-verified Apple account signing every app the operator ships |
+| `security.txt` | `security_contact` | Operator-controlled mailbox → reverse-WHOIS it |
+| `robots.txt` | `robots_disallow` (LOW) | Admin/staging/panel paths the operator chose to hide — check the **archive** before touching one live |
+| `sitemap.xml` | (artifact) | Full funnel URL inventory; a better crawl frontier than scraping `<a>` tags |
+
+**Footprint / OPSEC.** Fetching the page's own JS is *less* anomalous than not fetching it — a real
+browser retrieves every one of those files. The seven policy GETs are the genuine extra footprint,
+on standard crawler-expected paths. All of it is FREE and keyless (never touched by `--free-only`),
+routes through `fetch()` so `--proxy` is honoured, and is gated to a **live, non-archived primary
+page** — never an offline/Wayback source, never re-run per crawled sub-page. `artifacts.assets.
+coverage` records what was attempted vs found, so "nothing here" stays distinguishable from "we
+didn't look."
+
 ## What it extracts
 
 (see `references/PivotArtifacts.md`): favicon mmh3/md5/sha256, analytics & ad IDs (GA4 `G-`, `GTM-`,

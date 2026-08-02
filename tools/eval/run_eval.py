@@ -229,6 +229,7 @@ def main():
         ("test_reverse_phone", "reverse-WHOIS phone + preview-first / confirm-if-large gate"),
         ("test_whois_parallel", "whois_summary parallelizes current+history (speed)"),
         ("test_frontier_guards", "frontier co-tenancy guards — multi-tenant cert / shared IP / bulk registrant"),
+        ("test_assets_layer", "asset layer — JS bundle select / sourcemap dev-identity / API+build-env / well-known"),
     ]
     for modname, desc in unit_mods:
         try:

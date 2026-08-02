@@ -82,6 +82,8 @@ from wp_pivots import *  # noqa
 from wp_analyze import *  # noqa
 from wp_crawl import *  # noqa
 import wp_extract  # noqa  (for the QR toggle set in main)
+import wp_assets   # noqa  (asset layer: JS bundles / source maps / well-known files toggles)
+from wp_assets import *  # noqa
 import wp_ippivot  # noqa  (IPPivot: bare-IP source runs passive IP recon instead of HTML)
 import wp_impersonate  # noqa  (ImpersonationHunt: --hunt-impersonation hunts lookalikes of a seed)
 try:
@@ -267,6 +269,23 @@ def main():
                     help="with --hunt-impersonation: also run the urlscan keyword sweep (metered)")
     ap.add_argument("--hunt-max", type=int, default=600, metavar="N",
                     help="with --hunt-impersonation: cap on generated candidates (default 600)")
+    ap.add_argument("--no-assets", action="store_true",
+                    help="do NOT fetch the page's own JS bundles or their source maps. Default is "
+                         "ON: on an SPA kit the shell HTML is empty and the operator's config "
+                         "(backend API, build tenant/brand, Sentry DSN) lives only in the bundle, "
+                         "and the .js.map leaks the developer's machine paths. A real browser "
+                         "fetches these files anyway, so collecting them adds no anomalous traffic.")
+    ap.add_argument("--no-well-known", action="store_true",
+                    help="do NOT probe the published policy files (robots.txt, sitemap.xml, "
+                         "ads.txt, app-ads.txt, security.txt, humans.txt, "
+                         "apple-app-site-association). Default is ON — 7 tiny GETs on standard, "
+                         "crawler-expected paths. ads.txt yields the AdSense pub- publisher id, "
+                         "an owner-tied token as strong as a GA4 property. This is a FIXED list "
+                         "of standards, never a wordlist — it does not brute-force paths.")
+    ap.add_argument("--assets-max", type=int, default=None, metavar="N",
+                    help=f"cap on how many same-origin JS bundles to fetch "
+                         f"(default {wp_assets.MAX_JS_FILES}; config/env-named files and hashed "
+                         f"build artifacts are fetched first, known libraries are skipped)")
     ap.add_argument("--decode-qr", action="store_true",
                     help="decode QR-code IMAGES from pixels (fetches candidate <img>/data-URIs; "
                          "needs pyzbar+Pillow or OpenCV). The zero-dep decode of QR-generator-service "
@@ -277,6 +296,11 @@ def main():
     if args.screenshot is not None and not args.render:
         args.render = True   # a screenshot requires the rendered (Playwright) page
     wp_extract.QR_DECODE_IMAGES = bool(args.decode_qr)
+    # Asset layer (JS bundles / source maps / well-known files) — on by default, per-half opt-out.
+    wp_assets.COLLECT_ASSETS = not args.no_assets
+    wp_assets.COLLECT_WELL_KNOWN = not args.no_well_known
+    if args.assets_max is not None:
+        wp_assets.MAX_JS_FILES = max(0, args.assets_max)
 
     # --- resolve User-Agent + proxy rotation. Crawling auto-enables UA rotation so a
     #     multi-page walk isn't one identical fingerprint; an explicit --ua pins one UA. ---

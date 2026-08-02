@@ -23,10 +23,12 @@ import hashlib
 import argparse
 import ipaddress
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from knowledge_base import KB  # noqa: E402
-from noise_filters import is_managed_dns, is_parking_favicon, is_noise_email  # noqa: E402
+from noise_filters import (is_managed_dns, is_parking_favicon, is_noise_email,  # noqa: E402
+                           is_noise_indicator)
 
 # reuse the collector's checksum validator so bad wallets can't enter via a stale raw file either
 try:
@@ -88,6 +90,24 @@ _NAME_JUNK = ("registrant state", "registrant province", "registrant country", "
 
 def _is_ip_host(host):
     return bool(_IP_HOST_RE.match((host or "").strip()))
+
+
+def _host_of(url):
+    """Bare lowercase hostname of a URL (asset-layer backends arrive as full URLs).
+    Tolerates protocol-relative '//host/path' and a bare host with no scheme."""
+    u = (url or "").strip()
+    if not u:
+        return ""
+    if u.startswith("//"):
+        u = "https:" + u
+    elif "://" not in u:
+        u = "https://" + u
+    try:
+        netloc = urlparse(u).netloc
+    except Exception:
+        return ""
+    host = netloc.split("@")[-1].split(":")[0].strip().lower().rstrip(".")
+    return host[4:] if host.startswith("www.") else host
 
 
 def _name_kind(nm):
@@ -457,6 +477,145 @@ def ingest_file(kb, path):
             ind = f"{pref}:{v}"
             kb.add_edge("domain", host, "uses_saas", "indicator", ind, "webpivot", COLLECTOR, observed, "high", ev)
             kb.add_fact("indicator", ind, "kind", label, "webpivot", COLLECTOR, observed, "high", ev)
+            n += 1
+
+    # --- ASSET LAYER (wp_assets): JS bundles, source maps, build config, policy files ---
+    # These are the artifacts that survive a re-skin. The front end is rebuilt per brand; the
+    # backend host, the build-time tenant token, the developer's machine and the operator's
+    # monetization account behind it are not. A shared-platform backend is filtered by the one
+    # noise policy (is_noise_indicator) so a white-label BaaS never becomes a same-operator edge.
+    assets = art.get("assets") or {}
+    _api = assets.get("api") or {}
+
+    for base in (_api.get("api_bases") or [])[:10]:
+        bh = _host_of(base)
+        if not bh or _is_ip_host(bh):
+            continue
+        ind = f"api_endpoint:{bh}"
+        if is_noise_indicator(ind):
+            kb.add_fact("domain", host, "backend_platform", bh,
+                        "webpivot", COLLECTOR, observed, "low", ev)
+            n += 1
+            continue
+        kb.add_edge("domain", host, "uses_backend", "indicator", ind,
+                    "webpivot", COLLECTOR, observed, "high", ev)
+        kb.add_fact("indicator", ind, "kind", "api_endpoint", "webpivot", COLLECTOR,
+                    observed, "high", ev)
+        n += 1
+
+    for ws in (_api.get("websockets") or [])[:6]:
+        wh_host = _host_of(ws)
+        if not wh_host or _is_ip_host(wh_host):
+            continue
+        ind = f"websocket:{wh_host}"
+        if is_noise_indicator(ind):
+            continue
+        kb.add_edge("domain", host, "uses_backend", "indicator", ind,
+                    "webpivot", COLLECTOR, observed, "medium", ev)
+        kb.add_fact("indicator", ind, "kind", "websocket", "webpivot", COLLECTOR,
+                    observed, "medium", ev)
+        n += 1
+
+    # Build-time tenant/brand tokens. Clustering keys on KEY *and* value: the same KEY with a
+    # DIFFERENT value means the same white-label PLATFORM (a same-kit link), not one operator.
+    _BRANDY = ("BRAND", "TENANT", "SITE", "NAME", "PROJECT", "CLIENT", "MERCHANT",
+               "PLATFORM", "COMPANY", "AGENT", "CHANNEL")
+    for key, vals in list((_api.get("build_env") or {}).items())[:20]:
+        if not any(b in key.upper() for b in _BRANDY):
+            continue
+        for v in vals[:3]:
+            ind = f"build_tenant:{key}={v}"
+            kb.add_edge("domain", host, "same_build_tenant", "indicator", ind,
+                        "webpivot", COLLECTOR, observed, "high", ev)
+            kb.add_fact("indicator", ind, "kind", "build_env", "webpivot", COLLECTOR,
+                        observed, "high", ev)
+            n += 1
+
+    # A compiled bundle digest — same build artifact deployed twice. Same KIT; only an operator
+    # link once corroborated, so it lands at medium like the other template/DOM hashes.
+    for f in (assets.get("collected") or [])[:8]:
+        if f.get("sha256"):
+            ind = f"js_bundle:{f['sha256'][:32]}"
+            kb.add_edge("domain", host, "same_bundle", "indicator", ind,
+                        "webpivot", COLLECTOR, observed, "medium", ev)
+            n += 1
+
+    for sm in (assets.get("source_maps") or [])[:4]:
+        for user in (sm.get("usernames") or [])[:4]:
+            ind = f"dev_user:{user.lower()}"
+            kb.add_edge("domain", host, "built_by", "indicator", ind,
+                        "webpivot", COLLECTOR, observed, "high", ev)
+            kb.add_fact("indicator", ind, "kind", "dev_username", "webpivot", COLLECTOR,
+                        observed, "high", ev)
+            n += 1
+        for root in (sm.get("project_roots") or [])[:5]:
+            ind = f"dev_project:{root.lower()}"
+            kb.add_edge("domain", host, "same_codebase", "indicator", ind,
+                        "webpivot", COLLECTOR, observed, "high", ev)
+            kb.add_fact("indicator", ind, "kind", "dev_project", "webpivot", COLLECTOR,
+                        observed, "high", ev)
+            n += 1
+
+    # SPA route inventory. The signature is a same-KIT edge (medium, like the DOM/template
+    # hashes): an identical compiled routing table survives a cosmetic re-skin, but a shared
+    # white-label platform gives every tenant the same routes — so it clusters the KIT, and
+    # only an owner-tied artifact promotes that to same-OPERATOR.
+    _routes = assets.get("routes") or {}
+    if _routes.get("signature"):
+        ind = f"spa_routes:{_routes['signature'][:32]}"
+        kb.add_edge("domain", host, "same_route_table", "indicator", ind,
+                    "webpivot", COLLECTOR, observed, "medium", ev)
+        kb.add_fact("indicator", ind, "kind", "spa_route_signature", "webpivot", COLLECTOR,
+                    observed, "medium", ev)
+        kb.add_fact("domain", host, "spa_router", str(_routes.get("router") or "unknown"),
+                    "webpivot", COLLECTOR, observed, "low", ev)
+        kb.add_fact("domain", host, "spa_route_count", str(_routes.get("count") or 0),
+                    "webpivot", COLLECTOR, observed, "low", ev)
+        n += 3
+    # Admin/funnel routes are recorded as FACTS about this domain, never as clustering edges:
+    # '/admin' is universal and would false-cluster the entire internet.
+    for _r in (_routes.get("admin_routes") or [])[:12]:
+        kb.add_fact("domain", host, "admin_route", _r, "webpivot", COLLECTOR, observed, "low", ev)
+        n += 1
+    for _r in (_routes.get("funnel_routes") or [])[:12]:
+        kb.add_fact("domain", host, "funnel_route", _r, "webpivot", COLLECTOR, observed, "low", ev)
+        n += 1
+
+    # ads.txt / app-ads.txt publisher accounts — owner-registered monetization ids. A stranger
+    # cannot declare your publisher id on their own domain, so this is Tier-A like a GSC token.
+    _wk = assets.get("well_known") or {}
+    for _which in ("ads_txt", "app_ads_txt"):
+        for pub in ((_wk.get(_which) or {}).get("publishers") or [])[:15]:
+            pid = pub.get("publisher_id")
+            if not pid:
+                continue
+            ind = f"adstxt_pub:{pub.get('exchange', '')}:{pid}"
+            kb.add_edge("domain", host, "uses_publisher_account", "indicator", ind,
+                        "webpivot", COLLECTOR, observed, "high", ev)
+            kb.add_fact("indicator", ind, "kind", "adstxt_publisher", "webpivot", COLLECTOR,
+                        observed, "high", ev)
+            n += 1
+
+    _aasa = _wk.get("apple_app_site_association") or {}
+    for team in (_aasa.get("team_ids") or [])[:5]:
+        ind = f"apple_team:{team}"
+        kb.add_edge("domain", host, "signed_by", "indicator", ind,
+                    "webpivot", COLLECTOR, observed, "high", ev)
+        kb.add_fact("indicator", ind, "kind", "apple_team_id", "webpivot", COLLECTOR,
+                    observed, "high", ev)
+        n += 1
+    for bid in (_aasa.get("bundle_ids") or [])[:6]:
+        ind = f"ios_bundle:{bid.lower()}"
+        kb.add_edge("domain", host, "ships_app", "indicator", ind,
+                    "webpivot", COLLECTOR, observed, "high", ev)
+        kb.add_fact("indicator", ind, "kind", "ios_bundle_id", "webpivot", COLLECTOR,
+                    observed, "high", ev)
+        n += 1
+
+    for contact in ((_wk.get("security_txt") or {}).get("contacts") or [])[:4]:
+        if "@" in contact and not is_noise_email(contact):
+            kb.add_edge("domain", host, "shows_email", "email", contact.lower(),
+                        "webpivot", COLLECTOR, observed, "medium", ev)
             n += 1
 
     # --- WHOIS ---

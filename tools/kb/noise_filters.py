@@ -210,6 +210,14 @@ def is_noise_indicator(indicator_value: str) -> bool:
         # canonical GA4 is UPPERCASE G-XXXXXXXXXX; anything else (g-recaptcha, g-signin…)
         # is a mis-extracted web-component class, not a measurement ID.
         return not re.fullmatch(r"G-[A-Z0-9]{8,12}", v.split(":", 1)[1])
+    if v.startswith(("api_endpoint:", "websocket:")):
+        # A backend harvested from a JS bundle (wp_assets) is only an operator link when the
+        # host is the operator's OWN infrastructure. A backend that is a hosted platform apex
+        # (a BaaS, a CDN, a parking/marketplace host) is shared by every tenant on it — the
+        # same same-KIT-not-same-OPERATOR trap as a shared nameserver.
+        # is_shared_infra_apex already matches a host against its parent apexes, so the
+        # full backend hostname can be passed straight through.
+        return is_shared_infra_apex(v.split(":", 1)[1])
     return False
 
 

@@ -34,6 +34,7 @@ from wp_recon import *  # noqa
 from wp_extract import *  # noqa
 from wp_pivots import *  # noqa
 import wp_extract  # for the QR_DECODE_IMAGES toggle main() sets
+import wp_assets   # asset layer: JS bundles, source maps, well-known files, API endpoints
 try:
     import whois_enrich  # WhoisXML registration pivots (optional, same tools/ dir)
     HAVE_WHOIS = True
@@ -76,6 +77,36 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
     description = meta.get("description") or meta.get("og:description")
     # ETag response header — a strong etag on a static asset can fingerprint a shared origin/kit.
     etag = headers.get("etag")
+
+    # --- ASSET LAYER: the page's own JS bundles, their source maps, the well-known/policy
+    # files, and the backend the build was compiled against. On an SPA kit the shell HTML is
+    # empty and ALL of the operator config lives here, so the extractors above are re-run over
+    # the bundle source and their results merged in (provenance kept in assets.js_derived).
+    # Same gate as the TLS/mail probes: live primary page only, never an archived or offline
+    # source, never re-run per crawled sub-page. Unlike the raw-socket TLS probe this routes
+    # through fetch(), so a --proxy is honored and no OPSEC suppression is needed.
+    assets = None
+    if probe_http and effective_url and not is_archived and base_url:
+        assets = wp_assets.collect(script_srcs, base_url, self_host,
+                                   ua=ua, proxy=proxy, timeout=20, html=html)
+        jd = assets.get("js_derived") or {}
+        for label, vals in (jd.get("trackers") or {}).items():
+            trackers[label] = uniq(list(trackers.get(label, [])) + list(vals))
+        for label, vals in (jd.get("saas_ids") or {}).items():
+            saas_ids[label] = uniq(list(saas_ids.get(label, [])) + list(vals))
+        for label, vals in (jd.get("crypto") or {}).items():
+            crypto[label] = uniq(list(crypto.get(label, [])) + list(vals))
+        for net, handles in (jd.get("socials") or {}).items():
+            socials[net] = uniq(list(socials.get(net, [])) + list(handles))
+        # telegram entries are dicts ({url,kind,handle}) — uniq() can't hash them, so
+        # de-dup on the handle the way extract_telegram itself does.
+        _tg_seen = {t.get("handle", "").lower() for t in telegram}
+        for t in (jd.get("telegram") or []):
+            h = (t.get("handle") or "").lower()
+            if h and h not in _tg_seen:
+                _tg_seen.add(h)
+                telegram.append(t)
+        emails = uniq(list(emails) + list(jd.get("emails") or []))[:40]
 
     third_party = []
     for u in script_srcs + all_hrefs:
@@ -227,6 +258,7 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
         "mail": mail,
         "app_downloads": app_downloads,
         "qr_codes": qr_codes,
+        "assets": assets,
         "trackers": trackers,
         "saas_ids": saas_ids,
         "crypto": crypto,
