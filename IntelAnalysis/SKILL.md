@@ -282,6 +282,78 @@ statement about today, and it is the single easiest way to put a wrong IP in a t
   at one registrar is one plausible bulk purchase; same-day creation across *different* registrars
   is a deliberate distribution and a much stronger operator signal.
 
+## 1.6 Victim profiling — when the hostname isn't the operator's  ▢ TUNE
+
+**If the operator is serving from a name they do not own, the victims are evidence.** Hijacked
+subdomains, compromised CMS installs and dangling records all mean the operator had to *obtain*
+each hostname. The victim set is therefore a sample of their **capability**, and profiling it
+answers a question infrastructure analysis cannot:
+
+> To get these hostnames, what did the operator have to be able to do — and did they do it
+> themselves, or buy it?
+
+Run this whenever a seed's apex is a legitimate business whose own records are intact. Tool:
+`tools/kb/victim_profile.py` (`victim_profile` MCP tool); recipe: `Workflows/VictimProfile.md`.
+
+### Profile the victim, not just the attacker
+
+For every victim apex, record what the **legitimate** side looks like: DNS operator (the account
+that had to be written into), registrar, hosting ASN, control panel, CMS, MX provider, country /
+TLD, business sector, domain age, and *when* the hijacked label first appeared. Then read the
+distribution across victims — the shape names the vector:
+
+| Victim set shape | Access vector it supports | What to chase next |
+|---|---|---|
+| Nearly all at **one provider** (not a hyperscaler) | That provider is breached, or an insider | The provider's own incident response |
+| One **control panel** across **many** providers | Panel exploit / default credentials | The panel's **version banner** — a version-locked set is near proof |
+| One **CMS or plugin** across many providers | CMS/plugin vulnerability | The plugin version; compare against the sector base rate |
+| A small **DNS operator / agency** + one country or sector | A reseller, web agency or IT contractor was compromised | Who administers all of them |
+| **Nothing technical in common** | **Stolen or purchased credentials** | Infostealer corpora; onset clustering |
+
+### The rule analysts get wrong: dispersion is a finding
+
+A victim set with no shared platform reads like a failed analysis — "no pattern". It is the
+opposite. **A credential list has no technical common factor**, because it was assembled by
+infostealer malware across whatever machines happened to be infected, or sold as an
+access-broker lot. Dispersion across providers, countries, panels and sectors *is* the signature.
+State it positively: *"the absence of a shared platform across N providers in M countries is
+itself the evidence — this is a credential supply, not an exploit."*
+
+### Base rates before you believe a concentration
+
+A dimension whose dominant value is the world's default tells you nothing. **cPanel** on most
+shared hosting and **WordPress** on ~40% of the web will both look "concentrated" in any victim
+set you assemble, related or not. Before reporting a concentration, ask what share you would
+expect from a random draw of small-business domains. Promote it only with a shared **version** or
+a specific vulnerable component; otherwise label it a base-rate artifact. A concentration on a
+*minority* platform (Plesk, DirectAdmin, CyberPanel, a regional host) is worth far more than the
+same percentage on the default.
+
+### Onset timing separates a dump from a drip
+
+Date each hijack (first CT issuance for the label is usually the tightest bound; the added DNS
+record is rarely dateable). Compressed onset across many victims = **one bulk credential dump
+being worked through**. A steady spread over months = **ongoing access**, a drip-fed broker
+relationship, or a re-usable exploit. Same victim set, different remediation urgency.
+
+### Why this changes the recommendation
+
+Get the vector wrong and the advice is wrong. A panel exploit is fixed by a vendor patch; a
+provider breach by that provider; a **credential supply is fixed only by per-victim resets** — and
+until those happen, taking down the page accomplishes close to nothing, because the operator
+moves to the next name on the list. **Say which of these you are recommending, and why the victim
+shape supports it.**
+
+**Two discipline notes.** (1) The victims are **not the target** — never scan or probe them.
+Everything here comes from public DNS and records you already hold; the panel is identified from
+the subdomains a panel creates in its *own customer's* zone. (2) A domain the operator
+**registered themselves** has no victim; counting it inflates provider diversity and corrupts
+every concentration. Exclude it explicitly — the tool cannot tell, only you can.
+
+▢ **Your thresholds:** _how many victims you need before you'll call a shape; which platforms you
+treat as base-rate noise in your region; whether you fold victim-side findings into the operator
+assessment or report them separately to the hosting providers._
+
 ## 2. Correlation & the same-* distinction  ▢ TUNE
 
 Three claims of increasing strength — never conflate them:

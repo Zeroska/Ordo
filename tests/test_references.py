@@ -134,6 +134,7 @@ def check():
     import ingest_webpivot, hypothesize, ingest_report, noise_filters              # noqa: E401
     import analyze_artifact                                                        # noqa: E401
     import case_timeline                                                           # noqa: E401
+    import victim_profile                                                          # noqa: E401
 
     consumers = [
         ("wp_pivots._GENERIC_SUBLABELS", wp_pivots._GENERIC_SUBLABELS,
@@ -192,6 +193,17 @@ def check():
          case_timeline._EV_FALLBACK["permalink_templates"]),
         ("case_timeline.GRADING", case_timeline.GRADING,
          case_timeline._EV_FALLBACK["source_grading"]),
+        # Victim profiling: on the fallback the panel signatures shrink to two labels, so most
+        # victims come back panel='unknown' and the access-vector call silently degrades to
+        # "insufficient data" on a set that would otherwise have discriminated cleanly.
+        ("victim_profile.PANEL_DNS", victim_profile.PANEL_DNS,
+         victim_profile._VP_FALLBACK["panel_dns_signatures"]),
+        ("victim_profile.MANAGED_DNS", victim_profile.MANAGED_DNS,
+         victim_profile._VP_FALLBACK["managed_dns_operators"]),
+        ("victim_profile.SECTORS", victim_profile.SECTORS,
+         victim_profile._VP_FALLBACK["victim_sectors"]),
+        ("victim_profile.HYPOTHESES", victim_profile.HYPOTHESES,
+         victim_profile._VP_FALLBACK["hypotheses"]),
     ]
     for name, loaded, fallback in consumers:
         ok(len(loaded) > len(fallback),

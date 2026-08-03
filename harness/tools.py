@@ -946,6 +946,41 @@ async def case_reopen(args: dict[str, Any]) -> dict[str, Any]:
             "is_error": r.returncode != 0}
 
 
+@tool(
+    "victim_profile",
+    "VICTIM-SIDE analysis — run this when the operator serves from hostnames they DO NOT OWN "
+    "(a phishing label on a legitimate business's subdomain, a compromised CMS, a dangling "
+    "record). It does not attribute; it infers the operator's ACCESS VECTOR, because the victim "
+    "set is a sample of their capability: victims all at one provider = that provider is "
+    "breached; one control panel across many providers = a panel exploit; one CMS = a plugin "
+    "vulnerability; a small shared DNS operator + one country/sector = a compromised web agency; "
+    "and NOTHING technical in common = STOLEN OR PURCHASED CREDENTIALS (dispersion is a positive "
+    "finding, not a dead end — a credential list has no common platform by construction). Fully "
+    "PASSIVE: public DNS only, the victims are never scanned; the control panel is read from the "
+    "subdomains a panel creates in its own customer's zone. Flags base-rate confounds (cPanel/"
+    "WordPress dominate any victim set) instead of counting them. Pass case=<case> to derive the "
+    "victim set from collected hosts, and exclude='a.com,b.com' for any apex the OPERATOR "
+    "registered themselves — those have no victim and would corrupt every concentration. "
+    "Thresholds are tunable in tools/kb/references/victim_profile.json. Read-only.",
+    {"case": str},  # victims:str (comma list), exclude:str optional -> args.get()
+    annotations=READONLY,
+)
+async def victim_profile(args: dict[str, Any]) -> dict[str, Any]:
+    cmd = [PY, os.path.join("tools", "kb", "victim_profile.py")]
+    if args.get("case"):
+        case = args["case"]
+        cmd += ["--case", case,
+                "-o", os.path.join(ROOT, "cases", case, "victim_profile.json")]
+    for v in (args.get("victims") or "").replace(",", " ").split():
+        cmd.append(v)
+    if args.get("exclude"):
+        cmd += ["--exclude", str(args["exclude"])]
+    r = _run(cmd, timeout=300)
+    return {"content": [{"type": "text",
+                         "text": r.stdout or r.stderr or "victim_profile produced no output"}],
+            "is_error": r.returncode != 0}
+
+
 # ---------------------------------------------------------------- servers + names
 COLLECT_SERVER = create_sdk_mcp_server(
     "collect", tools=[pivot_extract, analyze_artifact, fallback_probe, impersonation_hunt,
@@ -955,7 +990,7 @@ ANALYZE_SERVER = create_sdk_mcp_server(
                       reverse_whois, cert_overlap, reference_check, reference_add,
                       which_cases, domain_verdict, api_usage,
                       case_clusters, case_frontier, case_loop, case_reopen,
-                      render_diagram, case_timeline, render_report])
+                      render_diagram, case_timeline, render_report, victim_profile])
 
 COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__analyze_artifact",
                  "mcp__collect__fallback_probe", "mcp__collect__impersonation_hunt",
@@ -970,4 +1005,4 @@ ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__case_loop",
                  "mcp__analyze__case_reopen",
                  "mcp__analyze__render_diagram", "mcp__analyze__case_timeline",
-                 "mcp__analyze__render_report"]
+                 "mcp__analyze__render_report", "mcp__analyze__victim_profile"]
