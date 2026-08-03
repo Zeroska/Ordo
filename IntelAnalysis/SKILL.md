@@ -310,7 +310,7 @@ distribution across victims — the shape names the vector:
 | A small **DNS operator / agency** + one country or sector | A reseller, web agency or IT contractor was compromised | Who administers all of them |
 | **Nothing technical in common** | **Stolen or purchased credentials** | Infostealer corpora; onset clustering |
 
-### The rule analysts get wrong: dispersion is a finding
+### Dispersion is a finding
 
 A victim set with no shared platform reads like a failed analysis — "no pattern". It is the
 opposite. **A credential list has no technical common factor**, because it was assembled by
@@ -347,8 +347,8 @@ A **sector** concentration cutting across countries points somewhere else again:
 country** first (where the business is — the thing we actually want), then the **ccTLD** when it
 is a real country code. **Hosting country must never be counted.** Small businesses host abroad
 constantly, so hosting measures where the victim's *provider* is: a Cloudflare-fronted victim set
-reads as American, and a set of foreign SMBs on one British reseller reads as British. Both are
-confident, precise and wrong. Keep it as a displayed hint only.
+reads as American, and a set of foreign SMBs on one British reseller reads as British. Keep it as a
+displayed hint only.
 
 Two more traps. A two-letter TLD is **not** automatically a country — `.io`, `.co`, `.me`, `.ai`
 and friends are sold globally, and counting them invents clusters. And a country reached by WHOIS

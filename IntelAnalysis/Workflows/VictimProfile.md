@@ -99,6 +99,6 @@ the provider list into the recommendations.
 - **Counting operator-registered domains as victims** (step 2) — the most common way this analysis
   goes wrong.
 - **Treating dispersion as "no result".** Dispersion *is* the result: it names a credential supply.
-- **Reading the country off the hosting.** The most seductive error here — it is precise, confident
-  and answers a question nobody asked. Use the registrant country.
+- **Reading the country off the hosting.** Hosting identifies the victim's provider, not the victim.
+  Use the registrant country.
 - **Missing a regional sub-cluster** because the top-level verdict said "dispersed".

@@ -15,6 +15,16 @@
 \usepackage{parskip}
 \usepackage{etoolbox}
 \usepackage{fvextra}  % line-wrapping for code / verbatim (no page overflow)
+\usepackage{tocloft}  % TOC entry widths — see the Roman-numeral note below
+
+% Roman top-level numbers reach four glyphs (VII, VIII), but LaTeX reserves only
+% 1.5em for a section number in the contents list, so the numeral collides with
+% the title ("VIIThe kit family"). Widen the box and indent sub-entries to match.
+\setlength{\cftsecnumwidth}{3.2em}
+\setlength{\cftsubsecnumwidth}{3.2em}
+\setlength{\cftsubsecindent}{3.2em}
+\setlength{\cftsubsubsecnumwidth}{3.6em}
+\setlength{\cftsubsubsecindent}{6.4em}
 
 % palette — from IntelGraph theme.py (slate / steel / ochre / brick)
 \definecolor{ink}{HTML}{1F1D1A}
@@ -49,6 +59,19 @@
 \fancyhead[R]{\footnotesize\headingfont\color{muted}\CASEID}
 \fancyfoot[L]{\footnotesize\headingfont\color{muted}\CLSLINE}
 \fancyfoot[R]{\footnotesize\headingfont\color{muted}\thepage}
+
+% The contents list resets to the `plain` page style, which would drop the
+% classification banner from that page. A body page without its handling marking is a
+% marking failure, not a cosmetic one, so `plain` carries the same header/footer as
+% `fancy`. The cover is unaffected: it sets \thispagestyle{empty} explicitly.
+\fancypagestyle{plain}{%
+  \fancyhf{}%
+  \renewcommand{\headrulewidth}{0.4pt}%
+  \renewcommand{\footrulewidth}{0.4pt}%
+  \fancyhead[L]{\footnotesize\headingfont\color{muted}\CLSLINE}%
+  \fancyhead[R]{\footnotesize\headingfont\color{muted}\CASEID}%
+  \fancyfoot[L]{\footnotesize\headingfont\color{muted}\CLSLINE}%
+  \fancyfoot[R]{\footnotesize\headingfont\color{muted}\thepage}}
 
 % links
 \usepackage{hyperref}

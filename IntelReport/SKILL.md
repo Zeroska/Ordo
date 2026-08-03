@@ -178,6 +178,12 @@ enforces the typography (Roman numbering, compact tables, wrapped code); YOU enf
       `LR`→`TB` when a chain runs long. **Check the rendered width** — if `<stem>_hires.png` comes
       back wider than ~1200 px, cut text or restructure, don't just shrink the `includegraphics`
       width. The detail belongs in the prose; the figure carries the argument.
+    - **A Mermaid `subgraph` title does not reserve vertical space when it wraps.** A title longer
+      than its box renders the second line *underneath the first node*, so the identifier you most
+      wanted read is the one that vanishes — and the `.mmd` source looks perfectly correct either
+      way. Keep subgraph titles to a few words (`Victim DNS zone`) and put the domain or IP in a
+      NODE, which lays out properly. **Open the rendered PNG before shipping**; this class of
+      defect is invisible in the source.
 
 17. **Always include per-domain profiles.** A report must carry a "Domain & infrastructure profiles"
     appendix — one small **Field · Value** table per domain covering, at minimum: status
