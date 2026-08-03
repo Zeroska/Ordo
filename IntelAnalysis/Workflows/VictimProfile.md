@@ -49,12 +49,24 @@ Trigger on any of these:
    the tool flags those as base-rate confounded rather than silently counting them. A concentration
    on a **minority** platform or a **small regional** provider is the informative one.
 
-5. **Date the onsets.** Take the first certificate-transparency issuance for each hijacked label as
+5. **Read the demography (country x sector).** The tool prints both distributions and a reading.
+   Country comes from the WHOIS **registrant country**, else the ccTLD — never from hosting, which
+   measures where the victim's *provider* is and would turn any Cloudflare-fronted set into a US
+   cluster. Sector is derived from the domain name and registrant organisation only (we do not
+   fetch the victim's homepage), so it is frequently under-covered and is reported as
+   *"coverage too low to read"* rather than guessed.
+
+   **Check the regional sub-clusters even when the overall verdict is dispersion** — a country +
+   small-provider grouping hiding inside a dispersed set is usually the most actionable finding in
+   the case, because that one provider can find the victims you have not. Country also names the
+   **national CERT/CSIRT** to notify.
+
+6. **Date the onsets.** Take the first certificate-transparency issuance for each hijacked label as
    the tightest available bound on when the operator got in. Compressed onset = one bulk credential
    dump being worked through; a spread over months = ongoing access or a drip-fed broker
    relationship. Same victims, different urgency.
 
-6. **Write the vector judgment, and let it drive the recommendation.** This is the point of the
+7. **Write the vector judgment, and let it drive the recommendation.** This is the point of the
    whole workflow — the remediation differs by vector:
 
    | Vector | Who fixes it | What a page takedown achieves |
@@ -67,7 +79,7 @@ Trigger on any of these:
 
    State the vector, the victim shape that supports it, and the alternative you ruled out.
 
-7. **Report to the providers, not only the brand.** Victim-side findings are actionable by people
+8. **Report to the providers, not only the brand.** Victim-side findings are actionable by people
    who are not your client: give each hosting provider the list of *their* customer zones carrying
    attacker records, and ask them to sweep for the operator's addresses across their whole estate.
    That is usually the highest-leverage output of the entire case.
@@ -87,3 +99,6 @@ the provider list into the recommendations.
 - **Counting operator-registered domains as victims** (step 2) — the most common way this analysis
   goes wrong.
 - **Treating dispersion as "no result".** Dispersion *is* the result: it names a credential supply.
+- **Reading the country off the hosting.** The most seductive error here — it is precise, confident
+  and answers a question nobody asked. Use the registrant country.
+- **Missing a regional sub-cluster** because the top-level verdict said "dispersed".

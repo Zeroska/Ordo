@@ -329,6 +329,43 @@ a specific vulnerable component; otherwise label it a base-rate artifact. A conc
 *minority* platform (Plesk, DirectAdmin, CyberPanel, a regional host) is worth far more than the
 same percentage on the default.
 
+### Demographics — country and sector say whether the list was SELECTED
+
+The platform dimensions tell you *how* they got in. **Country and sector tell you whether the
+victim list was chosen or merely inherited** — and that is a different question with a different
+answer. Read the two together:
+
+| | **Providers concentrated** | **Providers dispersed** |
+|---|---|---|
+| **Country concentrated** | a **regional host / national reseller** was compromised — notify it directly, it is the shortest path to victims you have not found | a **region-selected list**, or a lure that needs one language — check whether the impersonated brand is national |
+| **Country dispersed** | *(rare — re-check your provider grouping)* | **indiscriminate dump** — worked through in whatever order it arrived |
+
+A **sector** concentration cutting across countries points somewhere else again: vertical software
+(a sector-specific CMS or booking platform) or a list bought by industry.
+
+**Get the country from the victim, not from their server.** Source order is WHOIS **registrant
+country** first (where the business is — the thing we actually want), then the **ccTLD** when it
+is a real country code. **Hosting country must never be counted.** Small businesses host abroad
+constantly, so hosting measures where the victim's *provider* is: a Cloudflare-fronted victim set
+reads as American, and a set of foreign SMBs on one British reseller reads as British. Both are
+confident, precise and wrong. Keep it as a displayed hint only.
+
+Two more traps. A two-letter TLD is **not** automatically a country — `.io`, `.co`, `.me`, `.ai`
+and friends are sold globally, and counting them invents clusters. And a country reached by WHOIS
+(`SLOVAKIA`) and by ccTLD (`SK`) must be **normalised to one value**, or a single country splits
+in half and the concentration disappears.
+
+**Sector will often be thin, and that is fine — say so.** We derive it from the domain name and
+the WHOIS registrant organisation, because we will not fetch the victim's own homepage. When it
+resolves for under half the set, report *"coverage too low to read"* rather than treating a
+2-of-13 sample as a pattern.
+
+**Look for regional sub-clusters even when the overall verdict is dispersion.** A country + small
+provider grouping can hide inside a set that is dispersed overall, and it is often the most
+actionable thing in the case: it names one provider who can find the victims you have not.
+
+Country also has a purely operational use: it names the **national CERT/CSIRT** to notify.
+
 ### Onset timing separates a dump from a drip
 
 Date each hijack (first CT issuance for the label is usually the tightest bound; the added DNS

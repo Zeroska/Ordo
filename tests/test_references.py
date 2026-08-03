@@ -204,6 +204,12 @@ def check():
          victim_profile._VP_FALLBACK["victim_sectors"]),
         ("victim_profile.HYPOTHESES", victim_profile.HYPOTHESES,
          victim_profile._VP_FALLBACK["hypotheses"]),
+        # Demography: on the fallback, .io/.co read as countries (inventing clusters) and a
+        # WHOIS 'SLOVAKIA' never merges with a ccTLD 'SK', halving every country concentration.
+        ("victim_profile.GENERIC_TLDS", victim_profile.GENERIC_TLDS,
+         victim_profile._VP_FALLBACK["generic_two_letter_tlds"]),
+        ("victim_profile.COUNTRY_NAMES", victim_profile.COUNTRY_NAMES,
+         victim_profile._VP_FALLBACK["country_names"]),
     ]
     for name, loaded, fallback in consumers:
         ok(len(loaded) > len(fallback),

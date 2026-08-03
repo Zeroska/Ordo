@@ -73,6 +73,13 @@
         "exclude_managed": true,
         "requires_sector_or_country_concentration": true
       },
+      "regional_platform": {
+        "_comment": "A REGIONAL hosting provider or national reseller was compromised — the geographic form of reseller_or_agency, and the one that most often hides inside a set that otherwise looks dispersed. Supported when the victims sharing a small non-managed DNS operator are ALSO concentrated in one country. This can be true of a SUB-CLUSTER while the wider victim set is dispersed, so check it even when credential_supply is the overall verdict: the sub-cluster still deserves its own provider notification, and it is the shortest path to victims you have not found yet.",
+        "dimension": "country",
+        "min_concentration": 0.6,
+        "min_victims": 3,
+        "requires_nonmanaged_dns_concentration": 0.5
+      },
       "credential_supply": {
         "_comment": "The operator holds STOLEN or PURCHASED panel/DNS credentials for many unrelated victims — infostealer log corpora and initial-access-broker listings are the usual supply. This is the DEFAULT conclusion when every other hypothesis fails, and it is a positive finding, not a shrug: dispersion ACROSS providers, countries, panels and sectors is exactly the signature of a credential list, because a list has no technical common factor. Corroborate with onset clustering — a tight compromise window suggests one bulk dump was worked through; a spread suggests ongoing access or a drip-fed broker relationship.",
         "dimension": "*",
@@ -92,16 +99,63 @@
   },
 
   "victim_sectors": {
-    "_comment": "Coarse business-sector keywords matched against the victim apex label and page title, used only to test whether the victim set is sector-concentrated (which would point at a shared agency, a sector-specific CMS, or a targeted list) rather than sector-random (which points at an indiscriminate credential dump). Deliberately crude — this is a concentration test, not a business classifier.",
+    "_comment": "Coarse business-sector keywords, matched against the victim's DOMAIN NAME (all labels of the apex) and its WHOIS registrant organisation — both of which we already hold passively. The victim's own homepage is deliberately NOT fetched: victims are not the target. Used only to test whether the victim set is sector-CONCENTRATED (pointing at a shared agency, a vertical CMS, or a list bought by sector) or sector-RANDOM (pointing at an indiscriminate credential dump). Deliberately crude, and expected to leave many victims 'unknown' — it is a concentration test, not a business classifier. Coverage is reported so a weak sample is visible rather than silently assumed.",
     "entries": {
-      "real_estate": ["realit", "reality", "estate", "imob", "nekret", "property", "reals"],
-      "health": ["clinic", "health", "medic", "pharma", "dental", "healing", "therap"],
-      "education": ["school", "academ", "educa", "institut", "college", "univ"],
-      "media_news": ["news", "media", "press", "journal", "times", "post", "blog"],
-      "travel": ["travel", "tour", "trip", "holiday", "hotel", "resort"],
-      "industry": ["engineer", "electric", "constru", "refriger", "technic", "industr", "fuel"],
-      "retail": ["shop", "store", "market", "mall", "boutique"],
-      "ngo_religious": ["church", "shrine", "charity", "foundation", "ngo", "trust"]
+      "real_estate": ["realit", "reality", "estate", "imob", "nekret", "property", "reals", "realt", "nemovit", "prop"],
+      "health": ["clinic", "health", "medic", "pharma", "dental", "healing", "therap", "hospital", "care", "wellness", "diagnost"],
+      "education": ["school", "academ", "educa", "institut", "college", "univ", "learn", "training", "tutor"],
+      "media_news": ["news", "media", "press", "journal", "times", "post", "blog", "radio", "tv24", "daily"],
+      "travel": ["travel", "tour", "trip", "holiday", "hotel", "resort", "trek", "safari", "voyage"],
+      "industry": ["engineer", "electric", "constru", "refriger", "technic", "industr", "fuel", "steel", "cement", "machin", "biofuel"],
+      "retail": ["shop", "store", "market", "mall", "boutique", "trade", "supply"],
+      "ngo_religious": ["church", "shrine", "charity", "foundation", "ngo", "trust", "mission", "relief"],
+      "finance_legal": ["capital", "financ", "invest", "insur", "legal", "advocat", "account", "audit", "consult"],
+      "food_hosp": ["restaur", "cafe", "coffee", "food", "cater", "bakery", "kitchen"],
+      "beauty_fitness": ["salon", "beauty", "spa", "fitness", "gym", "yoga", "cosmet"],
+      "automotive": ["auto", "motor", "garage", "tyre", "tire", "vehicle", "rental"],
+      "agri": ["agri", "farm", "crop", "seed", "livestock", "dairy"],
+      "it_services": ["softw", "digital", "webdes", "hosting", "cloud", "systems", "solutions", "infotech"]
+    }
+  },
+
+  "generic_two_letter_tlds": {
+    "_comment": "Two-letter TLDs that are technically country codes but are marketed and used GENERICALLY worldwide. A domain under one of these tells you nothing about the registrant's country, so it must NOT be counted as a country signal — otherwise a set of .io startups reads as a Chagos Islands cluster. Every other two-letter TLD is treated as a country code, which avoids shipping (and having to maintain) a 250-row ccTLD table. Add to this list, do not remove: a false 'unknown' is safe, a false country concentration is not.",
+    "values": [
+      "co", "io", "ai", "tv", "me", "cc", "ws", "fm", "gg", "to", "ly", "sh",
+      "st", "am", "im", "is", "la", "in", "it", "at", "be", "eu", "vc", "ms",
+      "nu", "ag", "mn", "so", "bo", "ec", "cx", "ki", "pw"
+    ]
+  },
+
+  "country_names": {
+    "_comment": "WHOIS registrant-country strings -> ISO 3166 alpha-2, so a country reached via WHOIS ('SLOVAKIA') and the same country reached via ccTLD ('SK') COUNT AS ONE value instead of splitting the concentration in half. Unmapped names are kept verbatim and still cluster correctly with themselves, so this map is an improvement, never a dependency — extend it as you meet new registries. Never guess an ISO code from the first two letters: SLOVAKIA is SK, not SL (Sierra Leone).",
+    "entries": {
+      "SLOVAKIA": "SK", "SLOVAK REPUBLIC": "SK", "CZECHIA": "CZ", "CZECH REPUBLIC": "CZ",
+      "NEPAL": "NP", "INDIA": "IN", "EGYPT": "EG", "SOUTH AFRICA": "ZA", "GERMANY": "DE",
+      "UNITED STATES": "US", "UNITED STATES OF AMERICA": "US", "UNITED KINGDOM": "GB",
+      "GREAT BRITAIN": "GB", "FRANCE": "FR", "NETHERLANDS": "NL", "SPAIN": "ES", "ITALY": "IT",
+      "POLAND": "PL", "HUNGARY": "HU", "AUSTRIA": "AT", "SWITZERLAND": "CH", "BELGIUM": "BE",
+      "PORTUGAL": "PT", "ROMANIA": "RO", "BULGARIA": "BG", "GREECE": "GR", "TURKEY": "TR",
+      "UKRAINE": "UA", "RUSSIA": "RU", "RUSSIAN FEDERATION": "RU", "CHINA": "CN",
+      "HONG KONG": "HK", "SINGAPORE": "SG", "MALAYSIA": "MY", "INDONESIA": "ID",
+      "THAILAND": "TH", "VIET NAM": "VN", "VIETNAM": "VN", "PHILIPPINES": "PH", "JAPAN": "JP",
+      "KOREA": "KR", "AUSTRALIA": "AU", "NEW ZEALAND": "NZ", "CANADA": "CA", "MEXICO": "MX",
+      "BRAZIL": "BR", "ARGENTINA": "AR", "CHILE": "CL", "COLOMBIA": "CO", "NIGERIA": "NG",
+      "KENYA": "KE", "GHANA": "GH", "MOROCCO": "MA", "PAKISTAN": "PK", "BANGLADESH": "BD",
+      "SRI LANKA": "LK", "UNITED ARAB EMIRATES": "AE", "SAUDI ARABIA": "SA", "ISRAEL": "IL",
+      "IRELAND": "IE", "DENMARK": "DK", "SWEDEN": "SE", "NORWAY": "NO", "FINLAND": "FI"
+    }
+  },
+
+  "demographics": {
+    "_comment": "How the victim DEMOGRAPHY (country + business sector) is read. Country and sector answer a question the platform dimensions cannot: was this an INDISCRIMINATE credential dump, or a list selected for a region or a vertical? The four quadrants below are the reading. COUNTRY SOURCE PRIORITY, and it matters more than it looks: (1) WHOIS registrant country — where the BUSINESS is, the signal we actually want; (2) ccTLD, when the TLD is a real country code. HOSTING country is deliberately NOT counted, only shown as a hint, because it measures where the victim's HOSTING COMPANY is, not where the victim is — small businesses routinely host abroad, and a victim set behind Cloudflare would otherwise read as a US cluster while a set of Nepali businesses on a UK reseller would read as British. Both are wrong answers to the demographic question. Country also has an operational use beyond analysis: it names the national CERT/CSIRT to notify.",
+    "min_coverage": 0.5,
+    "concentration": 0.6,
+    "readings": {
+      "regional_platform": "country concentrated AND DNS operator concentrated — a regional hosting reseller or national provider was compromised; notify it directly, it is the shortest path to every remaining victim",
+      "geo_targeted_list": "country concentrated but providers dispersed — a region-selected credential list, or a campaign whose lure needs a specific language; check whether the lure brand is national",
+      "vertical_targeted": "sector concentrated across countries — vertical software (a sector-specific CMS or booking platform), or a list bought by industry",
+      "indiscriminate": "country AND sector both dispersed — an untargeted dump worked through in whatever order it arrived; the victims have nothing in common because the list never did"
     }
   }
 }

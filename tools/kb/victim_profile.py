@@ -66,6 +66,9 @@ _VP_FALLBACK = {
     "thresholds": {"min_victims_for_any_call": 4, "onset_tight_days": 30,
                    "high_concentration": 0.8, "moderate_concentration": 0.6},
     "victim_sectors": {"real_estate": ["realit"], "health": ["clinic"]},
+    "generic_two_letter_tlds": ["co", "io"],
+    "country_names": {"SLOVAKIA": "SK"},
+    "demographics": {"min_coverage": 0.5, "concentration": 0.6, "readings": {}},
 }
 _REF = load_ref(ref_path(__file__, "victim_profile.json"), _VP_FALLBACK)
 
@@ -75,6 +78,9 @@ MANAGED_DNS = _REF["managed_dns_operators"]
 HYPOTHESES = _REF["hypotheses"]
 THRESHOLDS = _REF["thresholds"]
 SECTORS = _REF["victim_sectors"]
+GENERIC_TLDS = set(_REF["generic_two_letter_tlds"])
+COUNTRY_NAMES = _REF["country_names"]
+DEMOGRAPHICS = _REF["demographics"]
 
 _IPV4 = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 
@@ -103,15 +109,30 @@ def _apex(host: str) -> str:
     return ".".join(parts[-2:])
 
 
-def _asn_of(ip: str) -> str:
-    """Origin ASN via Team Cymru's DNS interface — keyless, passive, no account."""
+def _origin(ip: str) -> tuple[str, str]:
+    """(ASN, country) via Team Cymru's DNS interface — keyless, passive, no account.
+
+    The TXT record is `ASN | prefix | CC | registry | date`, so one lookup gives us both the
+    network and the country the address is REGISTERED in."""
     if not _IPV4.match(ip or ""):
-        return ""
+        return ("", "")
     rev = ".".join(reversed(ip.split(".")))
     for txt in _dig(f"{rev}.origin.asn.cymru.com", "TXT"):
-        m = re.search(r'"?\s*(\d+)\s*\|', txt)
-        if m:
-            return "AS" + m.group(1)
+        parts = [p.strip().strip('"') for p in txt.strip('"').split("|")]
+        if len(parts) >= 3 and parts[0].strip().isdigit():
+            return ("AS" + parts[0].strip(), parts[2].strip().upper())
+    return ("", "")
+
+
+def _country_from_tld(apex: str) -> str:
+    """Country from the ccTLD, or "" when the TLD carries no country meaning.
+
+    Any two-letter TLD is treated as a country code EXCEPT those marketed generically (.io, .co,
+    .me …) — that avoids shipping a 250-row table while refusing to read `.io` as a country. The
+    exception list is reference DATA so an analyst can extend it without touching this file."""
+    tld = apex.rsplit(".", 1)[-1].lower()
+    if len(tld) == 2 and tld not in GENERIC_TLDS:
+        return tld.upper()
     return ""
 
 
@@ -120,13 +141,16 @@ def _is_managed(ns_suffix: str) -> bool:
 
 
 # ------------------------------------------------------------------------------ victim profiling
-def profile_victim(apex: str, hijacked: list[str] | None = None) -> dict:
-    """Passively profile ONE victim apex. DNS only — the victim is never probed or scanned."""
+def profile_victim(apex: str, hijacked: list[str] | None = None,
+                   registrant_org: str = "", registrant_country: str = "") -> dict:
+    """Passively profile ONE victim apex. DNS + records we already hold — the victim is never
+    probed or scanned, and its own website is deliberately not fetched."""
     prof: dict = {"apex": apex, "hijacked_labels": sorted(hijacked or [])}
 
     ips = [x for x in _dig(apex, "A") if _IPV4.match(x)]
     prof["apex_ip"] = ips[0] if ips else None
-    prof["apex_asn"] = _asn_of(ips[0]) if ips else ""
+    asn, host_cc = _origin(ips[0]) if ips else ("", "")
+    prof["apex_asn"] = asn
 
     ns = [n.lower() for n in _dig(apex, "NS")]
     prof["nameservers"] = ns
@@ -154,9 +178,24 @@ def profile_victim(apex: str, hijacked: list[str] | None = None) -> dict:
     prof["panel_evidence"] = {k: sorted(v) for k, v in panel_hits.items()}
     prof["panel"] = max(panel_hits, key=lambda k: len(panel_hits[k])) if panel_hits else "unknown"
 
-    label = apex.split(".")[0]
+    # COUNTRY — we want where the BUSINESS is, so: WHOIS registrant country first, then ccTLD.
+    # Hosting country is recorded as a HINT ONLY and never counted: it measures where the victim's
+    # hosting company is, not the victim. Counting it turns any Cloudflare-fronted set into a US
+    # cluster, and a set of foreign SMBs on one UK reseller into a British one — both false.
+    whois_cc = COUNTRY_NAMES.get((registrant_country or "").strip().upper(),
+                                 (registrant_country or "").strip().upper())
+    tld_cc = _country_from_tld(apex)
+    prof["country"] = whois_cc or tld_cc or ""
+    prof["country_basis"] = "whois" if whois_cc else ("cctld" if tld_cc else "")
+    prof["country_counted"] = bool(prof["country"])          # hosting never reaches this
+    prof["hosting_country_hint"] = host_cc
+
+    # SECTOR — from the domain NAME plus the WHOIS registrant organisation we already hold.
+    # The victim's own homepage is not fetched: victims are not the target.
+    hay = " ".join(apex.split(".")[:-1]) + " " + (registrant_org or "").lower()
+    prof["registrant_org"] = registrant_org or ""
     prof["sector"] = next((s for s, kws in SECTORS.items()
-                           if any(k in label for k in kws)), "unknown")
+                           if any(k in hay for k in kws)), "unknown")
     prof["tld"] = apex.rsplit(".", 1)[-1]
     return prof
 
@@ -181,6 +220,7 @@ def assess(profiles: list[dict]) -> dict:
         "registrar": [p.get("registrar", "") for p in profiles],
         "apex_asn": [p.get("apex_asn", "") for p in profiles],
         "tld": [p.get("tld", "") for p in profiles],
+        "country": [p.get("country", "") for p in profiles],
         "sector": [p.get("sector", "unknown") for p in profiles],
         "mx_operator": [p.get("mx_operator", "") for p in profiles],
     }
@@ -193,10 +233,70 @@ def assess(profiles: list[dict]) -> dict:
     providers = {p.get("dns_operator", "") for p in profiles if p.get("dns_operator")}
     n_providers = len(providers)
 
+    # --- DEMOGRAPHY: country x sector. These answer what the platform dimensions cannot — was the
+    # victim list SELECTED (for a region, for a vertical) or was it whatever the dump contained?
+    dcfg = DEMOGRAPHICS if isinstance(DEMOGRAPHICS, dict) else {}
+    dconc = dcfg.get("concentration", 0.6)
+    dcov = dcfg.get("min_coverage", 0.5)
+    readings = dcfg.get("readings") or {}
+    demo = {}
+    for dim in ("country", "sector"):
+        vals = dims[dim]
+        top, share, known = _concentration(vals)
+        demo[dim] = {
+            "top": top, "concentration": round(share, 3),
+            "coverage": round(known / n, 3) if n else 0.0,
+            "distribution": dict(collections.Counter(
+                v for v in vals if v not in ("", "unknown")).most_common()),
+            # A dimension we could only resolve for a minority of victims cannot carry a
+            # conclusion — say so rather than letting a 2-of-13 sample look like a pattern.
+            "sufficient": (known / n if n else 0) >= dcov,
+        }
+    # Non-managed DNS concentration: a shared HYPERSCALER means nothing, a shared small host means
+    # a great deal, so the regional reading is computed on non-managed operators only.
+    nonmanaged = [p.get("dns_operator", "") for p in profiles
+                  if p.get("dns_operator") and not p.get("dns_managed")]
+    nm_top, nm_share, nm_known = _concentration(nonmanaged)
+    demo["nonmanaged_dns"] = {"top": nm_top, "concentration": round(nm_share, 3),
+                              "of_victims": round(nm_known / n, 3) if n else 0.0}
+
+    cc_ok = demo["country"]["sufficient"] and demo["country"]["concentration"] >= dconc
+    sec_ok = demo["sector"]["sufficient"] and demo["sector"]["concentration"] >= dconc
+    if cc_ok and nm_share >= dconc:
+        demo["reading"], demo["key"] = readings.get("regional_platform", ""), "regional_platform"
+    elif cc_ok:
+        demo["reading"], demo["key"] = readings.get("geo_targeted_list", ""), "geo_targeted_list"
+    elif sec_ok:
+        demo["reading"], demo["key"] = readings.get("vertical_targeted", ""), "vertical_targeted"
+    elif demo["country"]["sufficient"] or demo["sector"]["sufficient"]:
+        demo["reading"], demo["key"] = readings.get("indiscriminate", ""), "indiscriminate"
+    else:
+        demo["reading"], demo["key"] = (
+            "country and sector could not be resolved for enough victims to read the "
+            "demography — treat targeting as UNKNOWN, not as absent.", "insufficient")
+
+    # A country+provider sub-cluster can hide inside an otherwise dispersed set, and it is the
+    # shortest path to victims we have not found. Surface it even when the overall verdict is
+    # dispersion.
+    by_op = collections.defaultdict(list)
+    for p in profiles:
+        if p.get("dns_operator") and not p.get("dns_managed"):
+            by_op[p["dns_operator"]].append(p)
+    subs = []
+    for op, members in by_op.items():
+        if len(members) < 3:
+            continue
+        ccs = [m.get("country", "") for m in members if m.get("country")]
+        top_cc, cc_share, _ = _concentration(ccs)
+        if cc_share >= dconc:
+            subs.append({"dns_operator": op, "country": top_cc, "victims": len(members),
+                         "apexes": sorted(m["apex"] for m in members)})
+    demo["regional_subclusters"] = subs
+
     min_n = THRESHOLDS.get("min_victims_for_any_call", 4)
     if n < min_n:
         return {"victims": n, "shape": shape, "distinct_dns_operators": n_providers,
-                "supported": [],
+                "demographics": {}, "supported": [],
                 "verdict": f"INSUFFICIENT VICTIMS — {n} profiled, {min_n} needed. With a set this "
                            f"small every dimension looks concentrated by chance. Widen the victim "
                            f"sweep before drawing an access-vector conclusion."}
@@ -243,8 +343,14 @@ def assess(profiles: list[dict]) -> dict:
             continue
         if h.get("requires_sector_or_country_concentration"):
             mod = THRESHOLDS.get("moderate_concentration", 0.6)
-            if max(shape["sector"]["concentration"], shape["tld"]["concentration"]) < mod:
+            if max(shape["sector"]["concentration"], shape["country"]["concentration"]) < mod:
                 continue
+        if h.get("requires_nonmanaged_dns_concentration"):
+            if nm_share < h["requires_nonmanaged_dns_concentration"]:
+                continue
+        # A demographic dimension resolved for only a minority of victims cannot support a call.
+        if dim in ("country", "sector") and not demo[dim]["sufficient"]:
+            continue
         entry = {"hypothesis": name, "basis":
                  f"{dim} concentrated at {s['concentration']:.0%} on '{s['top']}' "
                  f"across {n_providers} DNS operators"}
@@ -264,18 +370,18 @@ def assess(profiles: list[dict]) -> dict:
                    "enough for a shared-platform explanation nor dispersed across enough "
                    "providers to call credential supply. Collect more victims.")
     return {"victims": n, "shape": shape, "distinct_dns_operators": n_providers,
-            "supported": supported, "verdict": verdict}
+            "demographics": demo, "supported": supported, "verdict": verdict}
 
 
 # ------------------------------------------------------------------------------------------- I/O
-def victims_from_case(case_dir: str) -> dict[str, list[str]]:
+def victims_from_case(case_dir: str) -> dict[str, dict]:
     """Derive {victim apex: [hijacked labels]} from a case's collected hosts.
 
     A collected host is treated as a hijacked label on a victim apex when the host is a SUBDOMAIN
     (not the apex itself) — the apex is the victim's own name, the label is what the operator
     added. Hosts the operator registered outright have no victim and are skipped.
     """
-    out: dict[str, list[str]] = {}
+    out: dict[str, dict] = {}
     for path in sorted(glob.glob(os.path.join(case_dir, "raw", "*.json"))):
         try:
             with open(path, encoding="utf-8") as fh:
@@ -288,7 +394,17 @@ def victims_from_case(case_dir: str) -> dict[str, list[str]]:
         apex = _apex(host)
         if host == apex:
             continue                                        # operator-registered, no victim
-        out.setdefault(apex, []).append(host[: -(len(apex) + 1)])
+        rec = out.setdefault(apex, {"labels": [], "org": "", "cc": ""})
+        rec["labels"].append(host[: -(len(apex) + 1)])
+        # WHOIS on a hijacked host resolves to the APEX's registration — i.e. the victim's own
+        # org, which is the only sector signal we can read without touching the victim.
+        w = (doc.get("artifacts") or {}).get("whois") or {}
+        org = (w.get("registrant_org") or w.get("registrant_name") or "").strip()
+        if org and not rec["org"]:
+            rec["org"] = org
+        cc = (w.get("registrant_country") or "").strip()
+        if cc and not rec["cc"]:
+            rec["cc"] = cc
     return out
 
 
@@ -310,7 +426,7 @@ def main() -> int:
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.path.dirname(os.path.dirname(here))
 
-    victims: dict[str, list[str]] = {}
+    victims: dict[str, dict] = {}
     if args.case:
         case_dir = args.case if os.path.isdir(args.case) else os.path.join(root, "cases", args.case)
         if not os.path.isdir(case_dir):
@@ -319,16 +435,17 @@ def main() -> int:
         victims = victims_from_case(case_dir)
     for v in args.victims:
         a = _apex(v)
-        victims.setdefault(a, [])
+        rec = victims.setdefault(a, {"labels": [], "org": "", "cc": ""})
         if a != v.strip().lower().rstrip("."):
-            victims[a].append(v.strip().lower().rstrip(".")[: -(len(a) + 1)])
+            rec["labels"].append(v.strip().lower().rstrip(".")[: -(len(a) + 1)])
     for ex in (x.strip().lower() for x in args.exclude.split(",") if x.strip()):
         victims.pop(_apex(ex), None)
     if not victims:
         print("no victims given (pass apexes, or --case <name>)", file=sys.stderr)
         return 2
 
-    profiles = [profile_victim(a, labels) for a, labels in sorted(victims.items())]
+    profiles = [profile_victim(a, rec["labels"], rec.get("org", ""), rec.get("cc", ""))
+                for a, rec in sorted(victims.items())]
     result = {"victims": profiles, "assessment": assess(profiles)}
 
     if args.out:
@@ -342,17 +459,40 @@ def main() -> int:
     a = result["assessment"]
     print(f"\nVICTIM PROFILE — {a['victims']} victim domain(s), "
           f"{a['distinct_dns_operators']} distinct DNS operator(s)\n")
-    print(f"{'victim':34s} {'dns operator':20s} {'panel':11s} {'asn':9s} {'sector':13s} labels")
-    print("-" * 104)
+    print(f"{'victim':30s} {'cc':4s} {'host':5s} {'dns operator':19s} {'panel':10s} {'sector':14s}")
+    print("-" * 88)
     for p in profiles:
-        print(f"{p['apex'][:33]:34s} {(p['dns_operator'] or '?')[:19]:20s} "
-              f"{p['panel'][:10]:11s} {(p['apex_asn'] or '?')[:8]:9s} "
-              f"{p['sector'][:12]:13s} {','.join(p['hijacked_labels'])[:28]}")
+        cc = p.get("country") or "??"
+        hint = p.get("hosting_country_hint") or "-"
+        print(f"{p['apex'][:29]:30s} {cc:4s} {hint:5s} {(p['dns_operator'] or '?')[:18]:19s} "
+              f"{p['panel'][:9]:10s} {p['sector'][:13]:14s}")
+    print("  cc = victim country (WHOIS registrant, else ccTLD).  host = where the HOSTING is —")
+    print("  shown for context only, never counted: it is the provider's country, not the victim's.")
     print("\nDIMENSION CONCENTRATION (largest share on one value):")
     for dim, s in a["shape"].items():
         if s["known"]:
             print(f"  {dim:14s} {s['concentration']:5.0%} on '{s['top'][:26]}' "
                   f"({s['distinct']} distinct / {s['known']} known)")
+    d = a.get("demographics") or {}
+    if d:
+        print("\nVICTIM DEMOGRAPHY:")
+        for dim in ("country", "sector"):
+            s_ = d.get(dim) or {}
+            dist = ", ".join(f"{k}×{v}" for k, v in list(s_.get("distribution", {}).items())[:8])
+            flag = "" if s_.get("sufficient") else "   [COVERAGE TOO LOW — not read]"
+            print(f"  {dim:8s} {s_.get('concentration', 0):5.0%} top '{s_.get('top') or '?'}'  "
+                  f"(resolved for {s_.get('coverage', 0):.0%} of victims){flag}")
+            if dist:
+                print(f"           {dist}")
+        nm = d.get("nonmanaged_dns") or {}
+        if nm.get("top"):
+            print(f"  non-managed DNS: {nm['concentration']:.0%} on '{nm['top']}' "
+                  f"({nm.get('of_victims', 0):.0%} of victims are on a non-hyperscale operator)")
+        print(f"  READING [{d.get('key')}]: {d.get('reading')}")
+        for sc in d.get("regional_subclusters") or []:
+            print(f"  ! REGIONAL SUB-CLUSTER: {sc['victims']} victims in {sc['country']} all on "
+                  f"'{sc['dns_operator']}' -> {', '.join(sc['apexes'])}")
+            print(f"    Notify that provider directly — shortest path to victims not yet found.")
     print(f"\nVERDICT: {a['verdict']}")
     for s in a["supported"]:
         print(f"  - {s['hypothesis']}: {s['basis']}")
