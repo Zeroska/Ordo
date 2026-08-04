@@ -211,6 +211,34 @@ artifact appendix, explanatory tone). The audience changes *emphasis, depth, and
 the underlying facts. Carry the choice into the render with `--audience {technical|executive|le}`
 (it stamps the audience on the cover subtitle and sets a sensible TOC depth).
 
+## Handling marking (TLP) — ASK first, never assume
+
+Every report carries a handling caveat on the cover and on **every** page. It tells the reader what
+they may do with the document, so it is the author's decision, not a default. When the user asks to
+"produce / output / render a report" **without stating the marking, ASK before rendering** — use
+`AskUserQuestion` (FIRST TLP 2.0; offer `TLP:AMBER+STRICT` via "Other"):
+
+| Marking | Reader may share it with | Use for |
+|---|---|---|
+| **TLP:CLEAR** | anyone, publicly | blog posts, LinkedIn/social, published research, awareness material |
+| **TLP:GREEN** | their community / peer network, not publicly | industry or trust-group circulation |
+| **TLP:AMBER** | their own organisation and clients, need-to-know | the default for a live case assessment naming victims or an active operator |
+| **TLP:RED** | named recipients only, no onward sharing | pre-takedown, pre-arrest, or single-recipient briefings |
+
+Do NOT silently accept the tool's `UNCLASSIFIED` fallback, and do not inherit a marking from a
+neighbouring file just because it was there. Pass the answer through as
+`--classification "TLP:<LEVEL>"` (or frontmatter `classification:`).
+
+**Downgrading is a redaction job, not a re-render.** Re-marking changes the banner, not the content.
+Before producing a `TLP:CLEAR` / `TLP:GREEN` cut of anything that was `AMBER` or `RED`, re-read it as
+a stranger and tell the user what publishing would disclose — compromised third-party hostnames and
+their owners (victims, not suspects), registrant PII, non-public source material, anything that tips
+an operator off before a takedown. Offer a redacted variant that keeps the tradecraft and the key
+judgments but masks the victim identifiers; the operator's own infrastructure normally stays.
+
+**Never overwrite the higher-marked file.** Render the downgraded cut to a NEW output stem
+(`<report>_public`), so the original stays as the record copy of what was assessed and when.
+
 ### The appendix marker (Roman → letter switch)
 
 Pandoc has no `\appendix` hook, so emit one raw-LaTeX block in the markdown immediately before the
@@ -265,6 +293,8 @@ That writes `out/report.pdf` **and** `out/report.docx` (both by default). Pass `
    CLI flags (`--title`, `--case-id`, `--classification`, `--subtitle`, `--date`) override
    the frontmatter. Anything missing gets a sensible default (`classification` →
    `UNCLASSIFIED`, `date` → UTC today, `title` → first `#` heading or the filename).
+   The `classification` fallback is a backstop, not an answer — **ask the user for the TLP**
+   (see *Handling marking* above) rather than letting a report ship as `UNCLASSIFIED`.
 3. **Embed IntelGraph figures** as ordinary Markdown images — the alt text becomes the
    figure caption, styled in the house palette:
    ```markdown
@@ -339,6 +369,9 @@ Word/LibreOffice, and keep it case-data-free.
 - Header/footer carry the classification + case id + page numbers on every body page.
 - The classification and report reference came from an argument or frontmatter — never hardcoded,
   and the displayed reference is the EXTERNAL `--report-ref`, not the internal case id (Rule 11).
+- **The TLP was the user's explicit answer**, not a default or a marking inherited from a
+  neighbouring file — and no report shipped as `UNCLASSIFIED` by omission. If this is a downgraded
+  public cut, the disclosure review happened and the higher-marked original was not overwritten.
 - **Identifier disclosure (Rules 12a/12b) — check explicitly, it is the most common defect:**
   - the SEED's domain name appears in the Executive Summary;
   - every impersonated brand is named, not described by sector;
