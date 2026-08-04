@@ -171,6 +171,54 @@ archetypal payment funnel — `escalate`. Tunable lists: `references/risk_indica
 - **When vendor docs don't state an indicator's scope, establish it empirically.** Docs frequently won't say whether a verification/tenant token is per-account or per-domain — which is the difference between a decisive cross-domain link and no link at all. Settle it with a collision test: harvest a corpus of `(apex, token)` pairs and look for one token on two unrelated apexes. Two distinct apexes sharing an identical token proves account-level issuance. Don't assume the strong reading.
 - **A zero is only a zero if a control query proves the collector was working.** Two separate false negatives nearly landed in one case: a credential read from the wrong path made every reverse-WHOIS call return "no key" (renders identically to "no pivot exists"), and empty SERP keys produced a page of authentic-looking zero rows. **Validate every consequential zero against a control term with a known non-zero answer**, and label blocked sources BLOCKED, never EMPTY. An unvalidated zero is a fabricated finding.
 
+### Base-rate a CONFIGURATION before you call it a fingerprint  ▢ TUNE
+
+The bullet above counts *tenant* indicators. This one covers the class that fools analysts more
+often, because it feels technical enough to be evidence: an **infrastructure configuration** —
+a non-standard port, a protocol on an odd port, a service/banner combination, a software version
+string, a control panel, a TLS-stack/JARM hash, a naming scheme across a set of domains.
+
+**The rule: never promote a configuration pattern to an operator fingerprint until you have
+counted how many hosts on the internet share it.** It is one query. Skipping it is the standard
+way a *hosting-provider default* gets written up as tradecraft — providers image thousands of
+VPSes identically, so "unusual" and "rare" are not the same thing. An admin port that looks
+distinctive on one box can be the provider's stock image on 3,000.
+
+**Count it twice — the two counts answer different questions:**
+
+| Count | Question it answers |
+|---|---|
+| **Globally** (`port="…"`, `protocol="…"`, banner, JARM) | is this a world-wide default? |
+| **Scoped to the host's own ASN / provider** | is this *that provider's* image default? |
+
+Both must be small. A pattern can be genuinely rare globally and still be universal inside the
+one provider your target rents from — which kills it just as dead, because every neighbour has it
+by accident of billing, not by choice of operator. Also sanity-check the denominator: a count that
+is a small *share* of a huge ASN can still be far too many hosts to mean anything.
+
+**The same count means opposite things depending on who you think you are chasing. State your
+actor hypothesis before you interpret it:**
+
+| Actor model | How they treat host config | So a shared config means | Prior |
+|---|---|---|---|
+| **APT / espionage / mercenary spyware** | rents commodity VPS, leaves provider defaults alone; the tradecraft investment goes into the **payload**, not the hosting | **probably a false positive.** These operators are small — a handful of hosts. A config shared with hundreds or thousands is the provider, not the actor. Only a *tiny* (single- to low-double-digit) and thematically-coherent population is a real link | assume noise until the count is small |
+| **Scam compound / mass-fraud / kit-as-a-service** | **mass-deploys** — one golden image, one panel, one port set, one naming scheme, rolled out across the whole estate as an operational necessity | **plausibly the operator.** A large population is expected here and does not by itself refute the link. But volume alone still isn't proof | a high count is *permissible* — test coherence, don't just count |
+
+For the mass-deploy case the count stops being the decider and **coherence** takes over: do the
+members share naming semantics, registrar, registration/expiry rhythm, certificate issuance
+batching, content kit or victim theme? A coherent 300 is an estate. An incoherent 300 is a
+provider's customer list. Never let "they mass-apply config" become a licence to skip the check —
+it changes the threshold, not the requirement.
+
+**Record the negative.** "Configuration X appears on N hosts, dominated by provider P, therefore
+rejected as a pivot" belongs in the assessment. It is what stops the next analyst — or you, in six
+weeks — re-deriving the same dead end and spending metered credits reversing it.
+
+*Counting it:* FOFA is usually the cheapest census (`port="…" && protocol="…"`, then repeat with
+`&& asn="…"`); Censys `search` answers the same question but is Starter+ and returns 403 on the
+free plan, so don't budget credits for it (see `WebPivot/tools/wp_censys.py`). Fetch the total
+match count with `size=1` — you want the denominator, not the rows.
+
 ## 1.5 Temporal analysis — lifecycle, hosting windows & expiry consistency  ▢ TUNE
 
 **Every artifact has a time, and a link that is not contemporaneous is not a link.** The triage

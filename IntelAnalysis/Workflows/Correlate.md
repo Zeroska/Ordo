@@ -14,6 +14,21 @@ Turn a knowledge base full of facts into an attributed cluster assessment.
 2. **Triage each shared indicator** against §1 of SKILL.md. Drop noise (Cloudflare NS,
    generic registrar). Keep attribution-grade and corroborating.
 
+2b. **Base-rate any CONFIGURATION indicator before it earns a tier (§1, "Base-rate a
+   CONFIGURATION before you call it a fingerprint").** For a non-standard port, protocol/port
+   combination, banner or version string, control panel, JARM/TLS stack, or a domain naming
+   scheme — count the population **globally and within the host's own ASN** before treating it
+   as a link:
+   ```bash
+   # total match count only — size=1, you want the denominator not the rows
+   fofa 'port="<p>" && protocol="<proto>"'            # world-wide
+   fofa 'port="<p>" && protocol="<proto>" && asn="<n>"'  # the provider's own image
+   ```
+   Interpret against your actor hypothesis: for an **APT/espionage** target a large population
+   means *provider default → reject*; for a **scam compound / kit-as-a-service** target
+   mass-deployment is expected, so test **coherence** (naming, registrar, reg/expiry rhythm,
+   cert batching, content kit) rather than count alone. Record the rejection in the assessment.
+
 3. **Group into clusters.** Domains connected by ≥1 attribution-grade indicator are one
    cluster candidate. Use `--cluster <domain>` to expand a seed.
 
