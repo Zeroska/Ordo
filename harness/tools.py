@@ -641,6 +641,87 @@ async def cert_overlap(args: dict[str, Any]) -> dict[str, Any]:
 
 
 @tool(
+    "censys",
+    "Censys Platform — the SERVER-side view of a target, complementing FOFA/urlscan (which index "
+    "what the page looks like). Four modes via `mode`:\n"
+    "  mode='cert' + value=<leaf SHA-256> — THE high-value one, and it works on a FREE Censys "
+    "plan: returns the certificate's own `names` list, i.e. EVERY hostname on that exact "
+    "certificate. crt.sh gives fuzzy name overlap; this is the cert stating its own coverage, so a "
+    "multi-apex name list is near-decisive same-operator evidence across brands.\n"
+    "  mode='host' + value=<IP> — ASN/WHOIS org, forward+reverse DNS names, open ports, per-service "
+    "banners and cert fingerprints. Free plan OK.\n"
+    "  mode='webproperty' + value=<hostname[:port]> (default :443) — the cert, favicon hashes, body "
+    "hash, software stack and threat labels Censys recorded for that hostname. Free plan OK.\n"
+    "  mode='search' + value=<CenQL query> — reverse ANY indexed artifact (favicon MD5, body "
+    "keyword, cert fingerprint). NEEDS a Censys Starter plan or above; on a FREE plan Censys 403s "
+    "and this returns `skipped` together with a platform.censys.io UI link that runs the identical "
+    "query by hand — use that link, do not report it as a failure.\n"
+    "  mode='query' + value=<pivot value> + kind=<WebPivot pivot kind> — OFFLINE: build the CenQL "
+    "for an artifact without a key and without spending anything.\n"
+    "  mode='budget' (no value needed) — OFFLINE: how many of this month's Censys credits are left. "
+    "Check it before a batch.\n"
+    "COST — READ THIS BEFORE CALLING: Censys bills CREDITS, a FREE account gets only 100 per MONTH, "
+    "they do NOT roll over, and the quota is per ACCOUNT, so overspending here removes Censys from "
+    "every later case too. A lookup is 1 credit, a search 5 (and running the emitted CenQL in the "
+    "web UI costs the same 5 — the UI link is not free). Use it deliberately, on the artifact that "
+    "decides the question, not as a default enrichment on every host: prefer 'cert'/'host'/"
+    "'webproperty' lookups over 'search', and prefer handing the analyst the 'query' CenQL over "
+    "spending a search yourself. The tool refuses to exceed the monthly/per-run budget and returns "
+    "`skipped` with the balance instead. Needs CENSYS_PAT; without it every mode except 'query' and "
+    "'budget' returns nothing — which is a missing CREDENTIAL, never evidence about the target. "
+    "Read-only.",
+    {"mode": str, "value": str},  # kind:str (mode='query'), port:int (mode='webproperty') optional
+    annotations=READONLY,
+)
+async def censys(args: dict[str, Any]) -> dict[str, Any]:
+    mode, value = str(args.get("mode", "")).strip().lower(), str(args.get("value", "")).strip()
+    if not value and mode != "budget":       # budget is a balance check — it has no target
+        return _err("censys needs a `value` (an IP, hostname, cert SHA-256, or CenQL query).")
+    script = os.path.join("WebPivot", "tools", "wp_censys.py")
+    if mode == "cert":
+        cmd = [PY, script, "cert", value]
+    elif mode == "host":
+        cmd = [PY, script, "host", value]
+    elif mode == "webproperty":
+        cmd = [PY, script, "webproperty", value, "--port", str(args.get("port", 443))]
+    elif mode == "search":
+        cmd = [PY, script, "search", value]
+    elif mode == "query":
+        cmd = [PY, script, "query", str(args.get("kind", "")), value]
+    elif mode == "budget":
+        cmd = [PY, script, "budget"]
+    else:
+        return _err("censys `mode` must be one of: "
+                    "cert | host | webproperty | search | query | budget.")
+    r = _run(cmd, timeout=120)
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "no output"}],
+            "is_error": r.returncode != 0}
+
+
+@tool(
+    "capability_check",
+    "What can this machine actually collect? Reports which optional API keys are configured and — "
+    "for each one that is NOT — the exact evidence class that is unavailable and the free path that "
+    "substitutes. Call it at the START of a case, and whenever a collection comes back thin. "
+    "WebPivot always runs keyless, so a missing key is never an error, but it changes what a NULL "
+    "result means: with no FOFA/urlscan credential the favicon and tracker reverse-lookups never "
+    "ran, so 'no sibling domains' is a fact about the credentials, not about the operator. TELL THE "
+    "USER when the mode is keyless/partial and say which indexes went unqueried before presenting "
+    "any 'nothing found' conclusion. Optional `free_only=true` reports it as the convergence loop "
+    "sees it (keys present but forbidden to spend). Offline, free, read-only.",
+    {},  # free_only:bool optional
+    annotations=READONLY,
+)
+async def capability_check(args: dict[str, Any]) -> dict[str, Any]:
+    cmd = [PY, os.path.join("WebPivot", "tools", "wp_capabilities.py")]
+    if args.get("free_only"):
+        cmd.append("--free-only")
+    r = _run(cmd, timeout=30)
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "no output"}],
+            "is_error": r.returncode != 0}
+
+
+@tool(
     "reference_check",
     "Check a hash/keyword against the curated fingerprint reference BEFORE trusting it as a "
     "same-operator link. Returns BENIGN (a globally common logo/CDN/CSS-framework artifact — a "

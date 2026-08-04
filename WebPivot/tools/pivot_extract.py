@@ -84,6 +84,8 @@ from wp_crawl import *  # noqa
 import wp_extract  # noqa  (for the QR toggle set in main)
 import wp_assets   # noqa  (asset layer: JS bundles / source maps / well-known files toggles)
 from wp_assets import *  # noqa
+import wp_censys   # noqa  (Censys Platform: lookups + CenQL builder; --no-censys flips ENABLED)
+import wp_capabilities  # noqa  (which keys are present -> what this run could and could not query)
 import wp_ippivot  # noqa  (IPPivot: bare-IP source runs passive IP recon instead of HTML)
 import wp_impersonate  # noqa  (ImpersonationHunt: --hunt-impersonation hunts lookalikes of a seed)
 try:
@@ -97,6 +99,11 @@ def _emit_result(result, args, src):
     """Shared output path for a finished result (domain OR IP): master ledger, ICD-203 report,
     MISP bundle, and the JSON / --leads stdout. Kept identical across both modes so IP and domain
     evidence land in one case with one schema."""
+    # Which indexes this run could actually query is a property of the EVIDENCE, not of the
+    # terminal session — it has to travel with the file, or a keyless run's empty cluster reads
+    # months later as "the operator had no siblings". One place, all three modes.
+    result.setdefault("meta", {})["capability"] = wp_capabilities.capability_meta(
+        free_only=bool(getattr(args, "free_only", False)))
     if args.report is not None or args.master is not None or args.misp is not None:
         import evidence_report
 
@@ -172,6 +179,10 @@ def _emit_result(result, args, src):
 
     if api_usage:                     # per-run licensed-API credit summary (also logged to JSONL)
         api_usage.print_session_summary()
+    _cb = wp_censys.budget_status()   # the tightest quota in the toolkit — always show the balance
+    if _cb["spent_this_run"]:
+        print(f"  censys     {_cb['remaining_this_month']}/{_cb['monthly_credits']} credits left "
+              f"for {_cb['month']} (no rollover)", file=sys.stderr)
 
 
 def main():
@@ -214,8 +225,15 @@ def main():
     ap.add_argument("--free-only", action="store_true",
                     help="enrich with FREE/keyless sources only (crt.sh, HackerTarget passive DNS, "
                          "anonymous urlscan search, live DNS, keyless RDAP WHOIS) — skip every "
-                         "METERED call (FOFA, CIRCL pDNS, urlscan-Pro similarity, WhoisXML). Used by "
-                         "the autonomous convergence loop so it never spends credits without approval.")
+                         "METERED call (FOFA, CIRCL pDNS, urlscan-Pro similarity, WhoisXML, Censys). "
+                         "Used by the autonomous convergence loop so it never spends credits "
+                         "without approval.")
+    ap.add_argument("--no-censys", action="store_true",
+                    help="do NOT call the Censys Platform API even if CENSYS_PAT is set. Censys "
+                         "bills in CREDITS (1 per lookup; a FREE account gets 100/month that do "
+                         "not roll over), so this is the switch for conserving them. The Censys "
+                         "CenQL queries are still emitted on every pivot — they are built offline "
+                         "and cost nothing.")
     ap.add_argument("--fofa-full", action="store_true",
                     help="run FOFA reverses over ALL historical data (full=true) instead of the "
                          "default ~1-year window — catches favicon/tracker assets later scrubbed. "
@@ -293,9 +311,13 @@ def main():
     args = ap.parse_args()
     if api_usage:            # tag every licensed-API call this run with the case + skill
         api_usage.set_context(case=args.case, skill="WebPivot")
+    # State the run's capability BEFORE any collection, so the analyst reads the caveat with the
+    # result rather than after acting on it. Silent when every key is present — see wp_capabilities.
+    wp_capabilities.print_banner(free_only=args.free_only)
     if args.screenshot is not None and not args.render:
         args.render = True   # a screenshot requires the rendered (Playwright) page
     wp_extract.QR_DECODE_IMAGES = bool(args.decode_qr)
+    wp_censys.ENABLED = not args.no_censys   # offline CenQL builder is unaffected — it costs nothing
     # Asset layer (JS bundles / source maps / well-known files) — on by default, per-half opt-out.
     wp_assets.COLLECT_ASSETS = not args.no_assets
     wp_assets.COLLECT_WELL_KNOWN = not args.no_well_known
@@ -340,9 +362,12 @@ def main():
     ip_target = wp_ippivot.ip_mode_target(src)
     if ip_target:
         print(f"[+] IPPivot mode: passive recon on {ip_target} "
-              f"(IPinfo · FOFA ip= · dig/nslookup{' · Shodan' if _secret('SHODAN_KEY','SHODAN_API_KEY') else ''})",
+              f"(IPinfo · FOFA ip= · dig/nslookup"
+              f"{' · Shodan' if _secret('SHODAN_KEY','SHODAN_API_KEY') else ''}"
+              f"{' · Censys' if wp_censys.censys_configured() and not args.free_only else ''})",
               file=sys.stderr)
-        result = wp_ippivot.build_ip_result(ip_target, args, fofa_full=args.fofa_full)
+        result = wp_ippivot.build_ip_result(ip_target, args, fofa_full=args.fofa_full,
+                                            free_only=args.free_only)
         _emit_result(result, args, ip_target)
         return
 

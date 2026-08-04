@@ -130,6 +130,7 @@ def check():
     # runs, still produces output — it just stops filtering. Comparing against the fallback size
     # catches that, and unlike a hardcoded count it does not rot as analysts extend a list.
     import wp_pivots, wp_analyze, wp_assets, wp_recon, wp_ippivot, wp_impersonate  # noqa: E401
+    import wp_censys, wp_capabilities                                              # noqa: E401
     import whois_enrich, evidence_report                                           # noqa: E401
     import ingest_webpivot, hypothesize, ingest_report, noise_filters              # noqa: E401
     import analyze_artifact                                                        # noqa: E401
@@ -154,6 +155,36 @@ def check():
          wp_recon._MAIL_FALLBACK["dmarc_report_vendors"]),
         ("wp_ippivot._MANAGED_MX", wp_ippivot._MANAGED_MX,
          wp_ippivot._MX_FALLBACK["managed_mx_suffixes"]),
+        # Censys renamed every field when it replaced Legacy Search with CenQL, so these templates
+        # are the difference between a runnable query and one that silently returns zero hits. On
+        # the fallback WebPivot still emits "a Censys query" for four artifact kinds and NOTHING
+        # for the other fifteen — the pivot just quietly stops existing. `plan_capabilities` and
+        # `credit_costs` are what let a Free-plan 403 read as "your plan can't search, here is the
+        # UI link" instead of an opaque error, and what keeps --free-only honest about credits.
+        ("wp_censys.CENQL_TEMPLATES", wp_censys.CENQL_TEMPLATES,
+         wp_censys._CENSYS_FALLBACK["cenql_templates"]),
+        ("wp_censys.PIVOT_KIND_MAP", wp_censys.PIVOT_KIND_MAP,
+         wp_censys._CENSYS_FALLBACK["pivot_kind_map"]),
+        ("wp_censys.CREDIT_COSTS", wp_censys.CREDIT_COSTS,
+         wp_censys._CENSYS_FALLBACK["credit_costs"]),
+        ("wp_censys.PLAN_CAPABILITIES", wp_censys.PLAN_CAPABILITIES,
+         wp_censys._CENSYS_FALLBACK["plan_capabilities"]),
+        ("wp_censys.ENDPOINTS", wp_censys.ENDPOINTS,
+         wp_censys._CENSYS_FALLBACK["endpoints"]),
+        # The spend guard. On the fallback the run still refuses to overspend (that is why the
+        # fallback is the conservative minimum) but loses the analyst's own tuning — the month's
+        # grant after buying credits, and the reserve that keeps 1-credit cert lookups affordable.
+        ("wp_censys.CREDIT_BUDGET", wp_censys.CREDIT_BUDGET,
+         wp_censys._CENSYS_FALLBACK["credit_budget"]),
+        # The keyless banner. On the fallback it names four credentials instead of eight, so a run
+        # missing SHODAN_KEY or PDNS_* reports FULL capability it does not have — the exact false
+        # reassurance the capability layer exists to prevent.
+        ("wp_capabilities.API_KEYS", wp_capabilities.API_KEYS,
+         wp_capabilities._CAP_FALLBACK["api_keys"]),
+        ("wp_capabilities.KEYLESS_BASELINE", wp_capabilities.KEYLESS_BASELINE,
+         wp_capabilities._CAP_FALLBACK["keyless_baseline"]),
+        ("wp_capabilities.IMPACT_LABELS", wp_capabilities.IMPACT_LABELS,
+         wp_capabilities._CAP_FALLBACK["impact_labels"]),
         ("wp_impersonate.TLD_SWEEP", wp_impersonate.TLD_SWEEP,
          wp_impersonate._IMP_FALLBACK["tld_sweep"]),
         ("wp_impersonate.COMBO_AFFIXES", wp_impersonate.COMBO_AFFIXES,

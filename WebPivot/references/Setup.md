@@ -3,6 +3,29 @@
 Load this when you need to wire up live pivoting (keys), understand what each key unlocks, or run
 the standalone WHOIS client. **No keys → keyless mode, everything below is simply skipped.**
 
+## First: what can this machine actually collect? — `tools/wp_capabilities.py`
+
+```bash
+python3 WebPivot/tools/wp_capabilities.py              # table: each key, present or absent, and the cost
+python3 WebPivot/tools/wp_capabilities.py --json       # the same as meta.capability
+python3 WebPivot/tools/wp_capabilities.py --free-only  # as the convergence loop sees it
+```
+
+Every `pivot_extract` run prints this as a **stderr banner** (silent only when every key is
+present), records it as **`meta.capability`** in the result JSON, and shows it at the top of
+`--leads`. MCP tool: `capability_check`.
+
+**Why it exists.** Keyless is a supported mode, not a broken one — but it is a *different
+investigation*. WebPivot always **extracts** every artifact; what a key buys is the ability to
+**reverse** it. With no `FOFA_KEY`/`URLSCAN_API_KEY` the favicon-hash and tracker reverses never
+execute, so a thin result means *"the indexes that would have found siblings were never queried"* —
+which is a fact about the credentials, not about the operator. State the mode and the unqueried
+indexes before presenting any negative finding, and put `meta.capability.statement` in the
+assessment's collection-limitations note.
+
+The per-key consequences are DATA in **`references/api_keys.json`** — edit that file (not the code)
+when a key is added or a provider changes what a tier includes.
+
 ## API keys (optional — enables live pivoting)
 
 `pivot_extract.py` reads keys from the environment first, then from the first `chmod 600` `.env` it
@@ -10,8 +33,8 @@ finds — the **invocation directory** (normally the repo root you run from), th
 relative to the script, then a **skill-local** `.env` next to `WebPivot/`. A real environment
 variable always wins; among files, the earlier one wins. Recognized: `URLSCAN_API_KEY`, `FOFA_KEY` (or `FOFA_API_KEY`),
 `FOFA_EMAIL`, `WHOISXML_API_KEY`, `PDNS_USERNAME` + `PDNS_PASSWORD` (passive DNS, optional
-`PDNS_URL`), and — for IPPivot — `IPINFO_TOKEN` (richer IPinfo ASN/abuse) and `SHODAN_KEY` (host
-ports/services). Both optional.
+`PDNS_URL`), `CENSYS_PAT` (+ optional `CENSYS_ORG_ID`), and — for IPPivot — `IPINFO_TOKEN` (richer
+IPinfo ASN/abuse) and `SHODAN_KEY` (host ports/services). All optional.
 
 `URLSCAN_VISIBILITY` — set to `private` with a **urlscan Pro** key so submitted scans of hostile
 infra stay team-only (never in the public feed); defaults to `unlisted`. A Pro key also auto-enables
@@ -54,6 +77,73 @@ run every FOFA reverse (favicon `icon_hash`, tracker/verification bodies, live-I
 over **all historical data** (`full=true`) — this catches assets that were live in the past
 and later scrubbed. Requires a FOFA tier that permits full/historical search; lower tiers
 ignore or reject `full=true`.
+
+### Censys Platform — `CENSYS_PAT` (a FREE plan is genuinely useful; read the tier rule first)
+
+**Getting a free key.** Sign up at <https://platform.censys.io/> (free, no card). In the Platform
+web console: **user icon, top right → API Access → Create New Token**. Copy the Personal Access
+Token — it is shown once. If your account belongs to an organisation, copy the organisation ID too.
+Then, in the repo root:
+
+```bash
+printf 'CENSYS_PAT=censys_pat_xxxxxxxxxxxxxxxx\n' >> .env    # add CENSYS_ORG_ID=… only if you have one
+chmod 600 .env                                               # the loader ignores world-readable .env
+python3 WebPivot/tools/wp_censys.py host 1.1.1.1             # verify: should print a host record
+```
+
+**The one rule that decides what you get.** A Censys **Free** account can call ONLY the *lookup*
+endpoints. `POST /v3/global/search/query` — searching by favicon hash, body keyword or cert
+fingerprint — answers **403 on Free**; it needs Starter (reached by buying any credits) or above.
+So WebPivot uses the three lookups, which are free-plan reachable and are where the value is anyway:
+
+| Call | Free plan | What it gives you |
+|---|---|---|
+| `wp_censys.py cert <sha256>` | ✅ | **the best one** — the certificate's own `names`: every hostname on that exact leaf cert. crt.sh gives fuzzy *name overlap*; this is the cert stating its own coverage, so a multi-apex list is near-decisive cross-brand same-operator evidence |
+| `wp_censys.py host <ip>` | ✅ | ASN + WHOIS org, forward/reverse DNS names, open ports, per-service banners and cert fingerprints. Folded into IPPivot automatically |
+| `wp_censys.py webproperty <host>[:port]` | ✅ | the cert, favicon hashes, body hash, software stack and threat labels Censys holds for that hostname. Folded into domain enrichment automatically |
+| `wp_censys.py search '<CenQL>'` | ❌ 403 | Starter+. On Free it returns `skipped` **plus a `platform.censys.io` UI link that runs the identical query** — the UI search works on Free (1 page of 100 results), **but still costs 5 credits** |
+| `wp_censys.py budget` | ✅ offline | this month's credit balance — no key, no spend. Check it before a batch |
+
+**Credits — the tightest budget in the toolkit; spend deliberately.** Censys meters everything:
+**1 credit per lookup, 5 per search** (8 with regex), and a Free account gets **100 credits a month
+that do not roll over**. Two things make this sharper than the other metered APIs:
+
+- the quota is **per account, not per case** — twenty careless searches empty the month and take
+  Censys away from *every later case* until the 1st;
+- **the UI link is not free either.** Running the emitted CenQL in the web console costs the same
+  5 credits as the API search. Six clicked links = a third of the month.
+
+So WebPivot enforces a budget rather than discovering the ceiling as an HTTP 402 mid-case:
+
+```bash
+python3 WebPivot/tools/wp_censys.py budget      # offline, free: this month's balance
+```
+
+| Guard | Default | What it stops |
+|---|---|---|
+| `monthly_credits` | 100 | spending past the month's grant — summed from `MEMORY/api_usage.jsonl` across **every** case, not just this run |
+| `max_credits_per_run` | 20 | one batch of 200 domains quietly spending the whole month |
+| `reserve_for_lookups` | 10 | a 5-credit search eating the last credits and leaving the 1-credit **cert lookup** — the free plan's highest-value call — unaffordable |
+| `warn_at_remaining` | 30 | running out without warning: below this every call prints the balance |
+
+Over budget → the same `{"skipped": reason, "ui_url": …}` degradation as a plan 403, carrying the
+balance. Thresholds live in `references/censys_queries.json` → `credit_budget`; override for a
+single run with `CENSYS_MONTHLY_CREDITS` / `CENSYS_MAX_CREDITS_PER_RUN` (raise `monthly_credits`
+in the JSON if you buy credits or upgrade the plan).
+
+**Value per credit, best first:** `cert <sha256>` (1 credit → every hostname on that leaf cert) →
+`host <ip>` → `webproperty <host>` → `search` (5, Starter+ only). Censys is also skipped under
+`--free-only`, disabled outright by `--no-censys`, logged to `MEMORY/api_usage.jsonl`, and memoised
+per process so one run never pays twice for the same IP.
+
+**Queries are always emitted, key or not.** The CenQL builder is offline and free, so every pivot
+carries its Censys query and a click-to-run UI URL even with no `CENSYS_PAT` at all. Censys replaced
+the old Legacy Search language with **CenQL**, which namespaces every field under `host.` / `web.` /
+`cert.` — a Censys query copied from an older write-up does not run on the Platform. The current
+field names live in `references/censys_queries.json`; edit that file, not the code.
+
+*JARM caveat:* Censys indexes JARM but only makes it **searchable** with the Adversary Investigation
+module — on Free/Starter/Core a `jarm.fingerprint` query returns nothing. Use Shodan `ssl.jarm:`.
 
 ### Passive DNS (CIRCL-style COF) — `PDNS_USERNAME` + `PDNS_PASSWORD`
 

@@ -265,6 +265,15 @@ indicators binding each one and their **KB-wide prevalence**. Judge **per cluste
 multi-domain cluster as its own judgement task. `shared.txt` is scoped to the case's hosts for the
 same reason — unscoped it reported every past case's indicators.
 
+> 🔑 **`--free-only` is analytically keyless — say so when reporting a loop result.** Every metered
+> index (FOFA, urlscan-authenticated, WhoisXML history/reverse, Censys, CIRCL pDNS) is suppressed by
+> design, so a converged loop means *"the free frontier is exhausted"*, **not** *"the operator has no
+> more infrastructure"*. Run `python3 WebPivot/tools/wp_capabilities.py --free-only` (or the
+> `capability_check` MCP tool) and state which indexes went unqueried before presenting a CONVERGED
+> or **cold** verdict; each round's `raw/*.json` already carries it as `meta.capability`. The
+> metered leads the loop deliberately did not chase are listed in `assessment.json.metered_leads` —
+> that list, plus the missing-key list, is the honest answer to "is that everything?".
+
 The frontier will **not auto-seed co-tenancy**: a multi-tenant TLS cert, a shared/bulk-hosting or CDN
 IP, and a bulk or privacy/registrar registrant term all name other *customers*, so they are held back
 as `co_tenancy_leads` (free to check by hand with `cert_overlap`) instead of collected. This matters

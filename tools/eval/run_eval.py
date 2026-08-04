@@ -230,6 +230,10 @@ def main():
         ("test_whois_parallel", "whois_summary parallelizes current+history (speed)"),
         ("test_frontier_guards", "frontier co-tenancy guards — multi-tenant cert / shared IP / bulk registrant"),
         ("test_assets_layer", "asset layer — JS bundle select / sourcemap dev-identity / API+build-env / well-known"),
+        ("test_censys", "Censys layer — CenQL not Legacy Search / = vs : / MD5 favicon / "
+                        "free-plan degradation / monthly credit guard"),
+        ("test_capabilities", "capability layer — keyless disclosure, alias/requires presence, "
+                              "free-only mode, no banner when fully keyed"),
         ("test_references", "reference DATA layer — files documented, consumers not on fallback, no drift"),
         ("test_timeline", "temporal layer — format parsing / overlap vs shared value / expiry cohort / online citations"),
     ]

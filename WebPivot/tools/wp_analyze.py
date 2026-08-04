@@ -36,6 +36,7 @@ from wp_pivots import *  # noqa
 from wp_refs import ref_path, load_ref  # noqa — reference DATA lives in references/*.json
 import wp_extract  # for the QR_DECODE_IMAGES toggle main() sets
 import wp_assets   # asset layer: JS bundles, source maps, well-known files, API endpoints
+from wp_censys import censys_configured, censys_webproperty, censys_certificate
 try:
     import whois_enrich  # WhoisXML registration pivots (optional, same tools/ dir)
     HAVE_WHOIS = True
@@ -311,6 +312,14 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
 def render_leads(result: dict) -> str:
     m = result["meta"]
     lines = [f"# Pivot leads — {m.get('host') or m['source']}", ""]
+    # Coverage caveat first: a short lead list on a keyless run means the reverse-lookup indexes
+    # were never queried, and that has to be visible in the same view as the leads themselves.
+    cap = m.get("capability") or {}
+    if cap.get("mode") and cap["mode"] != "keyed":
+        lines.append(f"> 🔑 **{cap['mode'].upper()}** — {cap.get('statement', '')}")
+        for b in (cap.get("reduced") or []):
+            lines.append(f"> · no **{b['service']}**: {b['lost']}")
+        lines.append("")
     chain = m.get("redirect_chain")
     if chain:
         hops = " → ".join([chain[0]["from"]] + [h["to"] for h in chain])
@@ -536,11 +545,17 @@ def enrich_live(result: dict, fofa_full: bool = False, free_only: bool = False) 
     have_fofa = bool(_secret("FOFA_KEY", "FOFA_API_KEY")) and not free_only
     have_urlscan = bool(_secret("URLSCAN_API_KEY")) and not free_only  # gates only Pro similarity
     have_pdns = bool(_secret("PDNS_USERNAME") and _secret("PDNS_PASSWORD")) and not free_only
+    # Censys is metered in CREDITS (1 per lookup, and a free plan gets only 100 a month), so it is
+    # gated exactly like FOFA. Only the two LOOKUP endpoints are used here — they work on the free
+    # plan, unlike /search/query, which needs Starter.
+    have_censys = censys_configured() and not free_only
     sources = ["crtsh", "passivedns", "urlscan"]  # keyless domain enrichment
     if have_fofa:
         sources.append("fofa-full" if fofa_full else "fofa")
     if have_pdns:
         sources.append("pdns")
+    if have_censys:
+        sources.append("censys")
     result.setdefault("meta", {})["enriched_with"] = sources
     for piv in result.get("pivots", []):
         kind, val = piv.get("kind", ""), piv.get("value")
@@ -558,7 +573,12 @@ def enrich_live(result: dict, fofa_full: bool = False, free_only: bool = False) 
             if have_urlscan:
                 # urlscan Pro structure-similarity: clusters re-skinned kits (no-op/skipped on free)
                 jobs["urlscan_similar"] = lambda: urlscan_similar(val)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=6) as ex:
+            if have_censys:
+                # Censys web property (hostname:443): the cert, favicon hashes, body hash, software
+                # and threat labels Censys recorded for THIS hostname — the server's own view of
+                # the page, independent of whatever the site served us just now.
+                jobs["censys"] = lambda: censys_webproperty(val)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=7) as ex:
                 futures = {k: ex.submit(fn) for k, fn in jobs.items()}
                 lr = {k: fu.result() for k, fu in futures.items()}
             # Anchor pivots to the LIVE IP: reverse-search FOFA on what DNS resolves to
@@ -633,6 +653,15 @@ def enrich_live(result: dict, fofa_full: bool = False, free_only: bool = False) 
                             us["reversed_resource"] = fn      # record what we searched
                 if us is not None:
                     lr["urlscan"] = us
+            # --- Censys certificate LOOKUP on the leaf fingerprint. This is the highest-value
+            #     Censys call a FREE plan can make: it costs 1 credit, needs no search
+            #     entitlement, and returns the certificate's own `names` — every hostname on
+            #     that exact cert, i.e. the operator's apex list. crt.sh gives fuzzy name
+            #     overlap; this is the cert stating its own coverage.
+            if have_censys and kind == "tls_cert:fingerprint_sha256" and val:
+                cert = censys_certificate(str(val))
+                if cert:
+                    lr["censys_cert"] = cert
         if lr:
             piv["live_results"] = lr
     return result

@@ -39,7 +39,7 @@ it as corroboration. The single most common report weakness is anchoring identit
 | **Google site-verification token** (GSC) | `verifications.*` (🔑 node) | PublicWWW, urlscan, source search of the `<meta name="google-site-verification">` value | The owner proved DNS/HTML control to Google → **near-dispositive same-owner** across every domain carrying the token. This is the pivot most reports bury in a table. |
 | **GA4 / GTM / AdSense — the operator's OWN container** | `trackers.google_analytics_ga4` · `google_tag_manager` · `google_adsense` | PublicWWW, urlscan, DNSlytics reverse-analytics, NerdyData | **Verify it isn't cloned** from the impersonated brand — a copied site copies the victim's snippet too. Confirm with a 2nd converging pivot (e.g. TLS) before treating the container as operator-owned. |
 | **Google Doc / Sheet / Form / Drive ID** | `saas_ids.google_*` | PublicWWW, urlscan, NerdyData | Operator-owned backend, often publicly readable → can expose the operator directly. |
-| **Identical TLS leaf-cert fingerprint** | `whois.tls` / `tls_cert:*` pivots | Censys/Shodan by exact leaf SHA-256 (not just crt.sh name overlap) | crt.sh *overlap* is fuzzy; the exact fingerprint finds every host serving the **same** cert. Enumerate **every SAN** and pivot each — multi-brand SANs are cross-brand glue. |
+| **Identical TLS leaf-cert fingerprint** | `whois.tls` / `tls_cert:*` pivots | Censys `cert.fingerprint_sha256=` / Shodan by exact leaf SHA-256 (not just crt.sh name overlap); on a FREE Censys plan use the certificate LOOKUP (`wp_censys.py cert <sha256>`) — it returns the cert's own full `names` list with no search entitlement | crt.sh *overlap* is fuzzy; the exact fingerprint finds every host serving the **same** cert. Enumerate **every SAN** and pivot each — multi-brand SANs are cross-brand glue. |
 | **APK signing-cert SHA-256** | *(BinaryPivot `analyze_artifact.py`)* | cluster app ↔ web infra in the same KB | Strongest same-operator pivot for the app half of the funnel — survives full re-skin. |
 
 ---
@@ -48,10 +48,10 @@ it as corroboration. The single most common report weakness is anchoring identit
 
 | Pivot | WebPivot field | Search on | Caveat |
 |---|---|---|---|
-| **Favicon hash** (mmh3/md5/sha256) | `favicon.shodan_mmh3 / md5 / sha256` | Shodan `http.favicon.hash`, FOFA `icon_hash`, ZoomEye `iconhash`, Censys (md5), Netlas (sha256) | High-yield but **noisy**: templates/CDNs share icons across unrelated sites (a favicon-only cluster can be many operators). Disambiguate by **compositing** favicon **+** `dom_skeleton_sha1` **+** an inline-script hash. Suppress benign hashes via `tools/kb/reference.py`. |
+| **Favicon hash** (mmh3/md5/sha256) | `favicon.shodan_mmh3 / md5 / sha256` | Shodan `http.favicon.hash`, FOFA `icon_hash`, ZoomEye `iconhash`, Censys `web.endpoints.http.favicons.hash_md5` (md5), Netlas (sha256) | High-yield but **noisy**: templates/CDNs share icons across unrelated sites (a favicon-only cluster can be many operators). Disambiguate by **compositing** favicon **+** `dom_skeleton_sha1` **+** an inline-script hash. Suppress benign hashes via `tools/kb/reference.py`. |
 | **Custom theme slug** | `wp_themes[]` (🎨 node) | PublicWWW `/wp-content/themes/<slug>`, urlscan | A bespoke theme name reused across domains is an operator build fingerprint. Generic themes (astra, hello-elementor) are noise. |
 | **DOM skeleton hash** | `dom_skeleton_sha1` | compare across scans | Catches the "same login-panel template" you can *see* but couldn't prove — hash it and cluster. |
-| **JARM TLS-stack fingerprint** | `jarm.jarm` | Shodan `ssl.jarm:`, Censys `services.jarm.fingerprint`, ZoomEye `jarm=` | Fingerprints the server's TLS stack+config → survives **domain rotation & re-branding** (ideal vs self-rotating scam-app infra). But stock stacks (nginx/CF defaults) share a JARM → **pair with a 2nd artifact**, never cluster on JARM alone. Active probe, suppressed under `--proxy`. |
+| **JARM TLS-stack fingerprint** | `jarm.jarm` | Shodan `ssl.jarm:`, Censys `host.services.jarm.fingerprint` (⚠️ Adversary Investigation module only), ZoomEye `jarm=` | Fingerprints the server's TLS stack+config → survives **domain rotation & re-branding** (ideal vs self-rotating scam-app infra). But stock stacks (nginx/CF defaults) share a JARM → **pair with a 2nd artifact**, never cluster on JARM alone. Active probe, suppressed under `--proxy`. |
 | **Inline-script SHA-256** | `inline_script_sha256` | match identical inline scripts across scans | Kit code; distinctive custom JS is a strong same-kit signal. |
 | **Form action + input-name set** | `forms[].action / .inputs` | PublicWWW for the reused field-name set | Phishing/brokerage-kit fingerprint. |
 | **Distinctive footer address / company string** | `footer.addresses` · `footer.copyright` | PublicWWW / urlscan / Google verbatim | A registered virtual-office address copied across sites is a real link — but **shared virtual offices** are used by many unrelated firms; corroborate. |
@@ -98,7 +98,7 @@ Honest roadmap: these strengthen domain/IP hunting but WebPivot does **not** yet
 them by hand; they're candidates for a new `@tool`.
 
 - **JA3S** TLS-stack fingerprint — a companion to JARM on the backend/C2 hosts. *(JARM itself is now emitted — see Tier B `jarm.jarm`.)*
-- **TLS leaf-cert fingerprint search** — pivot the exact cert SHA-256 on Censys/Shodan, beyond crt.sh name overlap.
+- **TLS leaf-cert fingerprint search** — pivot the exact cert SHA-256 on Censys/Shodan, beyond crt.sh name overlap. The Censys certificate LOOKUP is free-plan reachable and returns the cert's own hostname list.
 - **Time-bound passive-DNS overlap** — programmatic first/last-seen intersection to separate *shared origin* from *shared hosting*.
 - **Origin-behind-CDN recovery** — historical A-record before CF was added, origin's own TLS cert, favicon-on-Shodan, direct-IP `Host:` probing.
 - **On-chain next-hop** — trace swept funds to the off-ramp exchange deposit address (the subpoena-able lead), and flag freezable USDT (TRC-20) to Tether. *(Analysis-side, cross-skill.)*

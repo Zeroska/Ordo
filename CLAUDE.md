@@ -90,6 +90,16 @@ and without a redeploy**. Code holds the *matching logic*; the values it matches
   via `WebPivot/tools/api_usage.py report` (or the `api_usage` MCP tool); every run also prints an
   "API usage this run" summary. State the split when reporting cost; don't imply `total_cost_usd`
   covers the API credits. **Any NEW licensed/metered API call MUST call `api_usage.record(...)`.**
+- **Censys is the tightest quota — treat it as a budget, not a log.** 100 credits a MONTH on the
+  free plan, no rollover, and the quota is **per account**, so overspending in one case removes
+  Censys from every later case. A lookup is 1 credit, a search 5 — **and running the emitted CenQL
+  in the web UI costs the same 5**, so the UI link is not a free escape hatch. Prefer the keyless
+  CenQL builder and the 1-credit `cert` lookup; check `wp_censys.py budget` before a batch. The
+  guard in `wp_censys` caps spend per month and per run from the same ledger.
+- **A run's COLLECTION capability is also cost-visible.** `wp_capabilities.py` reports which keys
+  are absent and what evidence class each absence removes; it is embedded in every result as
+  `meta.capability`. Report a keyless/`--free-only` run as such — its zero API cost bought a
+  correspondingly smaller search of the internet.
 
 ## When a skill genuinely needs an example
 
@@ -130,12 +140,14 @@ git-ignored stores.
 |---|---|
 | How a case runs end-to-end (Collect → Correlate → Assess) | `PIPELINE.md`, `harness/README.md` |
 | The collector engine (pivot artifacts, WHOIS, JARM, impersonation) | `WebPivot/tools/pivot_extract.py` + the `WebPivot/tools/wp_*.py` modules |
+| The CENSYS layer — CenQL query builder (keyless) + the three free-plan lookups (certificate `names`, host, web property). Free Censys = **lookup endpoints only**; search is Starter+ and degrades to a UI link. **100 credits/MONTH, per account, no rollover — and the UI link costs the same 5 credits as an API search**; the spend guard caps it per month + per run | `WebPivot/tools/wp_censys.py` (tool; `budget` subcommand) + `WebPivot/references/censys_queries.json` (fields/prices/tiers + `credit_budget`) + `references/Setup.md` (getting the key) |
+| The CAPABILITY / keyless-disclosure layer — which keys exist, what each absence removes, and the rule that a keyless run must SAY so before any "nothing found" (a missing reverse index ≠ evidence of absence) | `WebPivot/tools/wp_capabilities.py` (tool + `meta.capability` + the run banner) + `WebPivot/references/api_keys.json` (per-key consequences) + `WebPivot/SKILL.md` § *API keys* |
 | The analyst / judgment layer (correlation, attribution, confidence) | `IntelAnalysis/` |
 | The knowledge base (entities, clusters, noise filters, reference) | `tools/kb/` |
 | Case state / resumable convergence loop | `tools/case_state.py`, `tools/intel.py` |
 | Where a case artifact belongs — `cases/` vs `knowledge/` | `README.md` § *`cases/` vs `knowledge/`*. Short version: **every per-case deliverable lives in `cases/<case>/`**; `knowledge/` is the cross-case KB only. `assessment.md` is the analyst's and is never overwritten; the loop's render goes to `loop_assessment.md` |
 | Register a tool or skill for the MCP + SDK (RULE 2) | `harness/tools.py` (auto-discovered by `harness/mcp_server.py`) |
-| Tunable reference DATA — denylists, thresholds, tables (RULE 3) | `<module>/references/*.json` — `tools/kb/` (`noise_filters`, `registrant_noise`), `WebPivot/` (`registrant_noise`, `third_party_noise`, `generic_labels`, `impersonation`, `mail_providers`, `pivot_tables`, `asn_registry`, `cdn_ranges`), `BinaryPivot/binary_indicators.json`, `IntelAnalysis/risk_indicators.json`, `tools/kb/references/victim_profile.json` (panel signatures, access-vector hypotheses + thresholds), `IntelGraph/references/evidence_sources.json` (evidence permalinks, source grading, staleness) |
+| Tunable reference DATA — denylists, thresholds, tables (RULE 3) | `<module>/references/*.json` — `tools/kb/` (`noise_filters`, `registrant_noise`), `WebPivot/` (`registrant_noise`, `third_party_noise`, `generic_labels`, `impersonation`, `mail_providers`, `pivot_tables`, `asn_registry`, `cdn_ranges`, `censys_queries`, `api_keys`), `BinaryPivot/binary_indicators.json`, `IntelAnalysis/risk_indicators.json`, `tools/kb/references/victim_profile.json` (panel signatures, access-vector hypotheses + thresholds), `IntelGraph/references/evidence_sources.json` (evidence permalinks, source grading, staleness) |
 | The reference-data loader + its gate | `wp_refs.py` / `kb_refs.py` / `bp_refs.py` / `ig_refs.py` (identical), `tests/test_references.py` |
 | The TEMPORAL layer — lifecycle timeline, hosting windows, expiry cohorts, evidence ledger | `IntelGraph/scripts/case_timeline.py` (tool) + `IntelAnalysis/SKILL.md` §1.5 & `Workflows/Timeline.md` (tradecraft) |
 | The VICTIM layer — when the operator serves from hostnames they don't own; infers the ACCESS VECTOR (provider breach / panel exploit / CMS exploit / agency / stolen-or-bought credentials) from the victim set's shape | `tools/kb/victim_profile.py` (tool) + `IntelAnalysis/SKILL.md` §1.6 & `Workflows/VictimProfile.md` (tradecraft) |

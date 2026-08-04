@@ -30,6 +30,7 @@ import urllib.error
 from wp_common import *  # noqa
 from wp_extract import *  # noqa
 from wp_refs import ref_path, load_ref  # noqa — reference DATA lives in references/*.json
+from wp_censys import censys_queries, attach_censys_queries  # CenQL builder (keyless — no PAT needed)
 
 # ---------------------------------------------------------------- reference data (RULE 3)
 # How much a pivot artifact is WORTH (SaaS-token confidence) and which URL params carry
@@ -219,19 +220,21 @@ def build_pivots(art: dict, base_host: str):
             {"service": "Shodan", "query": f'http.favicon.hash:{fav["shodan_mmh3"]}'},
             {"service": "FOFA", "query": f'icon_hash="{fav["shodan_mmh3"]}"'},
             {"service": "ZoomEye", "query": f'iconhash:"{fav["shodan_mmh3"]}"'},
-            {"service": "Censys", "query": f'services.http.response.favicons.md5_hash={fav["md5"]}'},
             {"service": "Netlas", "query": f'http.favicon.hash_sha256:{fav["sha256"]}'},
-        ], "Same favicon across unrelated domains = shared operator/kit.")
+        ] + censys_queries("favicon_hash", fav["md5"]),      # Censys wants the MD5, not the mmh3
+           "Same favicon across unrelated domains = shared operator/kit.")
 
     cert = art.get("tls_cert")
     if cert and not cert.get("error") and not cert.get("skipped"):
         fp = cert.get("fingerprint_sha256")
         if fp:
             add("tls_cert:fingerprint_sha256", fp, "high", [
-                {"service": "Censys", "query": f"services.tls.certificates.leaf_data.fingerprint_sha256:{fp}"},
                 {"service": "Validin", "query": fp},
                 {"service": "crt.sh", "query": f"https://crt.sh/?q={fp}"},
-            ], "Every host serving this exact certificate = same operator/deployment.")
+            ] + censys_queries("tls_cert:fingerprint_sha256", fp),
+               "Every host serving this exact certificate = same operator/deployment. The Censys "
+               "certificate LOOKUP (wp_censys.py cert <sha256>) also returns the cert's own full "
+               "`names` list — available on a free Censys plan, no search entitlement needed.")
         # Co-SAN: SANs on a DIFFERENT registrable domain than the seed are a strong
         # cross-brand operator link (one cert covering many apexes). Same-site
         # subdomains are just this domain's own hosts — not a pivot.
@@ -239,8 +242,7 @@ def build_pivots(art: dict, base_host: str):
         co_apexes = uniq([r for s in cert.get("sans", [])
                           if (r := _registrable(s)) and r != seed_reg])
         if co_apexes:
-            queries = [{"service": "Censys", "query":
-                        f"services.tls.certificates.leaf_data.fingerprint_sha256:{fp}"}] if fp else []
+            queries = censys_queries("tls_cert:fingerprint_sha256", fp) if fp else []
             for apex in co_apexes[:20]:
                 queries += [
                     {"service": "crt.sh", "query": f"%.{apex}"},
@@ -255,8 +257,10 @@ def build_pivots(art: dict, base_host: str):
         h = jarm["jarm"]
         add("jarm:hash", h, "medium", [
             {"service": "Shodan", "query": f"ssl.jarm:{h}"},
-            {"service": "Censys", "query": f"services.jarm.fingerprint:{h}"},
             {"service": "ZoomEye", "query": f'jarm="{h}"'},
+            # Censys indexes JARM but only makes it SEARCHABLE with the Adversary Investigation
+            # module — on free/starter/core this query returns nothing. Shodan is the free path.
+            *censys_queries("jarm:hash", h, ui=False),
         ], "Identical JARM = same TLS server stack + config — clusters an operator's "
            "origin/backend hosts even across domain rotation and re-branding. Corroborate: "
            "stock stacks (nginx/Cloudflare defaults) share a JARM, so pair with a 2nd artifact.")
@@ -780,12 +784,15 @@ def build_pivots(art: dict, base_host: str):
                 {"service": "FOFA", "query": _fofa_host(sub)},
                 {"service": "crt.sh", "query": f"https://crt.sh/?q={sub}.%25"},
                 {"service": "Shodan (CT)", "query": f'ssl.cert.subject.CN:"{sub}" OR hostname:"{sub}"'},
-                {"service": "Shodan CTL / Censys", "query": f"names: {sub}.*"},
+                # tokenised `:` match, not `=` — the value is a LABEL, not a whole hostname
+                *censys_queries("subdomain", sub),
             ], f"Distinctive subdomain label '{sub}' — an operator's naming convention. The same "
                f"label under other apexes (FOFA host / crt.sh label search / Shodan CT logs) is a "
                f"same-operator lead; corroborate with a second artifact before clustering.")
 
-    return sort_pivots(pivots)
+    # One pass adds the Censys CenQL (+ web-UI URL) to every remaining kind Censys can reverse —
+    # see references/censys_queries.json -> pivot_kind_map.
+    return sort_pivots(attach_censys_queries(pivots))
 
 
 __all__ = [_n for _n in dir() if not _n.startswith("__")]

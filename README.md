@@ -124,7 +124,11 @@ npm i -g @mermaid-js/mermaid-cli         # only for Mermaid flows
 </details>
 
 > [!TIP]
-> **API keys are optional.** Without them everything still works (extraction + query generation + **keyless-RDAP WHOIS** + passive Wayback/urlscan). WHOIS now runs on *every* domain with no key — keyless RDAP (rdap.org bootstrap) with a port-43 fallback for TLDs like `.vn`; `WHOISXML_API_KEY` only *enriches* it with registrant history. Keys unlock live pivoting. Read from the environment first, then a `chmod 600 ./.env` at the repo root: `URLSCAN_API_KEY`, `FOFA_KEY`, `FOFA_EMAIL`, `WHOISXML_API_KEY`, `PDNS_*`. Full keychain setup in `WebPivot/INSTALL.md`.
+> **API keys are optional — but keyless is a *smaller search*, and the tools say so.** Without keys everything still runs (extraction + query generation + **keyless-RDAP WHOIS** + passive Wayback/urlscan). WHOIS runs on *every* domain with no key — keyless RDAP (rdap.org bootstrap) with a port-43 fallback for TLDs like `.vn`; `WHOISXML_API_KEY` only *enriches* it with registrant history. Keys unlock live pivoting. Read from the environment first, then a `chmod 600 ./.env` at the repo root: `URLSCAN_API_KEY`, `FOFA_KEY`, `FOFA_EMAIL`, `WHOISXML_API_KEY`, `CENSYS_PAT`, `PDNS_*`. Full keychain setup in `WebPivot/INSTALL.md`.
+>
+> WebPivot **extracts** every artifact keylessly; what a key buys is the ability to **reverse** one. So a keyless run's short pivot list can mean "no siblings exist" *or* "the index that would have found them was never queried" — and those are different findings. Run `python3 WebPivot/tools/wp_capabilities.py` (or the `capability_check` MCP tool) to see exactly which evidence classes are unavailable; every run also prints it as a banner and records it as `meta.capability` in the result JSON. Report it before any "nothing found".
+>
+> ⚠️ **Censys is the tightest quota:** 100 credits a **month** on the free plan, no rollover, **per account** — and running the emitted CenQL in the web UI costs the same 5 credits as an API search. Prefer the free keyless CenQL builder and the 1-credit `cert` lookup; check `python3 WebPivot/tools/wp_censys.py budget` before a batch. The spend guard caps it per month and per run.
 
 ### 2. Run a case — three ways, same result
 
