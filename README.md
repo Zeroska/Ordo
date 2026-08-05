@@ -456,6 +456,101 @@ resuming the large collect transcript — that one decision is the main cost con
 schema-forced, so "done" means a validated `Assessment` object exists, not that the model said it
 was finished; if it comes back `low` confidence, the cascade escalates that phase alone to `opus`.
 
+### The two loops
+
+A single trace isn't the whole story: the harness is **two nested loops**, and they stop for
+different reasons. The inner one decides when a *phase* is finished; the outer one decides when the
+*case* is finished.
+
+#### Loop A — the agent loop: `tool_use` continues, an explicit result stops
+
+This is the loop inside one phase. On the Anthropic path it lives in `claude_agent_sdk.query()`,
+driven by `orchestrator._phase`; on the DeepSeek/OpenAI path it is written out in
+`openai_backend.query()` and is the clearest statement of the rule:
+
+```python
+for turn in range(max_turns):                  # HARNESS_MAX_TURNS, default 40
+    resp = POST /chat/completions
+    if not resp.tool_calls:                    # ← the model spoke instead of acting
+        final_text = resp.content; break       #   an explicit result = STOP
+    for call in resp.tool_calls:               # ← tool_use = CONTINUE
+        allowed, why = audit.gate(call.name, call.args)        # the gate, every turn
+        result = handler(call.args) if allowed else f"[BLOCKED] {why}"
+        messages.append({"role": "tool", "content": result[:TOOL_RESULT_CAP]})
+```
+
+Three properties matter:
+
+- **Stop is decided by the shape of the response, not a counter.** The turn cap is a runaway
+  backstop (`subtype="error_max_turns"`), not the normal exit.
+- **The Assess phase raises the bar from "said it's done" to "produced a valid object."** It is
+  schema-forced, so the phase only succeeds when a validated `Assessment` exists. The shim, lacking
+  native strict JSON schema, forces an `emit_result` tool call and retries (`HARNESS_STRUCT_RETRIES`,
+  default 3).
+- **Tool output is bounded, not summarized.** The shim truncates each result at
+  `TOOL_RESULT_CAP` (20 000 chars). There is no compaction agent — context is controlled
+  *architecturally*, by having judgment start a fresh session and re-read facts from the KB.
+
+#### Loop B — the case loop: expand the frontier until nothing new comes back
+
+```mermaid
+flowchart TD
+    A["collect the pending seeds<br/><i>free-only → zero credits</i>"] --> B["ingest → KB"]
+    B --> C["cluster · snapshot the round<br/><code>rounds.jsonl</code>"]
+    C --> D["compute the FREE frontier<br/><i>new apexes found for free this round</i>"]
+    D --> E["render assessment<br/><code>gaps · next_pivots · metered_leads</code>"]
+    E --> F{"stop?"}
+    F -- "last N rounds added<br/>0 hosts AND 0 indicators" --> G["converged"]
+    F -- "frontier empty" --> H["cold"]
+    F -- "round cap hit,<br/>work still queued" --> I["awaiting-analyst"]
+    F -- "new seeds" --> A
+
+    classDef stop fill:#b07d1e22,stroke:#b07d1e,color:#4a3408;
+    class G,H,I stop
+```
+
+**What "the frontier" actually is.** Each round mines every `raw/*.json` for registrable apexes
+discovered **for free** during that round — crt.sh SAN siblings, passive-DNS co-hosts, urlscan
+related domains, TLS co-SAN cross-apex, CORS trusted origins, impersonation lookalikes, and any
+reverse-WHOIS siblings a prior keyed run left behind. They're reduced to apexes, filtered through
+the shared noise policy, and deduped against everything already collected in **any** case.
+
+**What is deliberately held back from seeding.** A bad seed isn't just a wasted fetch — it gets
+*ingested*, and becomes a fake shared indicator in every later case. So three co-tenancy shapes are
+recorded as leads and never auto-collected:
+
+| Guard | Threshold | Why it isn't an operator link |
+|---|---|---|
+| multi-tenant TLS cert | > 4 distinct apexes | cPanel AutoSSL / LE multi-domain — the co-names are other customers |
+| shared / CDN IP | > 12 apexes on one IP | bulk hosting or a CDN edge |
+| bulk registrant term | > 25 domains | a reseller or privacy-proxy term |
+
+Metered pivots (FOFA `ip=`/`icon_hash=`, WhoisXML reverse) are likewise deferred to
+`metered_leads` for your approval — **auto-chase on free sources only; pause before spending
+credits.**
+
+**The analyst is in the loop, literally.** Between rounds the loop re-reads `assessment.json` and
+pulls domain-like tokens out of your `next_pivots` and `gaps`, folding them into the frontier
+**ahead of** the mechanically-discovered ones — and an analyst-directed lead keeps the case alive
+even when convergence says CONVERGED. Editing the assessment is a way to steer the next round.
+
+**Three implementations, one vocabulary.** Pick by what you want to spend:
+
+| Driver | LLM? | Loop body | Resumable |
+|---|---|---|---|
+| `tools/intel.py loop <case>` | **none** | collect → ingest → cluster → assess → chase frontier | `state.json`, every round |
+| `orchestrator.py --continue --depth N` | per round | full Collect → Correlate → Assess each round | assessment snapshots + hand-back |
+| `orchestrator.py --parallel --continue` | **once** | cheap collect-only rounds, then judge each **cluster** once at the end | same |
+
+The third is how a big case stays affordable: expansion is mechanical, and LLM cost scales with the
+number of **clusters**, not domains — clusters already attributed in the operator registry skip the
+model entirely.
+
+All three converge on the same rule — **`CONVERGED` = the last `--stale` rounds (default 2) each
+added zero new hosts *and* zero new indicators**, read from `rounds.jsonl`, which
+`tools/kb/convergence.py` alone owns. Convergence is the stop condition; `--depth` / `--max-rounds`
+is only a cap, and hitting it is reported as `awaiting-analyst`, not as done.
+
 ---
 
 ## Under the hood
