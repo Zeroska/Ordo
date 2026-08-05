@@ -130,7 +130,8 @@ def check():
     # runs, still produces output — it just stops filtering. Comparing against the fallback size
     # catches that, and unlike a hardcoded count it does not rot as analysts extend a list.
     import wp_pivots, wp_analyze, wp_assets, wp_recon, wp_ippivot, wp_impersonate  # noqa: E401
-    import wp_censys, wp_capabilities                                              # noqa: E401
+    import wp_censys, wp_capabilities, wp_intelx                                   # noqa: E401
+    import bp_anyrun                                                               # noqa: E401
     import whois_enrich, evidence_report                                           # noqa: E401
     import ingest_webpivot, hypothesize, ingest_report, noise_filters              # noqa: E401
     import analyze_artifact                                                        # noqa: E401
@@ -176,6 +177,28 @@ def check():
         # grant after buying credits, and the reserve that keeps 1-credit cert lookups affordable.
         ("wp_censys.CREDIT_BUDGET", wp_censys.CREDIT_BUDGET,
          wp_censys._CENSYS_FALLBACK["credit_budget"]),
+        # IntelX. On the fallback the selector classifier knows five patterns instead of eleven, so
+        # a wallet / IBAN / CIDR artifact stops being recognised as searchable at all — and the
+        # bucket catalogue empties, which takes the false-cluster control with it: `clusterable()`
+        # then denies everything, costing leads (the safe direction, but silently).
+        ("wp_intelx.SELECTOR_TYPES", wp_intelx.SELECTOR_TYPES,
+         wp_intelx._INTELX_FALLBACK["selector_types"]),
+        ("wp_intelx.PIVOT_KIND_MAP", wp_intelx.PIVOT_KIND_MAP,
+         wp_intelx._INTELX_FALLBACK["pivot_kind_map"]),
+        ("wp_intelx.BUCKETS", wp_intelx.BUCKETS, wp_intelx._INTELX_FALLBACK["buckets"]),
+        ("wp_intelx.ENDPOINTS", wp_intelx.ENDPOINTS, wp_intelx._INTELX_FALLBACK["endpoints"]),
+        ("wp_intelx.CLUSTERING_POLICY", wp_intelx.CLUSTERING_POLICY,
+         wp_intelx._INTELX_FALLBACK["clustering_policy"]),
+        # ANY.RUN. On the fallback the observation-field map covers six kinds instead of ten and
+        # the clustering policy is empty, so a shared malware FAMILY would be ungraded rather than
+        # explicitly context-only — the exact same-kit/same-operator confusion this layer must not
+        # introduce into BinaryPivot.
+        ("bp_anyrun.QUERY_FIELDS", bp_anyrun.QUERY_FIELDS,
+         bp_anyrun._ANYRUN_FALLBACK["query_fields"]),
+        ("bp_anyrun.PIVOT_FIELD_MAP", bp_anyrun.PIVOT_FIELD_MAP,
+         bp_anyrun._ANYRUN_FALLBACK["pivot_field_map"]),
+        ("bp_anyrun.CLUSTERING_POLICY", bp_anyrun.CLUSTERING_POLICY,
+         bp_anyrun._ANYRUN_FALLBACK["clustering_policy"]),
         # The keyless banner. On the fallback it names four credentials instead of eight, so a run
         # missing SHODAN_KEY or PDNS_* reports FULL capability it does not have — the exact false
         # reassurance the capability layer exists to prevent.

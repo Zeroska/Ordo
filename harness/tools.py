@@ -1062,10 +1062,100 @@ async def victim_profile(args: dict[str, Any]) -> dict[str, Any]:
             "is_error": r.returncode != 0}
 
 
+@tool(
+    "intelx_search",
+    "Intelligence X — search ONE STRONG SELECTOR across a corpus nothing else here indexes: breach "
+    "dumps, infostealer logs, pastes, darknet mirrors, historical WHOIS and IntelX's own web crawl. "
+    "`selector` must be an email, domain (a `*.apex` wildcard is allowed), URL, IP/CIDR, phone "
+    "number, wallet, MAC/UUID/IBAN — never a brand or person name (a soft term is refused and still "
+    "costs a unit). Use it on the artifacts that carry ATTRIBUTION: a registrant email, a support "
+    "phone, a payout wallet. mode='phonebook' instead turns ONE domain into an inventory of every "
+    "email address, subdomain and URL IntelX has seen under it — the highest-value call for web "
+    "casework, and PAID-only. Every record comes back graded: a hit in a breach corpus or a stealer "
+    "log is EXPOSURE evidence and is flagged NOT clusterable (two addresses in one combolist share "
+    "victims, not an operator); only whois/pastes/darknet hits may support a same-operator edge. "
+    "METERED and capped per run. With no INTELX_KEY the layer still runs at ~50%: it classifies the "
+    "selector and returns the intelx.io / phonebook.cz URL to run by hand — say so rather than "
+    "reporting an empty result as 'not in any leak'.",
+    {"selector": str},  # mode:'search'|'phonebook', buckets:str, max:int optional -> args.get()
+    annotations=READONLY,
+)
+async def intelx_search(args: dict[str, Any]) -> dict[str, Any]:
+    script = os.path.join("WebPivot", "tools", "wp_intelx.py")
+    mode = str(args.get("mode") or "search").lower()
+    sel = str(args["selector"])
+    if mode == "phonebook":
+        cmd = [PY, script, "phonebook", sel]
+        if args.get("target"):
+            cmd += ["--target", str(args["target"])]
+    else:
+        cmd = [PY, script, "search", sel]
+        if args.get("buckets"):
+            cmd += ["--buckets", str(args["buckets"])]
+    if args.get("max"):
+        cmd += ["--max", str(int(args["max"]))]
+    r = _run(cmd, timeout=180)
+    if r.returncode != 0 and not r.stdout:
+        # rc=2 is the documented KEYLESS path: the stderr block explains what was not queried and
+        # gives the UI URL. That is information, not a failure — surfacing it as an error would
+        # teach the model to stop asking.
+        return _ok((r.stderr or "intelx produced no output") +
+                   "\n\n(Keyless/limited IntelX: nothing was queried. Do NOT report this as "
+                   "'the selector appears in no leak' — run the URL above by hand.)")
+    return _ok((r.stdout or "") + ("\n" + r.stderr if r.stderr else ""))
+
+
+@tool(
+    "anyrun_lookup",
+    "ANY.RUN Threat Intelligence Lookup — what samples carrying this indicator actually DID when "
+    "detonated: the domains, IPs, URLs and ports they contacted, the family label, Suricata context "
+    "and public sandbox tasks. The file half's counterpart to a reverse search: run it after "
+    "analyze_artifact on the sample's sha256, its backend host or its C2 `ip:port`. It is the ONLY "
+    "way to recover a PACKED sample's real endpoints — those exist only at runtime, so a thin static "
+    "string sweep plus a `binary:protection` finding is exactly the cue to call this. `indicator` is "
+    "auto-typed (sha256/md5/domain/ip[:port]/url); pass query='field:\"value\"' for a raw TI Lookup "
+    "query. Contacted hosts may support an operator edge once corroborated; a shared threat FAMILY "
+    "is same-KIT only and never attribution on its own. NOTHING IS EVER SUBMITTED — read-only, no "
+    "detonation. METERED (needs a TI Lookup licence, separate from a sandbox subscription) and "
+    "capped per run. With no ANYRUN_API_KEY the layer still runs at ~50%: it composes the correct "
+    "query and returns the UI address — say so rather than reporting silence as 'unknown sample'.",
+    {"indicator": str},  # query:str, days:int optional -> args.get()
+    annotations=READONLY,
+)
+async def anyrun_lookup(args: dict[str, Any]) -> dict[str, Any]:
+    import re
+    script = os.path.join("BinaryPivot", "tools", "bp_anyrun.py")
+    cmd = [PY, script, "lookup"]
+    if args.get("query"):
+        cmd += ["--query", str(args["query"])]
+    else:
+        ind = str(args["indicator"]).strip()
+        host = ind.split(":")[0]
+        if re.fullmatch(r"[0-9a-fA-F]{64}", ind):
+            flag = "--sha256"
+        elif re.fullmatch(r"[0-9a-fA-F]{32}", ind):
+            flag = "--md5"
+        elif ind.startswith(("http://", "https://")):
+            flag = "--url"
+        elif re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", host):
+            flag = "--ip"
+        else:
+            flag = "--domain"
+        cmd += [flag, ind]
+    if args.get("days"):
+        cmd += ["--days", str(int(args["days"]))]
+    r = _run(cmd, timeout=180)
+    if r.returncode != 0 and not r.stdout:
+        return _ok((r.stderr or "anyrun produced no output") +
+                   "\n\n(Keyless/limited ANY.RUN: nothing was queried. Do NOT report this as "
+                   "'the sample is unknown to the sandbox world' — paste the query into the UI.)")
+    return _ok((r.stdout or "") + ("\n" + r.stderr if r.stderr else ""))
+
+
 # ---------------------------------------------------------------- servers + names
 COLLECT_SERVER = create_sdk_mcp_server(
     "collect", tools=[pivot_extract, analyze_artifact, fallback_probe, impersonation_hunt,
-                      search_pivot, kb_ingest])
+                      search_pivot, intelx_search, anyrun_lookup, kb_ingest])
 ANALYZE_SERVER = create_sdk_mcp_server(
     "analyze", tools=[kb_cluster, kb_entity, kb_query_shared, risk_signals,
                       reverse_whois, cert_overlap, reference_check, reference_add,
@@ -1075,7 +1165,8 @@ ANALYZE_SERVER = create_sdk_mcp_server(
 
 COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__analyze_artifact",
                  "mcp__collect__fallback_probe", "mcp__collect__impersonation_hunt",
-                 "mcp__collect__search_pivot", "mcp__collect__kb_ingest"]
+                 "mcp__collect__search_pivot", "mcp__collect__intelx_search",
+                 "mcp__collect__anyrun_lookup", "mcp__collect__kb_ingest"]
 ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__kb_query_shared", "mcp__analyze__risk_signals",
                  "mcp__analyze__reverse_whois", "mcp__analyze__cert_overlap",

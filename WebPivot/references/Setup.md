@@ -33,8 +33,47 @@ finds — the **invocation directory** (normally the repo root you run from), th
 relative to the script, then a **skill-local** `.env` next to `WebPivot/`. A real environment
 variable always wins; among files, the earlier one wins. Recognized: `URLSCAN_API_KEY`, `FOFA_KEY` (or `FOFA_API_KEY`),
 `FOFA_EMAIL`, `WHOISXML_API_KEY`, `PDNS_USERNAME` + `PDNS_PASSWORD` (passive DNS, optional
-`PDNS_URL`), `CENSYS_PAT` (+ optional `CENSYS_ORG_ID`), and — for IPPivot — `IPINFO_TOKEN` (richer
-IPinfo ASN/abuse) and `SHODAN_KEY` (host ports/services). All optional.
+`PDNS_URL`), `CENSYS_PAT` (+ optional `CENSYS_ORG_ID`), `INTELX_KEY` (+ optional `INTELX_BASE_URL`),
+and — for IPPivot — `IPINFO_TOKEN` (richer IPinfo ASN/abuse) and `SHODAN_KEY` (host ports/services).
+BinaryPivot additionally reads `ANYRUN_API_KEY`. All optional.
+
+### `INTELX_KEY` — Intelligence X (leaks / stealer logs / pastes / darknet / historical WHOIS)
+
+Get it at <https://intelx.io/account?tab=developer> (Account → **Developer** tab), which also shows
+the **API instance** your key is issued against. The client defaults to `https://2.intelx.io`; if the
+Developer tab shows a different host, set `INTELX_BASE_URL` to it — otherwise every call answers
+401 and reads as "expired key".
+
+```bash
+printf 'INTELX_KEY=…\n' >> .env && chmod 600 .env
+python3 WebPivot/tools/wp_intelx.py caps      # what this key is entitled to
+python3 WebPivot/tools/wp_intelx.py budget    # this month's search spend (offline, free)
+```
+
+What the key changes: with it, `pivot_extract --intelx` **runs** the selector searches and the
+phonebook inventory; without it, every pivot still carries its IntelX selector and a click-to-run
+`intelx.io` / `phonebook.cz` URL — **about half the layer**, since composing the query is free but
+executing it is not. **`/phonebook/search` is PAID-only**: a free key gets HTTP 402 and the UI link.
+Spend is capped per run and per month (`references/intelx.json → search_budget`, or
+`INTELX_MAX_SEARCHES_PER_RUN` / `INTELX_MONTHLY_SEARCHES` for a single run). `--free-only` skips it.
+
+### `ANYRUN_API_KEY` — ANY.RUN TI Lookup (used by **BinaryPivot**, not by pivot_extract)
+
+Get it from your ANY.RUN profile → **API and Limits** tab (<https://app.any.run/profile>). Paste the
+bare key; the client adds the `API-KEY ` prefix. **TI Lookup is a separate licence from the
+sandbox** — a sandbox-only key answers 401/403 on `/intelligence/*`, so check first:
+
+```bash
+printf 'ANYRUN_API_KEY=…\n' >> .env && chmod 600 .env
+python3 BinaryPivot/tools/bp_anyrun.py keycheck   # entitled to TI Lookup?
+python3 BinaryPivot/tools/bp_anyrun.py budget     # this month's request spend (offline, free)
+```
+
+Read-only by design: there is **no submit path** — BinaryPivot never detonates. Without the key the
+layer still composes the correct TI Lookup query for every artifact and gives the UI address to
+paste it into (**~50% capability**). Capped per run and per month
+(`references/anyrun.json → request_budget`, or `ANYRUN_MAX_REQUESTS_PER_RUN` /
+`ANYRUN_MONTHLY_REQUESTS`).
 
 `URLSCAN_VISIBILITY` — set to `private` with a **urlscan Pro** key so submitted scans of hostile
 infra stay team-only (never in the public feed); defaults to `unlisted`. A Pro key also auto-enables

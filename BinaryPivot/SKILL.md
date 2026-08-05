@@ -1,6 +1,6 @@
 ---
 name: BinaryPivot
-description: Static IOC extraction from binaries pulled off fraud/scam sites — the file half of a scam funnel (sideloaded Android APK, desktop "trading terminal" .exe/.dmg/.msi, bundled .jar/.zip). Downloads/opens the artifact, hashes it, and pulls the operator-clustering identifiers that survive re-skinning: APK signing-cert SHA-256, package name + permissions, embedded backend/C2 hosts, Firebase/appspot cloud tenant, S3 buckets, crypto wallets, Telegram/WhatsApp handles. Emits WebPivot-shaped pivot JSON so the SAME KB/case graph clusters the app with the web infrastructure. USE WHEN analyze APK, analyze binary, analyze exe, analyze installer, scam app, trading app, sideloaded APK, extract IOCs from file, malware IOCs, signing certificate, package name, APK backend, C2 endpoint, firebase project, mobile app analysis, reverse the app, what does this app connect to, pivot from a downloaded file, app download funnel.
+description: Static IOC extraction from binaries pulled off fraud/scam sites — the file half of a scam funnel (sideloaded Android APK, desktop "trading terminal" .exe/.dmg/.msi, bundled .jar/.zip). Downloads/opens the artifact, hashes it, and pulls the operator-clustering identifiers that survive re-skinning: APK signing-cert SHA-256, package name + permissions, embedded backend/C2 hosts, Firebase/appspot cloud tenant, S3 buckets, crypto wallets, Telegram/WhatsApp handles. Emits WebPivot-shaped pivot JSON so the SAME KB/case graph clusters the app with the web infrastructure. USE WHEN analyze APK, analyze binary, analyze exe, analyze installer, scam app, trading app, sideloaded APK, extract IOCs from file, malware IOCs, signing certificate, package name, APK backend, C2 endpoint, firebase project, mobile app analysis, reverse the app, what does this app connect to, pivot from a downloaded file, app download funnel, ANY.RUN, anyrun, TI Lookup, sandbox report, has this hash been detonated, what did the sample contact, sandbox-observed C2, threat intelligence lookup for a hash, packed sample real endpoints.
 ---
 
 > **OPSEC — this skill is portable/shared. Never write case data into it.** No real operator
@@ -83,6 +83,49 @@ A web domain and an APK that share a signing cert / backend host / Firebase proj
 operator behind a re-skinned website. Set `meta.host` to the **download host** (default when you pass
 a URL) so the artifact anchors onto the site that served it.
 
+## ANY.RUN — what the file DID, not just what it IS (**keyless ≈ 50% of it**)
+
+Everything above is **static**: it reads the file. ANY.RUN's **Threat Intelligence Lookup** reports
+what samples carrying these indicators actually **did when detonated** — the domains, IPs, URLs and
+ports they contacted, the family label, Suricata alerts, and public sandbox sessions you can open
+and watch. Two things follow, and the second is the reason this layer exists:
+
+- **It recovers infrastructure static extraction cannot see.** A backend assembled at runtime, or
+  decrypted out of a packed payload, is absent from the strings sweep *by construction*. So a thin
+  result **plus** a `binary:protection` finding is the exact cue to call this — the operator's real
+  endpoints are in someone's detonation record and nowhere else.
+- **A contacted host is an observation, not a reputation score** — far stronger than "this string
+  appears in the file", and it feeds straight back into **WebPivot**.
+
+```bash
+BP=~/.claude/skills/BinaryPivot
+python3 "$BP/tools/bp_anyrun.py" query file:sha256 <sha256>     # OFFLINE: build the query, no key
+python3 "$BP/tools/bp_anyrun.py" lookup --sha256 <sha256>       # 1 request
+python3 "$BP/tools/bp_anyrun.py" lookup --ip 203.0.113.10:8443  # a C2 endpoint (auto-split)
+python3 "$BP/tools/bp_anyrun.py" keycheck                       # TI Lookup is a SEPARATE licence
+python3 "$BP/tools/analyze_artifact.py <target> --anyrun        # run it inside an analysis
+```
+
+- **Read-only. Nothing is ever submitted.** There is no detonation path here and the submission
+  endpoint is deliberately absent from the reference file: submitting a scam-funnel sample spends a
+  run, is visible to the operator on a public plan, and is an analyst's explicit decision made in
+  the sandbox UI — not a side effect of a collector.
+- **Only observation fields map.** Hashes, contacted domains/IPs/URLs, JARM. A **signing cert, an
+  APK package name and a firebase project id are identity, not observation** — those get no ANY.RUN
+  query (reverse them on VirusTotal / Koodous / Triage, which the pivot already carries).
+- 🚫 **A shared threat FAMILY is same-KIT, never same-operator** — the same class of signal as a
+  shared packer or a shared white-label CDN. Two crews running one commodity stealer are two crews.
+  Policy: `references/anyrun.json → clustering_policy` (`cluster_on` vs `context_only`), enforced by
+  `grade_field()`, which **fails closed** on anything unknown.
+- **Metered**, capped per run and per month against the shared ledger
+  (`references/anyrun.json → request_budget`, or `ANYRUN_MAX_REQUESTS_PER_RUN` /
+  `ANYRUN_MONTHLY_REQUESTS`). A TI Lookup trial is tens of requests — spend them on the two or three
+  artifacts that decide the case.
+- 🔑 **Without `ANYRUN_API_KEY` the layer runs at ~50%** — it still composes the correct TI Lookup
+  query for every indexable artifact (right field, `ip:port` split, bounded window) and gives you
+  the UI address to paste it into, but **executes nothing**. A missing ANY.RUN section therefore
+  does **not** mean the sample is unknown to the sandbox world. Say so before reporting it.
+
 ## Workflow — APK/binary in a scam funnel
 
 1. **WebPivot flags the file.** Running `pivot_extract.py` on the scam site emits `app:apk` /
@@ -104,6 +147,8 @@ a URL) so the artifact anchors onto the site that served it.
 - "what does this trading app connect to", "find its backend / C2"
 - "get the signing cert / package name", "cluster these scam apps"
 - "pivot from the downloaded file", "the site pushes an APK — dig into it"
+- "has anyone detonated this hash", "what did it contact when it ran", "sandbox report for this
+  sample", "ANY.RUN this", "the sample is packed — where are the real endpoints"
 
 ## Notes on reliability
 

@@ -52,6 +52,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bp_refs  # noqa: E402 — reference DATA lives in references/*.json (RULE 3)
+import bp_anyrun  # noqa: E402 — ANY.RUN TI Lookup: query builder (keyless) + live lookups (--anyrun)
 
 # ---------------------------------------------------------------- reference data (RULE 3)
 # The host-token denylists and the packer/installer/protector signature tables are DATA, in
@@ -1086,7 +1087,10 @@ def build_pivots(kind, hashes, art, iocs, meta):
           "execution, so route it to dynamic analysis. A shared *named* protector is a WEAK, "
           "kit-level link (same builder/protection service), not proof of a shared operator alone.")
 
-    return pivots
+    # One pass adds the ANY.RUN TI Lookup query (+ the UI link) to every kind the sandbox indexes —
+    # hashes, contacted hosts, C2 endpoints, URLs. Built offline and keyless, so even a no-key run
+    # hands the analyst the exact query for the observation index; see references/anyrun.json.
+    return bp_anyrun.attach_anyrun_queries(pivots)
 
 
 # ----------------------------------------------------------------------------- KB-shaped output
@@ -1133,7 +1137,7 @@ def to_trackers(art, iocs):
 
 
 # ----------------------------------------------------------------------------- main analyze
-def analyze(target, keep_dir=None, timeout=60):
+def analyze(target, keep_dir=None, timeout=60, anyrun=False):
     raw, meta = acquire(target, keep_dir=keep_dir, timeout=timeout)
     if not raw:
         return {"meta": meta, "artifacts": {}, "pivots": [],
@@ -1188,6 +1192,11 @@ def analyze(target, keep_dir=None, timeout=60):
         },
         "pivots": pivots,
     }
+    # ANY.RUN is consulted (never fed): it reports what OTHER people's detonations of these
+    # artifacts recorded. Most valuable exactly when `protection` says the string sweep is thin —
+    # a packed sample's real endpoints only exist at runtime.
+    if anyrun:
+        bp_anyrun.enrich_result(result)
     return result
 
 
@@ -1263,9 +1272,19 @@ def main():
     ap.add_argument("--keep", metavar="DIR", help="save the downloaded artifact into DIR")
     ap.add_argument("--case", help="case name (recorded in meta only)")
     ap.add_argument("--timeout", type=int, default=60)
+    ap.add_argument("--anyrun", action="store_true",
+                    help="RUN ANY.RUN Threat Intelligence Lookup live on this artifact's hashes "
+                         "and endpoints — the domains/IPs samples like it actually contacted when "
+                         "detonated, the family label, and the public sandbox tasks. This is how a "
+                         "PACKED sample's real backend is recovered. METERED (needs ANYRUN_API_KEY "
+                         "with a TI Lookup licence) and bounded by the per-run cap in "
+                         "references/anyrun.json. Nothing is ever SUBMITTED — read-only. Without "
+                         "this flag every pivot still carries its TI Lookup query, built offline.")
     args = ap.parse_args()
 
-    result = analyze(args.target, keep_dir=args.keep, timeout=args.timeout)
+    for _line in bp_anyrun.banner_lines():
+        sys.stderr.write(_line + "\n")
+    result = analyze(args.target, keep_dir=args.keep, timeout=args.timeout, anyrun=args.anyrun)
     if args.case:
         result["meta"]["case"] = args.case
 

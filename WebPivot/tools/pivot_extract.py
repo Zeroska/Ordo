@@ -85,6 +85,7 @@ import wp_extract  # noqa  (for the QR toggle set in main)
 import wp_assets   # noqa  (asset layer: JS bundles / source maps / well-known files toggles)
 from wp_assets import *  # noqa
 import wp_censys   # noqa  (Censys Platform: lookups + CenQL builder; --no-censys flips ENABLED)
+import wp_intelx   # noqa  (Intelligence X: leak/paste/darknet selector search; --intelx runs it live)
 import wp_capabilities  # noqa  (which keys are present -> what this run could and could not query)
 import wp_ippivot  # noqa  (IPPivot: bare-IP source runs passive IP recon instead of HTML)
 import wp_impersonate  # noqa  (ImpersonationHunt: --hunt-impersonation hunts lookalikes of a seed)
@@ -183,6 +184,10 @@ def _emit_result(result, args, src):
     if _cb["spent_this_run"]:
         print(f"  censys     {_cb['remaining_this_month']}/{_cb['monthly_credits']} credits left "
               f"for {_cb['month']} (no rollover)", file=sys.stderr)
+    _ib = wp_intelx.budget_status()
+    if _ib["spent_this_run"]:
+        print(f"  intelx     {_ib['remaining_this_month']}/{_ib['monthly_searches']} search "
+              f"unit(s) left for {_ib['month']}", file=sys.stderr)
 
 
 def main():
@@ -234,6 +239,17 @@ def main():
                          "not roll over), so this is the switch for conserving them. The Censys "
                          "CenQL queries are still emitted on every pivot — they are built offline "
                          "and cost nothing.")
+    ap.add_argument("--intelx", action="store_true",
+                    help="RUN Intelligence X live on this result's selectors — emails, phones, "
+                         "wallets, the host itself — searching leaks, stealer logs, pastes, "
+                         "darknet mirrors and historical WHOIS, plus a phonebook inventory of the "
+                         "apex (emails/subdomains/URLs). METERED: bounded by the per-run cap in "
+                         "references/intelx.json and skipped under --free-only. Without this flag "
+                         "(or without INTELX_KEY) every pivot still carries its IntelX selector "
+                         "and web-UI URL — built offline, costing nothing.")
+    ap.add_argument("--no-intelx-phonebook", action="store_true",
+                    help="with --intelx, skip the phonebook inventory of the apex (it is the "
+                         "expensive call and needs a PAID entitlement)")
     ap.add_argument("--fofa-full", action="store_true",
                     help="run FOFA reverses over ALL historical data (full=true) instead of the "
                          "default ~1-year window — catches favicon/tracker assets later scrubbed. "
@@ -314,6 +330,11 @@ def main():
     # State the run's capability BEFORE any collection, so the analyst reads the caveat with the
     # result rather than after acting on it. Silent when every key is present — see wp_capabilities.
     wp_capabilities.print_banner(free_only=args.free_only)
+    # The IntelX layer states its own capability separately: it is the only layer whose absence
+    # removes an entire CORPUS (leaks, stealer logs, pastes, darknet) rather than an index of the
+    # live internet, and a keyless run of it is explicitly ~50% — see wp_intelx.capability().
+    for _line in wp_intelx.banner_lines(free_only=args.free_only):
+        print(_line, file=sys.stderr)
     if args.screenshot is not None and not args.render:
         args.render = True   # a screenshot requires the rendered (Playwright) page
     wp_extract.QR_DECODE_IMAGES = bool(args.decode_qr)
@@ -368,6 +389,11 @@ def main():
               file=sys.stderr)
         result = wp_ippivot.build_ip_result(ip_target, args, fofa_full=args.fofa_full,
                                             free_only=args.free_only)
+        if args.intelx:
+            # An IP is a strong IntelX selector too — sightings in pastes/logs corroborate a
+            # co-tenancy claim from a corpus none of the scan engines index. No phonebook: that
+            # endpoint takes a domain.
+            wp_intelx.enrich_result(result, do_phonebook=False, free_only=args.free_only)
         _emit_result(result, args, ip_target)
         return
 
@@ -623,6 +649,11 @@ def main():
     if not args.no_whois:
         whois_enrich_result(result, do_reverse=args.whois_reverse and not args.free_only,
                             history_mode=args.whois_history_mode, free_only=args.free_only)
+    # IntelX runs AFTER WHOIS on purpose: the registrant email/phone WHOIS just filled in are the
+    # highest-value selectors in the whole result, and they do not exist until that call returns.
+    if args.intelx:
+        wp_intelx.enrich_result(result, do_phonebook=not args.no_intelx_phonebook,
+                                free_only=args.free_only)
 
     # --- store the raw DOM (the collected page) ---
     if args.save_dom and html:

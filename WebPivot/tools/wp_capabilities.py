@@ -106,6 +106,11 @@ def key_status():
             "without_it": spec.get("without_it") or "",
             "free_fallback": spec.get("free_fallback") or "",
             "signup": spec.get("signup") or "",
+            # Optional, per key: what percentage of THAT layer still works with no key. Present
+            # for layers where keyless mode still does real work (composing every query) but can
+            # execute none of it — saying "~50% capability" is more honest, and more actionable,
+            # than leaving the analyst to infer how degraded the run was.
+            "power_without_key": spec.get("power_without_key"),
         })
     return rows
 
@@ -136,36 +141,51 @@ def capability_meta(free_only: bool = False) -> dict:
     # What the analyst must not misread. Only the absences that remove an INDEX are listed —
     # a degraded detail level is not a reason to doubt a negative result.
     blind = [{"env": r["env"], "service": r["service"], "impact": r["impact"],
-              "lost": r["without_it"], "instead": r["free_fallback"]}
+              "lost": r["without_it"], "instead": r["free_fallback"],
+              **({"power_pct": r["power_without_key"]} if r.get("power_without_key") else {})}
              for r in rows
              if (not r["present"] or (free_only and r["metered"]))
              and r["impact"] in ("critical", "high")]
+    # Layers that quantify their own degradation, at any impact level — reported separately so the
+    # run can state "IntelX ran at ~50%" without the reader having to read it out of a prose field.
+    degraded = [{"env": r["env"], "service": r["service"], "power_pct": r["power_without_key"]}
+                for r in rows
+                if r.get("power_without_key")
+                and (not r["present"] or (free_only and r["metered"]))]
     return {
         "mode": mode,
         "keys_present": present,
         "keys_missing": missing,
         "metered_suppressed": unusable,
         "reduced": blind,
-        "statement": statement(mode, blind),
+        "degraded_layers": degraded,
+        "statement": statement(mode, blind, degraded),
         "keyless_baseline": list(KEYLESS_BASELINE),
     }
 
 
-def statement(mode: str, blind: list) -> str:
+def statement(mode: str, blind: list, degraded: list = None) -> str:
     """The one sentence a report should carry. Written so it can be pasted into an assessment's
     collection-limitations note verbatim."""
+    # Layers that quantify their own degradation get their number in the sentence — "IntelX ran at
+    # ~50% capability" is a fact a reader can act on; "IntelX was unavailable" invites them to
+    # assume nothing was produced at all, which is also wrong.
+    pct = ""
+    if degraded:
+        pct = " " + "; ".join(f"{d['service']} ran at ~{d['power_pct']}% capability"
+                              for d in degraded) + "."
     if mode == "keyed":
         return ("Collected with every registered API key present — all reverse-lookup indexes "
                 "were queried.")
     if not blind:
         return (f"Collected in {mode} mode; the absent credentials cost detail only, not an "
-                f"evidence class.")
+                f"evidence class.{pct}")
     lost = ", ".join(b["service"] for b in blind)
     why = ("--free-only suppressed every metered index" if mode == "free-only"
            else "no credential was available for")
     return (f"COLLECTION LIMITATION — {mode} mode: {why} {lost}. Those reverse-lookup indexes were "
             f"never queried, so the ABSENCE of sibling infrastructure in this run is not evidence "
-            f"that none exists.")
+            f"that none exists.{pct}")
 
 
 def _wrap(text: str, indent: str, width: int = 100, max_lines: int = 0) -> list:
@@ -203,7 +223,8 @@ def banner_lines(free_only: bool = False) -> list:
             continue
         detailed += 1
         mark = "SUPPRESSED" if env in cap["metered_suppressed"] else "not set"
-        lines.append(f"    · {env} [{r.get('impact')}] {r.get('service')} — {mark}")
+        pct = f" — ~{r['power_without_key']}% capability" if r.get("power_without_key") else ""
+        lines.append(f"    · {env} [{r.get('impact')}] {r.get('service')} — {mark}{pct}")
         lines += _wrap(f"lost:    {r.get('without_it')}", "        ", max_lines=2)
         if r.get("free_fallback"):
             lines += _wrap(f"instead: {r['free_fallback']}", "        ", max_lines=2)
@@ -248,7 +269,9 @@ def main():
         if a.free_only and r["present"] and r["metered"]:
             state = "SUPPRESSED (--free-only)"
         print(f"  [{state}] {r['env']} — {r['service']}  [{r['impact']}]"
-              + ("  (metered: costs credits)" if r["metered"] else ""))
+              + ("  (metered: costs credits)" if r["metered"] else "")
+              + (f"  (~{r['power_without_key']}% capability without it)"
+                 if r.get("power_without_key") and not r["present"] else ""))
         if r["present"]:
             print(f"      unlocks: {r['unlocks']}")
         else:

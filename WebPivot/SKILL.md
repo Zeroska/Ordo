@@ -1,6 +1,6 @@
 ---
 name: WebPivot
-description: Website content & DOM analysis for OSINT and cybercrime investigation — extracts pivot artifacts (favicon mmh3 hash, tracking/analytics IDs, crypto wallets, emails, contact phones, Telegram channels/invites, Google Doc/Sheet/Form/Drive IDs, footer postal address, page description, ETag, WHOIS registrant name/org/phone/email/dates, third-party infra, template/DOM fingerprints) from a page's HTML/DOM and produces ready-to-run pivot queries (Shodan, PublicWWW, crt.sh, urlscan, Validin, Chainabuse). USE WHEN analyze website, analyze HTML, analyze DOM, page analysis, find pivot, pivoting point, pivot artifact, favicon hash, tracking ID, analytics ID, GA GTM pixel, reverse analytics, phone number, telegram channel, google sheet, google form, footer address, whois registrant, cluster sites, campaign clustering, phishing kit, scam site, infrastructure link, source code search, who owns this site, related domains, threat infrastructure, impersonation domain, typosquat, typo domain, lookalike domain, spoofed domain, brand impersonation, TLD sweep, keyword hunt, domain permutation, homoglyph, combosquat, hunt lookalikes.
+description: Website content & DOM analysis for OSINT and cybercrime investigation — extracts pivot artifacts (favicon mmh3 hash, tracking/analytics IDs, crypto wallets, emails, contact phones, Telegram channels/invites, Google Doc/Sheet/Form/Drive IDs, footer postal address, page description, ETag, WHOIS registrant name/org/phone/email/dates, third-party infra, template/DOM fingerprints) from a page's HTML/DOM and produces ready-to-run pivot queries (Shodan, PublicWWW, crt.sh, urlscan, Validin, Chainabuse). USE WHEN analyze website, analyze HTML, analyze DOM, page analysis, find pivot, pivoting point, pivot artifact, favicon hash, tracking ID, analytics ID, GA GTM pixel, reverse analytics, phone number, telegram channel, google sheet, google form, footer address, whois registrant, cluster sites, campaign clustering, phishing kit, scam site, infrastructure link, source code search, who owns this site, related domains, threat infrastructure, impersonation domain, typosquat, typo domain, lookalike domain, spoofed domain, brand impersonation, TLD sweep, keyword hunt, domain permutation, homoglyph, combosquat, hunt lookalikes, search a selector in leaks, breach data, stealer logs, infostealer log, paste sites, darknet search, Intelligence X, IntelX, phonebook, find emails for a domain, emails under this domain, subdomain inventory, has this email leaked, where else has this phone number appeared, wallet in a paste, historical WHOIS snapshot.
 ---
 
 > **OPSEC — this skill is portable/shared. Never write case data into it.** No real operator
@@ -12,7 +12,7 @@ description: Website content & DOM analysis for OSINT and cybercrime investigati
 ## API keys — and the keyless disclosure rule (read before reporting any "nothing found")
 
 **Optional API keys enable live pivoting** (`URLSCAN_API_KEY`, `FOFA_KEY`/`FOFA_EMAIL`,
-`WHOISXML_API_KEY`, `PDNS_USERNAME`/`PDNS_PASSWORD`, `CENSYS_PAT`, and for IPPivot `IPINFO_TOKEN` / `SHODAN_KEY`) —
+`WHOISXML_API_KEY`, `PDNS_USERNAME`/`PDNS_PASSWORD`, `CENSYS_PAT`, `INTELX_KEY`, and for IPPivot `IPINFO_TOKEN` / `SHODAN_KEY`) —
 read from the environment first, then from the first `chmod 600` `.env` found: the invocation
 directory, the repo root, then a skill-local `.env`. **No keys → keyless mode: every tool still
 runs, nothing errors.** Full setup, what each key + urlscan-Pro unlocks, passive-DNS, and the
@@ -129,6 +129,7 @@ is unchanged whether or not you read it). **Exhaust both pivot modes.**
 | Historical analytics | `tools/wayback_ga.py` | every GA/GTM/verification ID across full Wayback history (Bellingcat) |
 | Live TLS cert | (auto, https) | SANs, `tls_cert:co_san` cross-apex link, `tls_cert:fingerprint_sha256` |
 | **Censys Platform** ⚠️ **100 credits/MONTH** | (auto with `CENSYS_PAT`) · off with `--no-censys` · `tools/wp_censys.py` · `censys` MCP tool | the **server-side** view FOFA/urlscan don't give. Every pivot gets a **CenQL query + a click-to-run `platform.censys.io` URL** built **offline, keyless, free**. With a key it also runs the three **lookup** endpoints — the only ones a **FREE Censys plan** can call: `cert <sha256>` → the certificate's own `names` (every hostname on that exact leaf cert — the cert stating its own coverage, not crt.sh's fuzzy overlap), `host <ip>` → ASN/WHOIS org + DNS names + ports + cert fingerprints (folded into IPPivot), `webproperty <host>` → cert/favicon/body-hash/software/threat labels (folded into domain enrichment). **`search` is Starter+** — on Free it degrades to `skipped` **plus the UI link that runs the same query**. **SPEND IT SPARINGLY — see the credit rule below.** Setup: `references/Setup.md` |
+| **Intelligence X** — leaks / stealer logs / pastes / darknet / historical WHOIS | queries **auto** on every pivot (keyless) · `--intelx` runs them live · `tools/wp_intelx.py` · `intelx_search` MCP tool | the only layer that reaches a corpus **outside the live internet**. Every email / phone / domain / IP / BTC pivot gets its **IntelX selector + a click-to-run `intelx.io` URL**, built **offline, keyless, free**; a domain also gets the **phonebook** link. With `INTELX_KEY` + `--intelx` it runs them: leak/stealer-log/paste/darknet/WHOIS-snapshot sightings per selector, and **phonebook(domain) → every email address, subdomain and URL** IntelX has seen under the apex (a *collection input*, not just evidence — feed the emails and subdomains straight back into `pivot_extract`). **STRONG SELECTORS ONLY** — a brand or person name is refused. Every record is graded and **ranked**: `leaks.logs` (infostealer) first, public combolists last — a stealer log is one machine at one moment (panel URLs, and sometimes the **operator's own box**), a breach dump is an address and a year. Neither is clusterable on its own; only `whois`/`pastes`/darknet hits may support a same-operator edge. Keyless = **~50% capability** — see below |
 | CORS backend probe | (auto, primary page) | foreign-Origin GET+preflight → `cors_allowed_origin` backend/sibling hosts the HTML never names |
 | Mail intel | (auto, `dig`) | MX provider / `m365_tenant` / custom `mail_server`, SPF `include`/sender-IP, DMARC contacts |
 | CT / SSL search | (auto) | crt.sh + Shodan CTL merged, resilient, wildcard-aware, SAN siblings |
@@ -162,6 +163,53 @@ free escape hatch. Twenty searches empty the month.
   `references/censys_queries.json` → `credit_budget` (or `CENSYS_MONTHLY_CREDITS` /
   `CENSYS_MAX_CREDITS_PER_RUN` for one run).
 - **Report Censys spend** alongside the Anthropic cost — they are separate ledgers.
+
+### Intelligence X — the leak / paste / darknet selector layer (**keyless ≈ 50% of it**)
+
+Every other engine here indexes the **live internet**. IntelX indexes what has **leaked out of it**:
+breach dumps, infostealer logs, pastes, darknet mirrors, historical WHOIS snapshots, plus its own
+crawl. That is where an operator's *contact* selectors surface — a registrant email in a market
+listing, a support phone in a forum post, a payout wallet in a paste, usually next to their own
+advertising copy.
+
+```bash
+python3 "$WP/tools/wp_intelx.py" query <selector>            # OFFLINE: classify + build the UI URLs
+python3 "$WP/tools/wp_intelx.py" search registrant@example.com   # 1 unit
+python3 "$WP/tools/wp_intelx.py" phonebook example.com --target emails   # PAID endpoint
+python3 "$WP/tools/wp_intelx.py" budget                      # OFFLINE: this month's spend
+python3 "$WP/tools/pivot_extract.py" <url> --intelx           # run it inside a collection
+```
+
+- **Strong selectors only.** Email, domain (`*.apex` allowed), URL, IP/CIDR, phone, Bitcoin,
+  MAC/UUID/IBAN/credit-card. A **brand or person name is a soft term** — IntelX refuses it and the
+  attempt still costs a unit, so the classifier rejects it locally first. For keyword work use FOFA
+  `body=` / PublicWWW / `search_pivot`.
+- **`phonebook(domain)` is the highest-value call** for web casework, and PAID-only: one apex →
+  every email, subdomain and URL IntelX has seen under it. Treat the results as **new collection
+  targets**, then corroborate before they attribute anything.
+- 🚫 **A leak hit is NOT a same-operator link.** Two addresses in one combolist share a **victim
+  population**, not an owner — that is the textbook false cluster for this corpus. Only
+  `whois` / `pastes` / `darknet.*` hits may support an operator edge (policy:
+  `references/intelx.json → clustering_policy`, enforced by `clusterable()` on every record, and it
+  **fails closed**).
+- ⭐ **Stealer logs ≫ breach dumps — read the logs, skim the dumps.** A breach dump is one site's
+  user table: an address and a year, recycled through dozens of combolists. **Skim it for the DATE
+  and move on.** An infostealer log is *one machine at one moment* — the URL/user/password triple
+  with its session context — so it dates the compromise to a **host**, exposes **admin/panel URLs
+  the public site never links** (straight into the victim / access-vector layer), and — the
+  case-making part — **operators get infected too**: a log holding the campaign's own panel or
+  registrar/CMS/exchange logins is **direct attribution**, not exposure. Results are ranked
+  accordingly (`bucket_rank`, logs first) and log hits come back as **`read_these`** — items to
+  open one at a time and ask *whose machine is this: a victim of this campaign, or the operator?*
+  Corpus co-membership is still not an edge; the item is where the evidence lives. Handle as real
+  victim credentials — **cite metadata, never paste secrets into the case file**.
+- **Metered**, capped per run and per month from the same ledger as everything else
+  (`references/intelx.json → search_budget`, or `INTELX_MAX_SEARCHES_PER_RUN` /
+  `INTELX_MONTHLY_SEARCHES` for one run). `--free-only` suppresses it entirely.
+- 🔑 **Without `INTELX_KEY` the layer runs at ~50%** — it still classifies every selector and hands
+  you a working `intelx.io` / `phonebook.cz` URL for each, but **executes nothing**. So a run with
+  no IntelX section has **not** established that the operator is absent from any leak, paste or
+  darknet listing. Say that before presenting the result; `meta.capability` carries the sentence.
 
 ## Workflow Routing
 
@@ -268,6 +316,7 @@ and which direction is the safe one to be wrong in; every group has its own `_co
 | `references/pivot_tables.json` | a SaaS token's confidence is wrong (a vendor started sharing tenant ids → set it to `null`), or a new affiliate param appeared |
 | `references/asn_registry.json` | an ASN's `noise` / `kind` call is wrong. Grows automatically — `wp_ippivot` banks each new ASN it meets |
 | `references/censys_queries.json` | Censys renamed a CenQL field, changed a credit price, you upgraded plan, or an artifact kind should (or should not) get a Censys query — `pivot_kind_map` is the single place that decides. **`credit_budget` is the spend guard**: raise `monthly_credits` after buying credits, `max_credits_per_run` for a batch that genuinely needs it |
+| `references/intelx.json` | IntelX added a bucket you need graded, an artifact kind should (or should not) get an IntelX selector (`pivot_kind_map`), a real-world value is being misclassified (`selector_types`), or — most important — a bucket is on the wrong side of **`clustering_policy`**: `cluster_on` may support an operator edge, `never_cluster_on` (every breach corpus and stealer log) may not. **`search_budget` is the spend guard** |
 | `references/api_keys.json` | a new optional key exists, a provider changed what a tier includes, or the keyless banner overstates/understates what an absent key costs — this is what `wp_capabilities.py` prints and what `meta.capability` records |
 | `references/cdn_ranges.json` | **never by hand** — generated cache; rerun `python3 tools/cdn_ranges.py --refresh` |
 

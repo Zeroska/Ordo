@@ -234,6 +234,8 @@ def main():
                         "free-plan degradation / monthly credit guard"),
         ("test_capabilities", "capability layer — keyless disclosure, alias/requires presence, "
                               "free-only mode, no banner when fully keyed"),
+        ("test_intelx_anyrun", "IntelX + ANY.RUN layers — keyless ~50% disclosure, strong-selector "
+                               "refusal, observation-field mapping, false-cluster policy, spend guard"),
         ("test_references", "reference DATA layer — files documented, consumers not on fallback, no drift"),
         ("test_timeline", "temporal layer — format parsing / overlap vs shared value / expiry cohort / online citations"),
     ]

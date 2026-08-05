@@ -2,7 +2,7 @@
   "_comment": "API KEY REGISTRY — what each optional key unlocks, and EXACTLY what is lost without it. WebPivot always runs keyless: nothing here is required, and no missing key is an error. But 'it ran' and 'it ran at full capability' are different facts, and an analyst who is not told which one happened will read an empty result as 'no related infrastructure' when it really means 'the index that would have found it was never queried'. So this file is the source of truth for the KEYLESS BANNER that `wp_capabilities.py` prints at the top of every run and embeds in `meta.capability` — the tool states which keys are absent, which reverse-lookups that removes, and what free path substitutes. Edit this file when a key is added, a provider changes what a tier includes, or a free fallback appears/disappears — the code holds only the presence check. Nothing here is case data: these are environment-variable names and public product facts.",
 
   "api_keys": {
-    "_comment": "One entry per optional credential, ordered MOST to LEAST costly to be missing — the banner prints them in this order so the first line an analyst reads is the biggest hole. `env` is implied by the key. `aliases` are alternative env names accepted by `_secret()` (they must match the code's lookup order or the banner will claim a key is missing that the tool is happily using). `companion` lists related variables that improve the call but are OPTIONAL; `requires` lists variables the credential genuinely cannot authenticate without, and ONLY those — get this wrong in the strict direction and the banner reports a working key as missing, which is the same false alarm this file exists to prevent (FOFA_EMAIL, for instance, is needed only by FOFA's classic API and must NOT be listed as required). `metered` = spending it costs credits, so it is ALSO skipped under --free-only even when the key is present. `unlocks` is what the key buys, `without_it` is the capability actually lost (write this as the analytic consequence, not the API name), and `free_fallback` is what still runs instead — an empty string means nothing does, which is the case worth shouting about. `impact` is one of the impact_labels keys.",
+    "_comment": "One entry per optional credential, ordered MOST to LEAST costly to be missing — the banner prints them in this order so the first line an analyst reads is the biggest hole. `env` is implied by the key. `aliases` are alternative env names accepted by `_secret()` (they must match the code's lookup order or the banner will claim a key is missing that the tool is happily using). `companion` lists related variables that improve the call but are OPTIONAL; `requires` lists variables the credential genuinely cannot authenticate without, and ONLY those — get this wrong in the strict direction and the banner reports a working key as missing, which is the same false alarm this file exists to prevent (FOFA_EMAIL, for instance, is needed only by FOFA's classic API and must NOT be listed as required). `metered` = spending it costs credits, so it is ALSO skipped under --free-only even when the key is present. `unlocks` is what the key buys, `without_it` is the capability actually lost (write this as the analytic consequence, not the API name), and `free_fallback` is what still runs instead — an empty string means nothing does, which is the case worth shouting about. `impact` is one of the impact_labels keys. `power_without_key` is OPTIONAL: set it to the percentage of that layer's capability that survives with no key, for layers where a keyless run still does real work (composing every query, classifying every selector) but cannot execute any of it — the banner then says '~N% capability' out loud instead of leaving the analyst to guess how degraded the run was. Omit it when the split does not divide cleanly.",
     "entries": {
       "FOFA_KEY": {
         "service": "FOFA",
@@ -48,6 +48,30 @@
         "without_it": "attribution loses its whole historical dimension: a registrant scrubbed behind privacy today is invisible, and the reverse-WHOIS sweep that finds an operator's other domains cannot run — RDAP has no reverse index and no history, at any price",
         "free_fallback": "keyless RDAP (+ port-43 for ccTLDs like .vn) still fills registrar, registration/expiry/updated dates, name servers and domain status on EVERY domain, so the Domain Summary table is never blank",
         "signup": "https://whois.whoisxmlapi.com/"
+      },
+      "INTELX_KEY": {
+        "service": "Intelligence X",
+        "aliases": ["INTELX_API_KEY", "INTELLIGENCEX_KEY"],
+        "companion": ["INTELX_BASE_URL"],
+        "metered": true,
+        "impact": "high",
+        "power_without_key": 50,
+        "unlocks": "strong-selector search across a corpus nothing else in the toolkit indexes — breach dumps, infostealer logs, pastes, darknet mirrors, historical WHOIS snapshots and IntelX's own web crawl — plus the PHONEBOOK inventory that turns one apex into every email address, subdomain and URL IntelX has seen under it",
+        "without_it": "the whole leak/paste/darknet dimension is unqueried: an operator's registrant email, support phone or payout wallet is never checked against the corpora where operators advertise, and the domain->emails/subdomains inventory (a collection input, not just evidence) never runs. Roughly HALF the layer — the selectors are still classified and every query is still built, they are just never executed",
+        "free_fallback": "the selector classifier and a ready-to-run intelx.io / phonebook.cz URL for every artifact, which a free web account can run by hand",
+        "signup": "https://intelx.io/account?tab=developer (Account -> Developer tab)"
+      },
+      "ANYRUN_API_KEY": {
+        "service": "ANY.RUN TI Lookup (BinaryPivot)",
+        "aliases": ["ANY_RUN_API_KEY", "ANYRUN_KEY"],
+        "companion": [],
+        "metered": true,
+        "impact": "medium",
+        "power_without_key": 50,
+        "unlocks": "Threat Intelligence Lookup over sandbox DETONATION OBSERVATIONS — the domains, IPs, URLs and ports samples actually contacted, the family label, Suricata context and the public task links. Needs a TI Lookup licence, which is separate from a sandbox subscription",
+        "without_it": "BinaryPivot stays limited to what is statically visible in the file. That is worst exactly where it hurts: a PACKED or protected sample's real backend only exists at runtime, so the endpoints are recoverable from a detonation record and from nowhere else. Roughly HALF the layer — the TI Lookup query is still composed for every artifact, it is just never run",
+        "free_fallback": "the composed TI Lookup query plus the intelligence.any.run UI address to paste it into, and the existing keyless VirusTotal / MalwareBazaar / Triage / Koodous query strings",
+        "signup": "https://app.any.run/profile (API and Limits tab)"
       },
       "SHODAN_KEY": {
         "service": "Shodan",
