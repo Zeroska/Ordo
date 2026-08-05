@@ -40,6 +40,21 @@ except Exception:
     def _valid_wallet(label, value):   # fail-open if collector not importable
         return True
 
+# The document/image metadata base-rate filter, reused from the collector so BOTH paths agree on
+# what is a tool and what is an operator. It must be re-applied here and not merely trusted from
+# the pivot list, because ingest reads the raw `artifacts.docmeta` block directly: without it a PDF
+# whose Producer is "Microsoft Word" would edge together every unrelated domain that ever hosted a
+# Word-made document — the exact false-cluster class this repo's noise layer exists to prevent.
+# Fails CLOSED (drop the value) rather than open: a missed edge costs a lead, a false edge costs
+# an investigation.
+try:
+    from wp_docmeta import is_generic as _doc_generic  # noqa: E402
+except Exception:
+    def _doc_generic(key, value):
+        print("[ingest] WARNING: wp_docmeta not importable — document/image metadata will NOT be "
+              "ingested (cannot tell a tool string from an operator).", file=sys.stderr)
+        return True
+
 # CDN/cloud classifier — a domain's Cloudflare/Fastly edge IP is NOT its operator host, so a
 # `hosted_on` edge to it would be noise. Reused from WebPivot; fail-open (treat unknown as origin —
 # --strong prevalence gating still drops any IP shared by too many domains).
@@ -544,6 +559,54 @@ def ingest_file(kb, path):
         if f.get("sha256"):
             ind = f"js_bundle:{f['sha256'][:32]}"
             kb.add_edge("domain", host, "same_bundle", "indicator", ind,
+                        "webpivot", COLLECTOR, observed, "medium", ev)
+            n += 1
+
+    # --- DOCUMENT / IMAGE METADATA (artifacts.docmeta) -------------------------------------
+    # What is embedded in the files the site HOSTS. wp_docmeta already dropped the generic
+    # values (Word / Photoshop / "Windows User"), so anything reaching here is non-generic —
+    # but the EDGE STRENGTH still differs by what the value actually identifies:
+    #   author / copyright / GPS / XMP DocumentID  -> a PERSON or one specific source file (high)
+    #   producer / editing software / camera / file hash -> the SHOP or the KIT (medium), which
+    #   only becomes same-operator once an owner-tied artifact corroborates it.
+    for f in (art.get("docmeta") or {}).get("files", [])[:12]:
+        fm = f.get("meta") or {}
+        for key, prefix, rel, conf in (
+                ("author", "doc_author", "authored_by", "high"),
+                ("artist", "doc_author", "authored_by", "high"),
+                ("xp_author", "doc_author", "authored_by", "high"),
+                ("last_modified_by", "doc_author", "authored_by", "high"),
+                ("company", "doc_company", "names_company", "high"),
+                ("manager", "doc_company", "names_company", "high"),
+                ("copyright", "doc_copyright", "claims_copyright", "high"),
+                ("xmp_document_id", "doc_xmp_docid", "same_source_document", "high"),
+                ("gps", "doc_gps", "photographed_at", "high"),
+                ("producer", "doc_producer", "same_document_shop", "medium"),
+                ("creator_tool", "doc_producer", "same_document_shop", "medium"),
+                ("software", "doc_software", "same_editor", "medium")):
+            val = str(fm.get(key) or "").strip()
+            if not val or len(val) < 3 or _doc_generic(key, val):
+                continue
+            ind = f"{prefix}:{val.lower()[:120]}"
+            kb.add_edge("domain", host, rel, "indicator", ind,
+                        "webpivot", COLLECTOR, observed, conf, ev)
+            kb.add_fact("indicator", ind, "kind", prefix, "webpivot", COLLECTOR,
+                        observed, conf, ev)
+            n += 1
+        cam = " ".join(str(fm.get(k) or "").strip()
+                       for k in ("camera_make", "camera_model")).strip()
+        if len(cam) > 3:
+            ind = f"doc_camera:{cam.lower()[:80]}"
+            kb.add_edge("domain", host, "shot_with", "indicator", ind,
+                        "webpivot", COLLECTOR, observed, "medium", ev)
+            kb.add_fact("indicator", ind, "kind", "doc_camera", "webpivot", COLLECTOR,
+                        observed, "medium", ev)
+            n += 1
+        # Only a SAME-SITE file: a third-party image the page hot-links is the other site's
+        # asset, and hashing it would cluster on someone else's stock photo.
+        if f.get("sha256") and f.get("same_site"):
+            ind = f"media:{f['sha256'][:32]}"
+            kb.add_edge("domain", host, "serves_file", "indicator", ind,
                         "webpivot", COLLECTOR, observed, "medium", ev)
             n += 1
 

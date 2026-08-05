@@ -36,6 +36,7 @@ from wp_pivots import *  # noqa
 from wp_refs import ref_path, load_ref  # noqa — reference DATA lives in references/*.json
 import wp_extract  # for the QR_DECODE_IMAGES toggle main() sets
 import wp_assets   # asset layer: JS bundles, source maps, well-known files, API endpoints
+import wp_docmeta  # document/image metadata layer: hosted PDFs + images → /Info, XMP, EXIF
 from wp_censys import censys_configured, censys_webproperty, censys_certificate
 try:
     import whois_enrich  # WhoisXML registration pivots (optional, same tools/ dir)
@@ -109,6 +110,15 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
                 _tg_seen.add(h)
                 telegram.append(t)
         emails = uniq(list(emails) + list(jd.get("emails") or []))[:40]
+
+    # --- DOCUMENT / IMAGE METADATA: the files the site HOSTS, not the page itself. A page is
+    # cheap to re-skin; the PDF "licence" and the operator's own photographs are not re-made when
+    # the brand changes, so /Info, XMP and EXIF outlive every cosmetic rotation. Same gate as the
+    # asset layer (live primary page only, routed through fetch() so --proxy is honored) because
+    # it likewise DOWNLOADS FILES FROM THE TARGET.
+    docmeta = None
+    if probe_http and effective_url and not is_archived and base_url:
+        docmeta = wp_docmeta.collect(html, base_url, self_host, ua=ua, proxy=proxy)
 
     third_party = []
     for u in script_srcs + all_hrefs:
@@ -261,6 +271,7 @@ def analyze(source: str, html: str, base_url: str, headers: dict, ua: str,
         "app_downloads": app_downloads,
         "qr_codes": qr_codes,
         "assets": assets,
+        "docmeta": docmeta,
         "trackers": trackers,
         "saas_ids": saas_ids,
         "crypto": crypto,

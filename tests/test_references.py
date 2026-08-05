@@ -131,7 +131,7 @@ def check():
     # runs, still produces output — it just stops filtering. Comparing against the fallback size
     # catches that, and unlike a hardcoded count it does not rot as analysts extend a list.
     import wp_pivots, wp_analyze, wp_assets, wp_recon, wp_ippivot, wp_impersonate  # noqa: E401
-    import wp_censys, wp_capabilities, wp_intelx                                   # noqa: E401
+    import wp_censys, wp_capabilities, wp_intelx, wp_docmeta                       # noqa: E401
     import bp_anyrun                                                               # noqa: E401
     import whois_enrich, evidence_report                                           # noqa: E401
     import ingest_webpivot, hypothesize, ingest_report, noise_filters              # noqa: E401
@@ -266,6 +266,19 @@ def check():
          victim_profile._VP_FALLBACK["generic_two_letter_tlds"]),
         ("victim_profile.COUNTRY_NAMES", victim_profile.COUNTRY_NAMES,
          victim_profile._VP_FALLBACK["country_names"]),
+        # Document/image metadata. On the fallback the parsers still work, but the base-rate lists
+        # shrink to a handful — so "Adobe Acrobat", "LibreOffice", "Ghostscript" and the localised
+        # default account names stop being recognised as generic and start emitting same-operator
+        # edges. That is the false-cluster direction: every unrelated domain hosting a PDF made by
+        # the same ordinary tool would be fused into one operator.
+        ("wp_docmeta.GENERIC_PRODUCERS", wp_docmeta.GENERIC_PRODUCERS,
+         wp_docmeta._DOC_FALLBACK["generic_producers"]),
+        ("wp_docmeta.GENERIC_SOFTWARE", wp_docmeta.GENERIC_SOFTWARE,
+         wp_docmeta._DOC_FALLBACK["generic_software"]),
+        ("wp_docmeta.ROLE_AUTHORS", wp_docmeta.ROLE_AUTHORS,
+         wp_docmeta._DOC_FALLBACK["role_authors"]),
+        ("wp_docmeta.SKIP_PATH_HINTS", wp_docmeta.SKIP_PATH_HINTS,
+         wp_docmeta._DOC_FALLBACK["skip_path_hints"]),
         # The tool-call gate. On the fallback it still blocks hostile egress and still refuses an
         # unapproved sandbox submission (that is why the fallback is the conservative minimum) —
         # but it knows half the tools, so the OTHER half of the outbound/metered surface passes

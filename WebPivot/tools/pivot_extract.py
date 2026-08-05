@@ -84,6 +84,7 @@ from wp_crawl import *  # noqa
 import wp_extract  # noqa  (for the QR toggle set in main)
 import wp_assets   # noqa  (asset layer: JS bundles / source maps / well-known files toggles)
 from wp_assets import *  # noqa
+import wp_docmeta  # noqa  (document/image metadata layer: hosted PDFs + images → /Info, XMP, EXIF)
 import wp_censys   # noqa  (Censys Platform: lookups + CenQL builder; --no-censys flips ENABLED)
 import wp_intelx   # noqa  (Intelligence X: leak/paste/darknet selector search; --intelx runs it live)
 import wp_capabilities  # noqa  (which keys are present -> what this run could and could not query)
@@ -303,6 +304,16 @@ def main():
                     help="with --hunt-impersonation: also run the urlscan keyword sweep (metered)")
     ap.add_argument("--hunt-max", type=int, default=600, metavar="N",
                     help="with --hunt-impersonation: cap on generated candidates (default 600)")
+    ap.add_argument("--no-docmeta", action="store_true",
+                    help="skip the DOCUMENT/IMAGE metadata layer (hosted PDFs + images are "
+                         "downloaded and read for /Info, XMP and EXIF — author, XMP DocumentID, "
+                         "camera, GPS, editing software). On by default; it costs extra requests "
+                         "TO THE TARGET, so turn it off for a minimal footprint.")
+    ap.add_argument("--docmeta-max", type=int, default=None, metavar="N",
+                    help=f"cap how many hosted files are downloaded for metadata "
+                         f"(default {wp_docmeta.BUDGET.get('max_files')}; documents are always "
+                         f"tried before images). Per-file and per-run byte caps live in "
+                         f"references/docmeta.json.")
     ap.add_argument("--no-assets", action="store_true",
                     help="do NOT fetch the page's own JS bundles or their source maps. Default is "
                          "ON: on an SPA kit the shell HTML is empty and the operator's config "
@@ -342,6 +353,11 @@ def main():
     # Asset layer (JS bundles / source maps / well-known files) — on by default, per-half opt-out.
     wp_assets.COLLECT_ASSETS = not args.no_assets
     wp_assets.COLLECT_WELL_KNOWN = not args.no_well_known
+    # Free/keyless, but it DOWNLOADS FILES FROM THE TARGET — so --free-only leaves it on
+    # (it spends no credits) while --no-docmeta is the switch for a minimal footprint.
+    wp_docmeta.COLLECT_DOCMETA = not args.no_docmeta
+    if args.docmeta_max is not None:
+        wp_docmeta.BUDGET["max_files"] = max(0, args.docmeta_max)
     if args.assets_max is not None:
         wp_assets.MAX_JS_FILES = max(0, args.assets_max)
 

@@ -27,6 +27,7 @@ except Exception:
 
 import urllib.request
 import urllib.error
+import wp_docmeta  # document/image metadata: the generic-vs-operator base-rate filter
 from wp_common import *  # noqa
 from wp_extract import *  # noqa
 from wp_refs import ref_path, load_ref  # noqa — reference DATA lives in references/*.json
@@ -630,6 +631,92 @@ def build_pivots(art: dict, base_host: str):
             ], f"SHA-256 of {f['name']} ({f['bytes']} bytes). Identical digest on another domain "
                f"= the same compiled build, which survives a favicon/DOM re-skin. Note a stock "
                f"vendor bundle can match innocently — corroborate before clustering.")
+
+    # --- DOCUMENT / IMAGE METADATA (artifacts.docmeta — see wp_docmeta.py) ------------------
+    # The files the site HOSTS. A page is re-skinned in minutes; nobody re-exports the PDF
+    # licence when they change the brand, so what is embedded in these files outlives every
+    # cosmetic rotation. Values that name a common TOOL or a DEFAULT account are recorded by the
+    # collector but filtered here, because clustering on "Microsoft Word" or "Windows User"
+    # fuses unrelated cases — the base-rate rule.
+    _dm_seen = set()
+    for f in ((art.get("docmeta") or {}).get("files") or [])[:12]:
+        fm, fname = f.get("meta") or {}, f.get("name") or "file"
+        for key, label, conf in (
+                ("author", "doc_author", "high"), ("artist", "doc_author", "high"),
+                ("xp_author", "doc_author", "high"), ("camera_owner", "doc_author", "high"),
+                # The account that last SAVED an Office document — often a different, and more
+                # careless, person than the one who created it.
+                ("last_modified_by", "doc_author", "high"),
+                ("company", "doc_company", "high"), ("manager", "doc_company", "high"),
+                ("copyright", "doc_copyright", "high"),
+                ("xmp_document_id", "doc_xmp_docid", "high"),
+                ("producer", "doc_producer", "medium"),
+                ("creator_tool", "doc_producer", "medium"),
+                ("software", "doc_software", "medium")):
+            val = str(fm.get(key) or "").strip()
+            if not val or wp_docmeta.is_generic(key, val) or (label, val.lower()) in _dm_seen:
+                continue
+            _dm_seen.add((label, val.lower()))
+            if label == "doc_author":
+                add(label, val, conf, [
+                    {"service": "Google/Yandex dork", "query": f'"{val}"'},
+                    {"service": "Google (other documents)", "query": f'"{val}" filetype:pdf'},
+                    {"service": "LinkedIn/Facebook", "query": f'"{val}"'},
+                ], f"Author/Artist embedded in {fname}. The operator produced this file on their "
+                   f"own machine and uploaded it untouched — a name or account here is not "
+                   f"copyable by a stranger and survives every re-skin of the site. Verify it is "
+                   f"a person and not a stock asset's original author before attributing.")
+            elif label == "doc_xmp_docid":
+                add(label, val, conf, [
+                    {"service": "Google/Yandex dork", "query": f'"{val}"'},
+                    {"service": "cross-case KB", "query": f"which_cases {val}"},
+                ], f"XMP DocumentID from {fname} — a UUID minted per SOURCE document. The same id "
+                   f"on another domain means literally the same source file, not merely a similar "
+                   f"one. One of the strongest same-operator artifacts a document can carry.")
+            elif label == "doc_company":
+                add(label, val, conf, [
+                    {"service": "Google/Yandex dork", "query": f'"{val}"'},
+                    {"service": "OpenCorporates", "query": val},
+                    {"service": "cross-case KB", "query": f"which_cases {val}"},
+                ], f"Company/Manager field from {fname}'s Office properties — set once in the "
+                   f"authoring account's profile and carried into every document it produces. "
+                   f"Frequently names the real entity behind a white-labelled brand.")
+            elif label == "doc_copyright":
+                add(label, val, conf, [
+                    {"service": "Google/Yandex dork", "query": f'"{val}"'},
+                    {"service": "PublicWWW", "query": val},
+                ], f"Copyright string embedded in {fname} — often names the real company or "
+                   f"person behind a white-labelled brand.")
+            else:
+                add(label, val, conf, [
+                    {"service": "Google/Yandex dork", "query": f'"{val}" filetype:pdf'},
+                    {"service": "cross-case KB", "query": f"which_cases {val}"},
+                ], f"Non-generic producer/editor string from {fname}. It names the SHOP that made "
+                   f"the file, so treat it as same-KIT until an owner-tied artifact corroborates "
+                   f"it — an unusual or localised tool build narrows the candidate set sharply.")
+        if fm.get("gps"):
+            add("doc_gps", str(fm["gps"]), "high", [
+                {"service": "Google Maps", "query": str(fm["gps"])},
+                {"service": "OpenStreetMap", "query": f"https://www.openstreetmap.org/?mlat="
+                                                      f"{str(fm['gps']).replace(',', '&mlon=')}"},
+            ], f"GPS coordinates embedded in {fname} — the photo was taken on a device with "
+               f"location on and uploaded without stripping. Corroborate before treating it as "
+               f"the operator's location: stock and scraped imagery carries someone else's GPS.")
+        cam = " ".join(str(fm.get(k) or "").strip() for k in ("camera_make", "camera_model")).strip()
+        if cam and len(cam) > 3:
+            add("doc_camera", cam, "medium", [
+                {"service": "Google/Yandex dork", "query": f'"{cam}"'},
+                {"service": "cross-case KB", "query": f"which_cases {cam}"},
+            ], f"Camera that shot {fname}. Weak alone (millions share a model) but a strong "
+               f"corroborator when the same body appears across a cluster's own photography.")
+        if f.get("sha256") and f.get("same_site"):
+            add("media_sha256", f["sha256"], "medium", [
+                {"service": "urlscan.io", "query": f'hash:"{f["sha256"]}"'},
+                {"service": "VirusTotal", "query": f["sha256"]},
+                {"service": "urlscan.io (filename)", "query": f'filename:"{fname}"'},
+            ], f"SHA-256 of the hosted {f.get('kind', 'file')} {fname} ({f.get('bytes', 0)} "
+               f"bytes). The identical file served from another domain is the same kit — a stock "
+               f"photo will match innocently, so corroborate before clustering.")
 
     # Source maps: the operator's own build machine leaking through the bundler.
     for sm in (assets.get("source_maps") or [])[:4]:

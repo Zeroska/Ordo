@@ -326,6 +326,16 @@ routes as **leads** — discovered routes are never fetched), source maps → `d
 `dev_project`, and the published policy files (`ads.txt` → AdSense `pub-`, `security.txt`, AASA →
 Apple team ID).
 
+**C2. The document/image layer** — also free and on by default, but it *downloads files from the
+target*, so `--no-docmeta` turns it off. It pulls the linked PDFs and the site's own images and
+reads `/Info` + XMP + EXIF out of them: `doc_author`, `doc_xmp_docid`, `doc_copyright`, `doc_gps`,
+`doc_camera`, `doc_producer`. Theme/vendor/CDN assets are never fetched (they carry the *theme's*
+metadata), tracking pixels are skipped by size, and parsing dispatches on **magic bytes** — a
+`.jpg` URL that actually serves an error page is common. Two honest limits are enforced in data,
+not prose: a value naming a common tool or default account (`Microsoft Word`, `Windows User`) is
+recorded but **never clustered on**, and an **empty result is the normal case** — most CMS and CDN
+pipelines strip EXIF automatically, so absence is never scored as tradecraft.
+
 **D. Enrich — this is where keys decide how much of the internet you searched.**
 
 | Always (keyless) | Only with a key — skipped entirely under `free_only=true` |
@@ -565,6 +575,7 @@ Every extracted artifact is chosen because it **survives re-skinning** — an op
 - **Live TLS certificate** — SANs on a *different* registrable domain are a cross-brand operator link; the fingerprint finds every host serving that exact cert.
 - **JARM TLS-stack fingerprint** — an *active* hash of the server's TLS stack (cipher/extension ordering), **not** the leaf cert. It survives a full domain **and** certificate rotation, so it re-finds an operator's origin on Shodan `ssl.jarm:` after they reissue everything. Suppressed under `--proxy` — it's a raw-socket probe.
 - **CORS policy** — an active probe sends a foreign `Origin` and reads `Access-Control-Allow-Origin`. A literal allowed origin names a **backend host the app trusts that never appears in the page HTML**.
+- **Document & image metadata** — the files the site *hosts*, not the page. Nobody re-exports the PDF "licence" when they change the brand, so `/Info`, XMP and EXIF outlive every re-skin: an `/Author` or EXIF `Artist` is a name a stranger can't copy, and an **XMP DocumentID is minted per source document** — the same id on two domains means literally the same file. Photos can still carry camera model and GPS.
 - **Redirect chains, wallets (incl. QR-hidden), Telegram, WHOIS registrant** — each an independent thread back to the operator.
 
 WebPivot harvests **all** of these on every seed (the **Pivot Matrix**, `PivotMatrix.md`) rather than opportunistically — attribution is only as strong as your *strongest* shared artifact, so anchoring on WHOIS while a JARM or account-token link sits unread in the same DOM is the classic report weakness. It can also invert the seed: `--hunt-impersonation` sweeps typosquats, TLD permutations, and crt.sh keyword hits to surface lookalike domains **before** they're reported.

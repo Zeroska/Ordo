@@ -236,6 +236,8 @@ def main():
                               "free-only mode, no banner when fully keyed"),
         ("test_intelx_anyrun", "IntelX + ANY.RUN layers — keyless ~50% disclosure, strong-selector "
                                "refusal, observation-field mapping, false-cluster policy, spend guard"),
+        ("test_docmeta", "document/image metadata — PDF /Info + XMP, EXIF incl. GPS, PNG chunks, "
+                         "magic-byte dispatch, base-rate filter on both the pivot and ingest paths"),
         ("test_references", "reference DATA layer — files documented, consumers not on fallback, no drift"),
         ("test_tool_gate", "tool-call gate — hostile egress blocked above the tools, submission "
                            "needs approval, credit budget, ledger, all 3 front-ends, hand-back"),

@@ -175,7 +175,22 @@ def _ok(text: str) -> dict[str, Any]:
     "humans.txt, apple-app-site-association) yielding adstxt_publisher (an owner-registered AdSense "
     "pub- account, Tier-A like a GSC/GA4 token), apple_team_id + ios_bundle_id, security_contact and "
     "robots_disallow leads. All of it is free/keyless and on by default; disable with "
-    "no_assets=true / no_well_known=true, or cap the bundle count with assets_max=<N>) OR a "
+    "no_assets=true / no_well_known=true, or cap the bundle count with assets_max=<N>); plus the "
+    "DOCUMENT/IMAGE METADATA layer, which reads the files the site HOSTS rather than the page — "
+    "it downloads the linked PDFs (the 'licence', 'certificate', 'prospectus') and the site's own "
+    "images and parses /Info + XMP + EXIF out of them. A page is re-skinned in minutes, but nobody "
+    "re-exports the PDF when the brand changes, so these outlive every cosmetic rotation: "
+    "doc_author (a real name or OS account from /Author, EXIF Artist or XPAuthor — not copyable "
+    "by a stranger), doc_xmp_docid (an XMP DocumentID is minted per SOURCE document, so the same "
+    "id on two domains is literally the same file — near-decisive same-operator), doc_copyright, "
+    "doc_gps (coordinates from an unstripped photo), doc_camera, doc_producer/doc_software (the "
+    "SHOP that made the file — same-KIT until corroborated), and media_sha256. Values naming a "
+    "common TOOL or a DEFAULT account (Microsoft Word, Photoshop, Canva, 'Windows User') are "
+    "recorded as context but NEVER clustered on — base-rate rule, tunable in "
+    "references/docmeta.json. Note that an EMPTY result is the normal case (most CMS/CDN "
+    "pipelines strip EXIF automatically) and is NOT evidence of deliberate sanitising. Free and "
+    "keyless but it costs extra requests TO THE TARGET, so disable with no_docmeta=true or cap it "
+    "with docmeta_max=<N>) OR a "
     "bare IP (IPPivot: passive IP recon — IPinfo ASN/abuse, FOFA ip= ports/services/co-hosted "
     "domains, Shodan host, dig MX/NS/TXT/PTR; a shared CDN/hosting IP is marked information not a "
     "same-operator pivot, and its ASN is banked to references/asn_registry.json). If ALREADY "
@@ -191,7 +206,9 @@ async def pivot_extract(args: dict[str, Any]) -> dict[str, Any]:
                       force=bool(args.get("force")),
                       no_assets=bool(args.get("no_assets")),
                       no_well_known=bool(args.get("no_well_known")),
-                      assets_max=args.get("assets_max"))
+                      assets_max=args.get("assets_max"),
+                      no_docmeta=bool(args.get("no_docmeta")),
+                      docmeta_max=args.get("docmeta_max"))
     if res.get("error"):
         return _err(res["error"])
     blob = json.dumps(res.get("data") or {}, ensure_ascii=False)
@@ -204,7 +221,8 @@ async def pivot_extract(args: dict[str, Any]) -> dict[str, Any]:
 
 def collect_one(url: str, case: str, *, hostile: bool = False, passive: bool = False,
                 proxy: str | None = None, force: bool = False, no_assets: bool = False,
-                no_well_known: bool = False, assets_max: int | None = None) -> dict[str, Any]:
+                no_well_known: bool = False, assets_max: int | None = None,
+                no_docmeta: bool = False, docmeta_max: int | None = None) -> dict[str, Any]:
     """Collect ONE host end-to-end (cache-reuse → live fetch + enrichment → evidence capture →
     manifest). Sync + self-contained (no globals beyond config) so it is safe to fan out across
     threads via collect_many. Returns a summary dict, never raises."""
@@ -244,6 +262,12 @@ def collect_one(url: str, case: str, *, hostile: bool = False, passive: bool = F
         base += ["--no-well-known"]
     if assets_max is not None:
         base += ["--assets-max", str(int(assets_max))]
+    # Document/image metadata is likewise ON by default; these only turn it DOWN, so a caller can
+    # shrink the number of files pulled off the target.
+    if no_docmeta:
+        base += ["--no-docmeta"]
+    if docmeta_max is not None:
+        base += ["--docmeta-max", str(int(docmeta_max))]
     if SMOKE:
         base += ["--no-enrich", "--no-whois"]                # cheap smoke only
     elif not NO_ARCHIVE:
@@ -825,6 +849,34 @@ async def api_usage(args: dict[str, Any]) -> dict[str, Any]:
 
 
 @tool(
+    "doc_metadata",
+    "Download a hosted DOCUMENT or IMAGE and read the identifiers embedded inside it — the "
+    "standalone form of pivot_extract's document/image layer, for a file or URL you already have "
+    "(a PDF an analyst was sent, an image pulled from a Telegram channel, a file already on disk). "
+    "Give it `targets` as a comma-separated list of URLs and/or local paths. Parses PDF /Info and "
+    "the XMP packet, JPEG/TIFF EXIF (including GPS), and PNG tEXt/zTXt/iTXt chunks, dispatching on "
+    "MAGIC BYTES not the file extension (a .jpg URL serving an error page is common). Returns "
+    "every field found, plus a `pivotable` subset with the generic values removed: an Author of "
+    "'Windows User' or a Producer of 'Microsoft Word' names a default or a tool, not an operator, "
+    "and clustering on those fuses unrelated cases. The high-value fields are author/artist "
+    "(a real name, uncopyable by a stranger), xmp_document_id (minted per SOURCE document — the "
+    "same id elsewhere is literally the same file), copyright, and gps. IMPORTANT: an empty result "
+    "is the NORMAL case — most CMS and CDN pipelines strip EXIF automatically — so never report "
+    "absent metadata as evidence of deliberate sanitising. Read-only apart from the fetch; a URL "
+    "target is an OUTBOUND request to whoever hosts it.",
+    {"targets": str},
+    annotations=READONLY,
+)
+async def doc_metadata(args: dict[str, Any]) -> dict[str, Any]:
+    targets = [t.strip() for t in str(args.get("targets", "")).split(",") if t.strip()]
+    if not targets:
+        return _err("doc_metadata needs `targets`: a comma-separated list of URLs or file paths.")
+    r = _run([PY, os.path.join("WebPivot", "tools", "wp_docmeta.py"), *targets[:12]])
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "no output"}],
+            "is_error": r.returncode != 0}
+
+
+@tool(
     "tool_calls",
     "Read back the TOOL-CALL LEDGER — what a run actually DID, the action counterpart to "
     "api_usage (which reports what it SPENT). Every tool call on every front-end is written to "
@@ -1256,7 +1308,8 @@ ANALYZE_SERVER = create_sdk_mcp_server(
                       case_clusters, case_frontier, case_loop, case_reopen,
                       render_diagram, case_timeline, render_report, victim_profile])
 
-COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__analyze_artifact",
+COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__doc_metadata",
+                 "mcp__collect__analyze_artifact",
                  "mcp__collect__fallback_probe", "mcp__collect__impersonation_hunt",
                  "mcp__collect__search_pivot", "mcp__collect__intelx_search",
                  "mcp__collect__anyrun_lookup", "mcp__collect__anyrun_submit",
