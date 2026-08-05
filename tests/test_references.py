@@ -77,7 +77,8 @@ def check():
     for p in (os.path.join(ROOT, "WebPivot", "tools"),
               os.path.join(ROOT, "tools", "kb"),
               os.path.join(ROOT, "BinaryPivot", "tools"),
-              os.path.join(ROOT, "IntelGraph", "scripts")):
+              os.path.join(ROOT, "IntelGraph", "scripts"),
+              os.path.join(ROOT, "harness")):
         if p not in sys.path:
             sys.path.insert(0, p)
 
@@ -137,6 +138,7 @@ def check():
     import analyze_artifact                                                        # noqa: E401
     import case_timeline                                                           # noqa: E401
     import victim_profile                                                          # noqa: E401
+    import audit                                                                   # noqa: E401
 
     consumers = [
         ("wp_pivots._GENERIC_SUBLABELS", wp_pivots._GENERIC_SUBLABELS,
@@ -264,6 +266,19 @@ def check():
          victim_profile._VP_FALLBACK["generic_two_letter_tlds"]),
         ("victim_profile.COUNTRY_NAMES", victim_profile.COUNTRY_NAMES,
          victim_profile._VP_FALLBACK["country_names"]),
+        # The tool-call gate. On the fallback it still blocks hostile egress and still refuses an
+        # unapproved sandbox submission (that is why the fallback is the conservative minimum) —
+        # but it knows half the tools, so the OTHER half of the outbound/metered surface passes
+        # unclassified: the calls are still logged, they are just no longer gated or counted
+        # against the credit budget. A gate that silently stops covering `censys` is worse than
+        # one that is absent, because the run still prints a governance banner.
+        ("audit.OUTBOUND_TOOLS", audit.OUTBOUND_TOOLS,
+         audit._POLICY_FALLBACK["outbound_tools"]),
+        ("audit.METERED_TOOLS", audit.METERED_TOOLS,
+         audit._POLICY_FALLBACK["metered_tools"]),
+        ("audit.MUTATING_TOOLS", audit.MUTATING_TOOLS,
+         audit._POLICY_FALLBACK["mutating_tools"]),
+        ("audit.REDACT_ARGS", audit.REDACT_ARGS, audit._POLICY_FALLBACK["redact_args"]),
     ]
     for name, loaded, fallback in consumers:
         ok(len(loaded) > len(fallback),

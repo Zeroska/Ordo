@@ -84,6 +84,8 @@ Two quality levers on top of the base loop:
   objects to Claude Code / any MCP client (auto-discovered, so it never drifts); `mcp-server` is
   its launch shim, wired up by the repo-root `.mcp.json`.
 - `agents.py` — *optional* subagent definitions for parallel fan-out (ParallelBatch).
+- `audit.py` — the **tool-call gate + ledger**, shared by all three front-ends (see
+  *The guardrail seam*); its policy DATA is `references/tool_policy.json`.
 
 ## Run
 ```bash
@@ -299,12 +301,57 @@ front-ends share one typed, permission-gated surface.
   `.mcp.json` at startup — check `/mcp`). Egress policy still defaults to non-hostile here; enforce
   hostile egress out of process (below).
 
-## The guardrail seam
-`tools.POLICY["hostile"]` is flipped by the orchestrator for `--hostile` runs; the
-`pivot_extract` tool then **refuses a live fetch** unless called with `passive=true`
-or a `proxy`. That's your egress tradecraft as code. For production, enforce the same
-rule with a `PreToolUse` hook or the `can_use_tool` callback so it can't be bypassed
-in-process, and drop `permission_mode="bypassPermissions"`.
+## The guardrail seam — the tool-call gate (`audit.py`)
+Every tool call passes **one** policy point before it runs, and lands on a ledger whether it
+ran or not. `harness/audit.py` is front-end neutral, so the three drivers cannot drift:
+
+| Front-end | How it reaches the gate |
+|---|---|
+| SDK driver (Anthropic) | a **`PreToolUse` hook**, built per phase by `orchestrator._gate_hook` |
+| DeepSeek / OpenAI shim | `audit.gate()` inline in `openai_backend.query`'s tool loop |
+| Claude Code (stdio MCP) | `audit.gate()` in `mcp_server._call_tool` |
+
+**Why a hook and not `can_use_tool`.** The SDK only consults `can_use_tool` for calls that would
+otherwise *prompt* — and both `permission_mode="bypassPermissions"` **and** `allowed_tools` entries
+that allow a whole tool (exactly what `COLLECT_TOOLS` / `ANALYZE_TOOLS` are) shadow it. The SDK says
+so itself and emits `CanUseToolShadowedWarning`; its own guidance is to use a `PreToolUse` hook to
+gate every call. `tests/test_tool_gate.py` turns that warning into an error so the config can never
+drift back into a gate that is wired but never consulted. The hook is a **closure** over its phase's
+case + posture, because phases run concurrently and hooks fire on the SDK's task.
+
+What it denies (everything else is allowed — and still logged):
+- **hostile posture + an outbound tool** with no `passive=` / `proxy=` — now covering *every*
+  outbound collector, not only the one that implemented its own refusal (`pivot_extract`'s
+  internal check stays, as defence in depth);
+- **`anyrun_submit` without `HARNESS_ALLOW_SUBMIT=1`** — outbound, attributable, irreversible;
+- **a metered call past the run's credit budget** (`budget.max_metered_calls_per_run`, override
+  with `HARNESS_METERED_BUDGET`) — the backstop against a loop re-querying FOFA every round.
+
+A denial is returned **to the model** as text, so it adapts (`passive=true`, `free_only=true`)
+instead of the run dying. The lists, budget and approval env-vars are DATA —
+`harness/references/tool_policy.json` (contributor RULE 3) — so re-classifying a tool needs no
+code change.
+
+**The ledger.** One JSON line per call to `cases/<case>/tool_calls.jsonl`
+(`MEMORY/tool_calls.jsonl` for interactive calls with no case): timestamp, case, phase, backend,
+tool, risk classes, redacted+truncated args, and `allow` / `DENY` with the reason. Credential-shaped
+arguments are never written. An unwritable ledger warns and the run continues — losing a case at
+round 4 costs more evidence than it protects. Each run prints a gate summary beside the cost ledger.
+
+Note the split this completes: `run_cost.jsonl` = what the run *spent* on Anthropic,
+`MEMORY/api_usage.jsonl` = what it spent on third-party credits, `tool_calls.jsonl` = what it
+actually *did*.
+
+**Reading it back** — the `tool_calls` MCP tool, or the CLI:
+```bash
+python3 harness/audit.py report CASE-0001              # summary: classes, by tool, by phase
+python3 harness/audit.py report CASE-0001 --denied     # only what the gate blocked, and why
+python3 harness/audit.py report CASE-0001 --tool pivot_extract --last 20
+python3 harness/audit.py report --all                  # every case + the interactive ledger
+python3 harness/audit.py report CASE-0001 --json       # raw records
+```
+A missing ledger is reported as **absence of record** (the case predates the gate, or nothing has
+run) — never as "the run did nothing", the same discipline as the keyless-capability banner.
 
 ## Auth & billing (read before running)
 The Agent SDK authenticates with an **`ANTHROPIC_API_KEY` (pay-per-token)**, or Bedrock /

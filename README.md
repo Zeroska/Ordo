@@ -171,6 +171,293 @@ python3 harness/orchestrator.py CASE-0001 --parallel --continue --depth 4 seed1.
 
 ---
 
+## What actually happens when you say *"Analyze and pivot X for me"*
+
+This section is the full trace: every tool that fires, every condition that is checked, and where
+each artifact lands. Read it once and the rest of the repo stops being a black box.
+
+**Two drivers, one set of tools.** Which one you're in decides what supplies the *reasoning*; the
+tools, the gate, and the case files are identical either way.
+
+| | **Interactive** (Claude Code) | **Headless** (`./intel open`) |
+|---|---|---|
+| Who chooses the next tool | Claude, in your session | Claude, per phase, inside `orchestrator.py` |
+| What steers it | the **`SKILL.md` bodies** loaded by the Skill tool | the **phase prompts** in `harness/prompts/*.md`, with the SKILL body pinned as the system prompt |
+| Tool surface | MCP server `intel` (31 tools) via `.mcp.json` | the same objects, in-process, allow-listed per phase |
+| Tool gate | `audit.gate` in `mcp_server._call_tool` | a `PreToolUse` hook per phase |
+| Stop condition | you | convergence → `state.json` hand-back |
+
+The walkthrough below follows the **interactive** path, because that's the one the sentence above
+lands in. Differences on the headless path are called out at the end.
+
+### The trace
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as You
+    participant C as Claude Code
+    participant G as Gate · audit.py
+    participant T as MCP tools
+    participant FS as cases/ + knowledge/
+
+    U->>C: "Analyze and pivot X for me"
+    C->>C: route to WebPivot SKILL.md (trigger match)
+    C->>T: which_cases(X) / domain_verdict(X)
+    T-->>C: seen before? already attributed?
+    C->>G: pivot_extract(url=X, case=…)
+    G->>G: hostile? metered budget? approval?
+    G->>FS: append tool_calls.jsonl
+    G->>T: allowed → run
+    T->>FS: raw/X.json · dom/X.html · evidence/
+    T-->>C: N pivots (or near-zero)
+    alt near-zero pivots
+        C->>T: fallback_probe(X)
+        T-->>C: PIVOTABLE / NO-PIVOT-YET
+    end
+    C->>T: kb_ingest(case)
+    T->>FS: knowledge/ nodes + edges
+    C->>T: kb_cluster · cert_overlap · reference_check
+    T-->>C: peers, TLS overlap, benign/signal verdicts
+    C-->>U: cluster + attribution + confidence + next pivots
+```
+
+<details open>
+<summary><b>Step 0 — Routing: which skill answers</b></summary>
+
+Nothing runs yet. Claude Code matches your sentence against skill descriptions and loads
+**`WebPivot/SKILL.md`** into context — its *Trigger Patterns* section lists exactly this phrasing
+("analyze this site / page", "what can I pivot on here", "find related / sibling domains"). That
+file is the prompt for everything that follows: its **Method (default flow)** is the 6 steps, and
+its **Output contract** is what makes a run "done" (raw JSON → ingested → confirmed → reported).
+
+If your sentence had named an APK or `.exe`, the same routing sends it to **`BinaryPivot`**
+instead; a cluster-level question ("same operator?") pulls in **`IntelAnalysis`**; a whole case
+("work case X from these seeds") pulls in **`IntelHarness`**.
+
+</details>
+
+<details open>
+<summary><b>Step 1 — Recall before collect: have we seen X already?</b></summary>
+
+The skill's first instruction is *don't re-do work*. Two read-only tools answer it:
+
+| Tool | Question it answers |
+|---|---|
+| `which_cases(X)` | is this domain — or any artifact on it — already in a prior case? |
+| `domain_verdict(X)` | is it already attributed to a known operator in `knowledge/operators.jsonl`? |
+
+A hit here can end the request in seconds, and it's also how a **cross-case link** surfaces: an
+indicator that appears in more than one case is a finding in itself.
+
+</details>
+
+<details open>
+<summary><b>Step 2 — The gate: every tool call, before it runs</b></summary>
+
+Between Claude and every tool sits **one** policy point (`harness/audit.py`). It runs on all three
+front-ends, so no driver can be more permissive than another. Before `pivot_extract` executes:
+
+| Condition checked | If it fails |
+|---|---|
+| **Hostile posture** (`--hostile` / `HARNESS_HOSTILE=1`) and the tool is outbound with no `passive=` / `proxy=` | **DENIED** — "re-call with `passive=true` or `proxy=<host>`" |
+| Tool needs human approval (`anyrun_submit` — outbound, attributable, **irreversible**) and `HARNESS_ALLOW_SUBMIT` is unset | **DENIED** — ask the analyst, relaunch with the env var |
+| Run has spent its metered budget (`max_metered_calls_per_run`, default 60) | **DENIED** — "re-call with `free_only=true`" |
+
+A denial is returned **to the model as text**, so it adapts instead of the run dying. Allowed or
+denied, the call is appended to **`cases/<case>/tool_calls.jsonl`** with its risk classes
+(`outbound` / `metered` / `mutating`), redacted arguments and the reason. Read it back with the
+`tool_calls` tool or `python3 harness/audit.py report <case> --denied`.
+
+The lists and budgets are data — `harness/references/tool_policy.json` — so re-classifying a tool
+needs no code change.
+
+</details>
+
+<details open>
+<summary><b>Step 3 — <code>pivot_extract</code>: the two checks before a single packet leaves</b></summary>
+
+The tool wraps `collect_one()` (`harness/tools.py`), which decides whether to touch the internet
+at all:
+
+1. **Already investigated?** `_find_cached_raw(host)` searches `cases/*/raw/` across **every** case.
+   A hit is copied into the current case and returned as `ALREADY INVESTIGATED — reused cached
+   pivot`, with **no** live fetch and **no** credits spent. `force=true` overrides.
+2. **Egress policy** (defence in depth, below the gate): hostile + no `passive` + no `proxy`
+   → refused here too.
+
+Only then does it shell out to `WebPivot/tools/pivot_extract.py`, adding `--archive-missing
+--master --case <case>` (evidence capture, on by default) and `--render --screenshot` when a
+browser is available.
+
+</details>
+
+<details>
+<summary><b>Step 4 — Inside <code>pivot_extract.py</code>: the acquire ladder and the extractors</b></summary>
+
+**A. Acquire — escalate, then fall back. A cold seed never ends on silence.**
+
+```
+live fetch ──► HTTP < 400, body ≥ 200 bytes, no CF interstitial? ──► use it
+     │  no
+     ├─► Cloudflare challenge detected?
+     │      --solve-cf → FlareSolverr, else --render a real browser
+     ├─► still nothing → Wayback snapshot (web.archive.org/web/<ts>/)
+     ├─► still nothing → urlscan's stored DOM from a prior scan
+     └─► --archive-missing: submit to Save-Page-Now so a snapshot exists for next time
+```
+Only a genuine `/web/<timestamp>/` capture is analyzed — the `/save/` endpoint and archive.org
+wrappers are rejected, because analyzing the wrapper invents archive.org pivots that aren't the
+target's.
+
+**B. Extract — the whole Pivot Matrix, on every seed.** Not opportunistically: attribution is only
+as strong as your *strongest* shared artifact, so harvesting one dimension and stopping is the
+classic report weakness. Favicon hash (per-engine algorithm), analytics/operator tokens, TLS leaf +
+SANs, JARM (suppressed under `--proxy` — it's a raw-socket probe that would leak your real IP),
+CORS trusted origins, redirect + affiliate chains, wallets incl. QR-decoded, Telegram, emails,
+phones, Google Doc IDs, ETag, footer address, DOM/template fingerprints.
+
+**C. The asset layer** — free, keyless, on by default. Fetches the page's *own* JS bundles and
+re-runs every extractor over the source, because on a modern SPA the shell HTML is empty and the
+operator's config exists only there: off-apex `api_endpoint` (the backend the front end was
+compiled against — the strongest link in a white-label kit, since fronts rotate and backends
+don't), `build_env:` tokens, `js_bundle_sha256`, the SPA route table (admin panels and funnel
+routes as **leads** — discovered routes are never fetched), source maps → `dev_username` /
+`dev_project`, and the published policy files (`ads.txt` → AdSense `pub-`, `security.txt`, AASA →
+Apple team ID).
+
+**D. Enrich — this is where keys decide how much of the internet you searched.**
+
+| Always (keyless) | Only with a key — skipped entirely under `free_only=true` |
+|---|---|
+| live DNS, crt.sh + Shodan CTL, HackerTarget passive DNS, anonymous urlscan, **Wayback CDX timeline** | FOFA reverses, CIRCL passive DNS, urlscan-Pro structure similarity, Censys lookups |
+
+`WHOIS` runs on every domain regardless — keyless RDAP with a port-43 fallback, backfilled by
+WhoisXML when the key exists.
+
+> **The keyless-disclosure rule.** A run without keys can't query the reverse indexes, so an empty
+> cluster may be a **missing key, not an absent link**. `wp_capabilities` embeds this in
+> `meta.capability` and prints it as a banner — and a keyless run must say so *before* any
+> "nothing found".
+
+**E. Persist** — `raw/<host>.json` (one file per host, so re-runs overwrite instead of duplicating
+and the case stays reproducible), `dom/<host>.html`, `screenshots/`, plus the evidence manifest and
+the master pivot ledger.
+
+</details>
+
+<details open>
+<summary><b>Step 5 — The empty-result rule: never end a seed on silence</b></summary>
+
+If `pivot_extract` comes back with zero/near-zero pivots — parked page, empty favicon, NXDOMAIN,
+WHOIS + FOFA + urlscan all cold — the skill **requires** a `fallback_probe(X)` before moving on.
+It works crt.sh, Wayback, archive.is, search dorks and the KB, and returns an explicit verdict:
+**PIVOTABLE** (with the surviving leads) or **NO-PIVOT-YET** (with next steps). You always get a
+verdict, never a shrug.
+
+</details>
+
+<details open>
+<summary><b>Step 6 — Ingest: artifacts become a graph</b></summary>
+
+`kb_ingest(case)` merges `cases/<case>/raw/*.json` into `knowledge/` — every artifact becomes a
+**node**, the host that carried it becomes an **edge**. This is the step that makes correlation
+possible; a run that isn't ingested is invisible to every later question.
+
+Noise is filtered on the way in (`tools/kb/noise_filters.py` + `references/*.json`): managed-DNS
+nameservers, parking favicons, registrar/privacy emails, platform-wide GA/GTM, default-template
+hashes. Without it, shared Cloudflare nameservers alone would fuse thousands of unrelated domains
+into one fake "operator".
+
+</details>
+
+<details open>
+<summary><b>Step 7 — Correlate and attribute (the judgment layer)</b></summary>
+
+Collection stops here; **`IntelAnalysis`** is a separate skill and does not start unless invoked —
+by you, or by WebPivot's own step 6. It reads the KB through tools, never the raw transcript:
+
+| Tool | Its job in the argument |
+|---|---|
+| `kb_cluster(X)` / `kb_entity(X)` | the focused subgraph — peers and the facts binding them |
+| `reference_check(hash)` | **run before trusting any shared hash/keyword.** A BENIGN verdict (common logo, CDN, CSS, parking artifact) kills the link |
+| `cert_overlap(domains)` | required with 2+ candidates. A SAN **cross-cover** is near-decisive; a clean NO-CT-OVERLAP is itself evidence |
+| `risk_signals(case)` | NRD / bulletproof-hosting / money-trail scoring |
+| `victim_profile` · `case_timeline` | when the operator serves from hostnames they don't own; and the five-clock lifecycle view |
+
+Two rules do most of the false-positive work: **a single shared artifact is a lead, not proof**
+(confirm with ≥2 independent artifacts), and **base-rate a configuration before calling it a
+fingerprint** (count the population first — a big count means provider default, not operator).
+
+</details>
+
+<details open>
+<summary><b>Step 8 — Refute it before you believe it</b></summary>
+
+On the headless path this is a dedicated phase (`harness/prompts/verify.md`) that resumes the
+correlate session and attacks every link it just drew — benign verdict, over-prevalence, a shared
+CA instead of a SAN cross-cover, or an innocent competing explanation (shared host / CDN /
+registrar / SaaS platform / brand coincidence). **Default to REFUTED when uncertain.** Interactively,
+ask for it: *"try to refute that cluster."*
+
+The distinction it protects is the one that matters most in this repo: shared **kit** (same
+platform, same vendor, same template) is not shared **operator**.
+
+</details>
+
+<details open>
+<summary><b>Step 9 — Deliver, and say what's left</b></summary>
+
+You get a BLUF with estimative language, the cluster and the artifacts binding it, an attribution
+level with its evidence, gaps and competing explanations, and prioritised next pivots — plus, on
+request, the network graph (`render_diagram`) and a PDF/DOCX (`render_report`).
+
+The headless path additionally writes a **hand-back** to `cases/<case>/state.json` so a run never
+just stops:
+
+| Status | Meaning | What you're offered |
+|---|---|---|
+| `awaiting-analyst` | round cap hit, free frontier still has peers | `./intel continue <case>` |
+| `converged` | the last rounds added no new host or indicator | reopen only if new evidence lands |
+| `cold` | free frontier genuinely exhausted — *stopping is the finding* | `case_state.py reopen` |
+| `error` | the round failed | fix and resume |
+
+`cold` is a claim ("a free search is exhausted"), so it is never asserted from a *failed* frontier
+probe — that hands back as `awaiting-analyst` with the frontier marked unknown. **Metered leads**
+(pivots that would spend FOFA / WhoisXML / Censys credits) are listed but **never auto-run**.
+
+</details>
+
+### What the run will refuse to do
+
+| Refusal | Why |
+|---|---|
+| Live-fetch a hostile target from your IP | it tells the operator they're under investigation |
+| Submit a sample or URL to a sandbox without an explicit `yes` | outbound, attributable, irreversible — and public on a free plan |
+| Auto-run a metered pivot inside the convergence loop | credits are per-account and don't roll over |
+| Seed the frontier from a multi-tenant cert, a shared/CDN IP, or a bulk registrant term | those name other *customers*; a bad seed is ingested and becomes a fake shared indicator in every later case |
+| Report "nothing found" on a keyless run without saying so | a missing reverse index is not evidence of absence |
+| Overwrite an `assessment.md` it doesn't recognise as its own | that file is the analyst's |
+
+### Same request, headless
+
+`./intel open CASE-0001 https://x.example` runs the identical tools with the reasoning split into
+phases, each with its own model, allow-list and prompt file:
+
+| Phase | Model (default) | Prompt | Tools |
+|---|---|---|---|
+| **Collect** | `haiku`, low effort | `prompts/collect.md` + WebPivot SKILL body | 9 collection tools |
+| **Correlate** | `sonnet`, high effort | `prompts/correlate.md` + IntelAnalysis SKILL body | 20 analysis tools |
+| **Verify** | same session, resumed | `prompts/verify.md` | same |
+| **Assess** | resumed, **schema-forced** | `prompts/assess.md` | same |
+
+Judgment runs in a **fresh session** and re-reads facts from the KB through tools rather than
+resuming the large collect transcript — that one decision is the main cost control. Assess is
+schema-forced, so "done" means a validated `Assessment` object exists, not that the model said it
+was finished; if it comes back `low` confidence, the cascade escalates that phase alone to `opus`.
+
+---
+
 ## Under the hood
 
 <details>

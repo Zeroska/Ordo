@@ -237,6 +237,8 @@ def main():
         ("test_intelx_anyrun", "IntelX + ANY.RUN layers — keyless ~50% disclosure, strong-selector "
                                "refusal, observation-field mapping, false-cluster policy, spend guard"),
         ("test_references", "reference DATA layer — files documented, consumers not on fallback, no drift"),
+        ("test_tool_gate", "tool-call gate — hostile egress blocked above the tools, submission "
+                           "needs approval, credit budget, ledger, all 3 front-ends, hand-back"),
         ("test_timeline", "temporal layer — format parsing / overlap vs shared value / expiry cohort / online citations"),
     ]
     # tests/ modules follow the same check() contract; make them importable here too.

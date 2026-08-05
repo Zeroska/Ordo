@@ -26,8 +26,14 @@ NOTE — egress policy: this server has no phase loop to flip tools.POLICY, so i
   import-time default, which reads the HARNESS_HOSTILE env var (see tools.py). Run a hostile-infra
   session with `HARNESS_HOSTILE=1` and pivot_extract refuses direct live fetch (forces passive= /
   proxy=), matching the SDK driver's per-phase gate. Left unset it defaults permissive, which suits
-  benign interactive use. For a hard, un-bypassable guarantee still layer a PreToolUse hook /
-  can_use_tool callback on top — this env gate is the shared floor that removes the front-end drift.
+  benign interactive use.
+
+  That env gate is now the SECOND lock, not the only one: every tools/call goes through
+  `audit.gate()` first — the same policy point the SDK driver reaches via its PreToolUse hook and
+  the OpenAI shim calls inline. It blocks hostile egress across ALL outbound tools (not just the
+  ones that implement their own refusal), refuses an unapproved sandbox submission, and writes
+  every call — allowed or denied — to cases/<case>/tool_calls.jsonl. Interactive calls that carry
+  no `case` argument land in MEMORY/tool_calls.jsonl.
 """
 from __future__ import annotations
 
@@ -37,6 +43,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # find harness/tools.py first
+import audit  # noqa: E402  — the shared tool-call gate + ledger (front-end neutral)
 import tools as T  # noqa: E402  (imports claude_agent_sdk — needs the WebPivot venv)
 
 SERVER_INFO = {"name": "intel-harness", "version": "0.1.0"}
@@ -69,10 +76,19 @@ def _list_tools() -> list[dict]:
 async def _call_tool(name: str, arguments: dict) -> dict:
     """Invoke a tool handler and translate its {content, is_error} into an MCP tools/call result.
     A missing tool or a raised handler becomes an isError result (the model sees the message),
-    never a transport-level failure."""
+    never a transport-level failure.
+
+    Gated: `audit.gate` runs BEFORE the handler. A denial is returned as an isError result carrying
+    the reason, so Claude Code can adapt (re-call passive / free_only, or ask the analyst for the
+    approval a sandbox submission needs) instead of silently proceeding."""
     tool = TOOLS.get(name)
     if tool is None:
         return {"content": [{"type": "text", "text": f"unknown tool: {name}"}], "isError": True}
+    allowed, why = audit.gate(name, arguments or {}, case=(arguments or {}).get("case"),
+                              phase="interactive", backend="claude-code")
+    if not allowed:
+        return {"content": [{"type": "text", "text": f"[BLOCKED by harness policy] {why}"}],
+                "isError": True}
     try:
         res = await tool.handler(arguments or {})
     except Exception as e:  # noqa: BLE001 — surface tool faults to the model, keep the server alive

@@ -824,6 +824,39 @@ async def api_usage(args: dict[str, Any]) -> dict[str, Any]:
             "is_error": r.returncode != 0}
 
 
+@tool(
+    "tool_calls",
+    "Read back the TOOL-CALL LEDGER — what a run actually DID, the action counterpart to "
+    "api_usage (which reports what it SPENT). Every tool call on every front-end is written to "
+    "cases/<case>/tool_calls.jsonl by the gate, allowed or denied, with its risk classes "
+    "(outbound = touched the target from your IP, metered = spent third-party credits, mutating = "
+    "wrote to the shared KB). Pass case=<ID> to scope to one case (omit for the interactive "
+    "MEMORY ledger, all=true for every case), denied=true to see only what the gate BLOCKED and "
+    "why, tool=<name> to follow one tool, since=YYYY-MM-DD to bound by date, last=<N> to list the "
+    "most recent calls. Use it to answer 'did this run touch the target directly', 'what got "
+    "blocked', 'which round introduced that KB entry'. Read-only. NOTE a missing ledger is "
+    "ABSENCE OF RECORD (the case predates the gate, or nothing has run) — never report it as "
+    "'the run did nothing'.",
+    {},   # all optional: case, all (bool), denied (bool), tool (str), since (str), last (int)
+    annotations=READONLY,
+)
+async def tool_calls(args: dict[str, Any]) -> dict[str, Any]:
+    cmd = [PY, os.path.join("harness", "audit.py"), "report"]
+    if args.get("case"):
+        cmd.append(str(args["case"]))
+    for flag in ("all", "denied"):
+        if args.get(flag):
+            cmd.append("--" + flag)
+    for opt in ("tool", "since"):
+        if args.get(opt):
+            cmd += ["--" + opt, str(args[opt])]
+    if args.get("last"):
+        cmd += ["--last", str(int(args["last"]))]
+    r = _run(cmd)
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "no output"}],
+            "is_error": r.returncode != 0}
+
+
 # ---------------------------------------------------------------- RENDER tools
 @tool(
     "render_diagram",
@@ -1233,7 +1266,7 @@ ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__reverse_whois", "mcp__analyze__cert_overlap",
                  "mcp__analyze__reference_check", "mcp__analyze__reference_add",
                  "mcp__analyze__which_cases", "mcp__analyze__domain_verdict",
-                 "mcp__analyze__api_usage",
+                 "mcp__analyze__api_usage", "mcp__analyze__tool_calls",
                  "mcp__analyze__case_clusters", "mcp__analyze__case_frontier",
                  "mcp__analyze__case_loop",
                  "mcp__analyze__case_reopen",

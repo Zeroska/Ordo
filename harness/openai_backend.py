@@ -27,6 +27,10 @@ CONFIG (env)
 KNOWN LIMITS (documented, not hidden)
   - Structured output is enforced via a forced `emit_result` tool + validate/retry, NOT a native
     strict json_schema. Expect a lower first-pass rate than Claude on the Assess phase.
+  - `hooks` (PreToolUse et al.) are ACCEPTED AND IGNORED — there is no CLI process here to run
+    them. The tool-call gate is not skipped, though: this module calls `audit.gate()` directly in
+    its tool loop, which is the same policy point the SDK path reaches via its PreToolUse hook.
+    Same denials, same ledger, one implementation.
   - `effort` has no cross-vendor equivalent — it is accepted and ignored (map capability via the
     model instead).
   - deepseek-reasoner historically does not support function calling; the default map keeps every
@@ -38,12 +42,16 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # harness/ — find audit.py
+import audit  # noqa: E402  — the shared tool-call gate + ledger (front-end neutral)
 
 
 # --------------------------------------------------------------------- config
@@ -150,6 +158,17 @@ class AgentDefinition:
 
 
 @dataclass
+class HookMatcher:
+    """Stand-in for the SDK's HookMatcher so orchestrator.py can pass `hooks=` on either backend.
+    Stored and ignored — see KNOWN LIMITS: this module gates tool calls through `audit.gate()`
+    directly rather than replaying hook callbacks."""
+
+    matcher: Optional[str] = None
+    hooks: list = field(default_factory=list)
+    timeout: Optional[float] = None
+
+
+@dataclass
 class ToolUseBlock:
     name: str
     input: dict
@@ -183,7 +202,7 @@ class ClaudeAgentOptions:
                  permission_mode: str = "default", setting_sources: Optional[list] = None,
                  resume: Optional[str] = None, max_turns: int = 40, model: Optional[str] = None,
                  effort: Optional[str] = None, output_format: Optional[dict] = None,
-                 **_extra: Any) -> None:
+                 hooks: Optional[dict] = None, **_extra: Any) -> None:
         self.system_prompt = system_prompt
         self.mcp_servers = mcp_servers or {}
         self.tools = tools or []
@@ -195,6 +214,7 @@ class ClaudeAgentOptions:
         self.model = model
         self.effort = effort              # accepted, ignored (no cross-vendor equivalent)
         self.output_format = output_format
+        self.hooks = hooks or {}          # accepted, ignored — audit.gate() is called directly
 
 
 # -------------------------------------------------------------------- HTTP I/O
@@ -360,10 +380,17 @@ async def query(*, prompt: str, options: ClaudeAgentOptions):
             if t is None:
                 out = f"unknown tool: {fname}"
             else:
-                try:
-                    out = _content_text(await t.handler(args))
-                except Exception as e:  # noqa: BLE001 — surface faults to the model, keep looping
-                    out = f"{fname} raised: {e!r}"
+                # THE GATE — the shim's equivalent of the SDK path's PreToolUse hook. Same module,
+                # same policy, same ledger; a denial comes back as tool output so the model can
+                # adapt (passive=true / free_only=true) instead of the run dying.
+                allowed, why = audit.gate(fname, args, backend="openai")
+                if not allowed:
+                    out = f"[BLOCKED by harness policy] {why}"
+                else:
+                    try:
+                        out = _content_text(await t.handler(args))
+                    except Exception as e:  # noqa: BLE001 — surface faults to the model, keep looping
+                        out = f"{fname} raised: {e!r}"
             messages.append({"role": "tool", "tool_call_id": tc.get("id", ""),
                              "content": out[:TOOL_RESULT_CAP]})
         if done:

@@ -30,12 +30,14 @@ import time
 from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import audit  # noqa: E402  — the tool-call gate + ledger, shared by all three front-ends
 import render  # noqa: E402
 import tools as T  # noqa: E402
 from schemas import Assessment  # noqa: E402
 from sdk_compat import (  # noqa: E402  — real Anthropic SDK, or the OpenAI-compat shim (HARNESS_BACKEND)
     AssistantMessage,
     ClaudeAgentOptions,
+    HookMatcher,
     ResultMessage,
     ToolUseBlock,
     query,
@@ -43,6 +45,7 @@ from sdk_compat import (  # noqa: E402  — real Anthropic SDK, or the OpenAI-co
 
 HERE = os.path.dirname(os.path.abspath(__file__))            # harness/
 ROOT = os.path.dirname(HERE)                                  # repo root
+sys.path.append(os.path.join(ROOT, "tools"))  # case_state (APPEND — must not shadow harness/tools.py)
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,12 @@ def _report_cost(phases: dict[str, object], case: str | None = None) -> None:
         f"(collect={COLLECT.model}/{COLLECT.effort}, judge={JUDGE.model}/{JUDGE.effort})",
         file=sys.stderr,
     )
+    # The governance counterpart to the cost ledger: what the run DID, not just what it spent.
+    gate = audit.summary(case)
+    if gate:
+        print("--- tool-call gate (every call recorded; DENY = blocked before it ran) ---",
+              file=sys.stderr)
+        print(gate, file=sys.stderr)
     if case:
         rec = {"ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                "case": case, "total_cost_usd": round(total, 6),
@@ -182,9 +191,41 @@ def _prior_knowledge(seeds: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _gate_hook(case, phase, hostile):
+    """Build this phase's PreToolUse callback as a CLOSURE over (case, phase, hostile).
+
+    Why a closure and not ambient state: phases run concurrently (collect fan-out, parallel
+    cluster judgment) and the hook fires on the SDK's own task, so a module global — or even a
+    ContextVar set in _phase — would attribute one phase's tool calls to another. The closure
+    binds the right values at construction time and cannot race.
+
+    Why a hook and not `can_use_tool`: the SDK only consults `can_use_tool` for calls that would
+    otherwise PROMPT, and both `permission_mode="bypassPermissions"` and whole-tool `allowed_tools`
+    entries (exactly what COLLECT_TOOLS / ANALYZE_TOOLS are) shadow it — the SDK emits
+    CanUseToolShadowedWarning and points at PreToolUse for gating every call. See audit.py."""
+
+    async def _cb(input_data, tool_use_id, context):    # HookCallback signature
+        name = (input_data or {}).get("tool_name", "")
+        args = (input_data or {}).get("tool_input") or {}
+        allowed, why = audit.gate(name, args, case=case, phase=phase,
+                                  backend="claude", hostile=hostile)
+        if allowed:
+            return {}          # neutral: fall through to the normal permission flow
+        _log(f"    ⛔ DENIED {audit.bare(name)} — {why.split('.')[0]}")
+        return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": why}}
+
+    return _cb
+
+
 async def _phase(prompt, *, label, system, tools, servers, resume=None,
-                 model=None, effort=None, output_schema=None, hostile=False):
+                 model=None, effort=None, output_schema=None, hostile=False, case=None):
     T.POLICY["hostile"] = hostile
+    # Ambient context for the OpenAI/DeepSeek shim, which executes tools on THIS task (the SDK
+    # path uses the closure above instead). Set per phase, inherited by nothing else.
+    audit.set_context(case=case, phase=label, hostile=hostile,
+                      backend=os.environ.get("HARNESS_BACKEND", "claude"))
     t0 = time.time()
     _log(f"\n▶ {label}  ·  {model}/{effort}")
     opts = ClaudeAgentOptions(
@@ -192,9 +233,11 @@ async def _phase(prompt, *, label, system, tools, servers, resume=None,
         mcp_servers=servers,
         tools=[],             # remove ALL built-ins (Bash/Read/…) -> force the clean MCP tools,
         allowed_tools=tools,  #   not shell flailing over the skill prompt's bash instructions
-        # headless: no approval prompts. The egress guardrail lives inside the tool;
-        # for an interactive/safer harness use permission_mode="default" + can_use_tool.
+        # Headless: no interactive approval prompts — but NOT ungoverned. Every tool call passes
+        # the PreToolUse gate below (hostile egress, sandbox submission, metered budget) and is
+        # written to the ledger. bypassPermissions suppresses the PROMPT; the hook is what decides.
         permission_mode="bypassPermissions",
+        hooks={"PreToolUse": [HookMatcher(hooks=[_gate_hook(case, label, hostile)])]},
         setting_sources=[],          # don't inherit machine/project .claude settings
         resume=resume,
         max_turns=MAX_TURNS,
@@ -252,6 +295,7 @@ async def collect_fanout(seeds: list[str], case: str, *, hostile: bool = False,
                 model=COLLECT.model,
                 effort=COLLECT.effort,
                 hostile=hostile,
+                case=case,
             )
             return host, r
 
@@ -292,6 +336,7 @@ async def investigate(seeds: list[str], case: str, hostile: bool = False,
             model=COLLECT.model,
             effort=COLLECT.effort,
             hostile=hostile,
+            case=case,
         )
         collect_phases = {"collect": p1}
     # We do NOT resume the collect session into judgment. The facts now live in the KB,
@@ -320,6 +365,7 @@ async def _judge(domains: list[str], case: str) -> tuple[Assessment | None, dict
         servers={"analyze": T.ANALYZE_SERVER},
         model=JUDGE.model,
         effort=JUDGE.effort,
+        case=case,
     )
     session = p2.session_id if p2 else None
     if not session:
@@ -334,7 +380,7 @@ async def _judge(domains: list[str], case: str) -> tuple[Assessment | None, dict
             _prompt("verify", case=case, seed_csv=seed_csv),
             label="verify", system=_skill("IntelAnalysis"), tools=T.ANALYZE_TOOLS,
             servers={"analyze": T.ANALYZE_SERVER}, resume=session,
-            model=VERIFY.model, effort=VERIFY.effort)
+            model=VERIFY.model, effort=VERIFY.effort, case=case)
         phases["verify"] = pv
         if pv and pv.session_id:
             session = pv.session_id      # ASSESS resumes the adversarial session, not raw correlate
@@ -342,7 +388,8 @@ async def _judge(domains: list[str], case: str) -> tuple[Assessment | None, dict
     # PHASE 3 — ASSESS  (resume the (verified) judgment session; schema-forced structured assessment)
     assess_prompt = _prompt("assess")
     assess_kw = dict(system=_skill("IntelAnalysis"), tools=T.ANALYZE_TOOLS,
-                     servers={"analyze": T.ANALYZE_SERVER}, resume=session, output_schema=Assessment)
+                     servers={"analyze": T.ANALYZE_SERVER}, resume=session,
+                     output_schema=Assessment, case=case)
     p3 = await _phase(assess_prompt, label="assess", model=JUDGE.model, effort=JUDGE.effort, **assess_kw)
     phases["assess"] = p3
 
@@ -409,6 +456,100 @@ def _discover_new_seeds(case: str, known: list[str], max_new: int) -> list[str]:
     return sorted(scores, key=lambda p: -scores[p])[:max_new]
 
 
+# Stop reason -> the state.json status vocabulary the deterministic loop already uses
+# (tools/case_state.py: expanding | converged | cold | awaiting-analyst | error). ONE vocabulary,
+# ONE state file: `./intel status`, `case_state.py reopen` and `intel.py loop` all read what an
+# SDK run leaves behind, and an SDK run resumes what the deterministic loop left.
+_STOP_STATUS = {"converged": "converged", "no-frontier": "cold",
+                "depth-cap": "awaiting-analyst", "round-cap": "awaiting-analyst",
+                "failed": "error"}
+
+
+def _hand_back(case: str, stop: str, *, rounds: int, seeds: list[str], depth: int) -> None:
+    """The end-of-run hand-back to the analyst — the SDK path's equivalent of what `intel.py loop`
+    already prints. A run that just stops is a run whose next step lives only in the operator's
+    head; this writes WHY it stopped and WHAT is still pending into the shared
+    cases/<case>/state.json, then says how to resume.
+
+    The distinction that matters is `cold` vs `awaiting-analyst`: cold means the free frontier is
+    genuinely exhausted (stopping is the finding), awaiting-analyst means work remains and only the
+    round cap ended the run — including the DEFAULT single-round `./intel open`, which previously
+    exited identically whether it had converged or merely run out of permission to continue.
+    Metered leads are surfaced but never auto-run: spending FOFA/WhoisXML/Censys credits stays an
+    analyst decision. Best-effort throughout — a failure here must not fail an otherwise good case."""
+    case_dir = os.path.join(ROOT, "cases", case)
+    pending, metered, probed = [], [], True
+    try:
+        import case_state as cs
+    except Exception as e:  # noqa: BLE001
+        _log(f"  (hand-back skipped: case_state unavailable — {e})")
+        return
+    # Two independent probes, caught separately. `cold` is a SUBSTANTIVE claim — "the free search
+    # is exhausted" — so it may only be made when the frontier was actually computed. A probe that
+    # threw must not be reported as an empty frontier; that is how a silent failure becomes a
+    # finding. When it fails we stay on awaiting-analyst and say the frontier is unknown.
+    if stop != "failed":
+        try:
+            pending = _discover_new_seeds(case, seeds, max_new=25)
+        except Exception as e:  # noqa: BLE001
+            probed = False
+            _log(f"  (frontier probe FAILED: {e} — frontier unknown, not assumed empty)")
+        try:
+            metered = (cs.frontier(case, max_new=25) or {}).get("metered_leads", [])
+        except Exception as e:  # noqa: BLE001
+            _log(f"  (metered-lead probe failed: {e})")
+
+    status = _STOP_STATUS.get(stop, "expanding")
+    if stop in ("depth-cap", "round-cap") and not pending:
+        # The cap was never the binding constraint — unless we could not tell, in which case the
+        # analyst gets asked rather than told.
+        status = "cold" if probed else "awaiting-analyst"
+    try:
+        st = cs.load_state(case)
+        st["status"] = status
+        st["round"] = max(int(st.get("round") or 0), rounds)
+        st["depth_limit"] = depth
+        st["collected"] = sorted(cs.collected_hosts(case_dir))
+        st["pending"] = pending
+        st["metered_leads"] = metered
+        st["history"].append({"round": st["round"], "collected": len(st["collected"]),
+                              "verdict": stop, "driver": "orchestrator",
+                              "ts": datetime.datetime.now(datetime.timezone.utc)
+                              .strftime("%Y-%m-%dT%H:%M:%SZ")})
+        cs.save_state(case, st)
+    except Exception as e:  # noqa: BLE001
+        _log(f"  (state.json not written: {e})")
+        return
+
+    _log(f"\n== case '{case}': status={status} · {len(st['collected'])} host(s) · "
+         f"{st['round']} round(s) · stopped: {stop} ==")
+    _log(f"   assessment: cases/{case}/SUMMARY.md   (snapshots: cases/{case}/assessments/)")
+    if status == "awaiting-analyst":
+        if pending:
+            _log(f"   ⏸ {len(pending)} uncollected cluster peer(s) still on the free frontier: "
+                 f"{', '.join(pending[:8])}{' …' if len(pending) > 8 else ''}")
+        else:
+            _log("   ⏸ frontier UNKNOWN — the peer probe failed, so this run cannot say whether "
+                 "leads remain. Treat as unfinished, not as exhausted.")
+        _log(f"   → CONTINUE:  ./intel continue {case} {' '.join(seeds[:2])}"
+             f"{' …' if len(seeds) > 2 else ''}   (or: python3 tools/intel.py loop {case})")
+    elif status == "converged":
+        _log("   ✓ converged — the last rounds added no new hosts or indicators. "
+             "Reopen only if new evidence lands:")
+        _log(f"   → REOPEN:    python3 tools/case_state.py reopen {case} <new-seed>")
+    elif status == "cold":
+        _log("   ✗ no free frontier left (stopping is itself the finding — a keyless/free search "
+             "is exhausted, which is NOT the same as 'nothing exists').")
+        _log(f"   → REOPEN:    python3 tools/case_state.py reopen {case} <new-seed>")
+    if metered:
+        _log(f"   ⚠ {len(metered)} metered lead(s) await YOUR approval (would spend FOFA / "
+             f"WhoisXML / Censys credits — never auto-run):")
+        for m in metered[:5]:
+            _log(f"       · {m.get('service', '?')} {str(m.get('query', ''))[:60]} — "
+                 f"{str(m.get('why', ''))[:70]}")
+    _log(f"   state: cases/{case}/state.json   ·   ./intel status {case}")
+
+
 async def run_case(seeds: list[str], case: str, *, hostile: bool, depth: int,
                    stale: int, max_new: int, collect_conc: int = 1) -> Assessment:
     """One or more Collect→Correlate→Assess rounds. Each round snapshots an immutable assessment
@@ -416,13 +557,14 @@ async def run_case(seeds: list[str], case: str, *, hostile: bool, depth: int,
     stops when convergence.py reports CONVERGED, the depth cap is hit, or nothing new is found.
     collect_conc>1 fans the collect phase into one reactive collector agent per seed (see
     collect_fanout); the default (1) keeps the single sequential collect session."""
-    current, final = list(seeds), None
+    current, final, stop, rnd = list(seeds), None, "depth-cap", 0
     for rnd in range(1, depth + 1):
         _log(f"\n===== ROUND {rnd}/{depth} · {len(current)} seed(s): {', '.join(current)} =====")
         try:
             final = await investigate(current, case, hostile=hostile, collect_conc=collect_conc)
         except Exception as e:  # noqa: BLE001
             _log(f"round {rnd} failed: {e}")
+            stop = "failed"
             break
         table_md = _domain_table(case)
         render.render_terminal(final, table_md=table_md)
@@ -432,16 +574,23 @@ async def run_case(seeds: list[str], case: str, *, hostile: bool, depth: int,
         if conv:
             _log("convergence · " + conv.splitlines()[0])
         if depth == 1:
+            # A single-round run is the DEFAULT (`./intel open`). It stopped because it was asked
+            # for one round, not because the case is finished — _hand_back decides between
+            # awaiting-analyst and cold by probing whether a free frontier actually remains.
+            stop = "round-cap"
             break
         if _is_converged(case, stale):
             _log(f"convergence: CONVERGED — last {stale} rounds added nothing new. Stopping.")
+            stop = "converged"
             break
         new = _discover_new_seeds(case, current, max_new)
         if not new:
             _log("no new uncollected cluster peers to pursue. Stopping.")
+            stop = "no-frontier"
             break
         _log(f"→ round {rnd + 1}: expanding with {len(new)} new seed(s): {', '.join(new)}")
         current = current + new
+    _hand_back(case, stop, rounds=rnd, seeds=current, depth=depth)
     if final is None:
         raise RuntimeError("no assessment produced")
     return final
@@ -532,7 +681,7 @@ async def run_case_parallel(seeds: list[str], case: str, *, hostile: bool, max_c
     already fully attributed skip the LLM entirely (their prior verdict is reused)."""
     _log(f"\n===== PARALLEL CASE · {len(seeds)} seeds · collect≤{max_conc} · judge≤{judge_conc}"
          f"{' · continue depth ' + str(depth) if depth > 1 else ''} =====")
-    current = list(seeds)
+    current, stop, rnd = list(seeds), "depth-cap", 0
     for rnd in range(1, depth + 1):                                                  # 1. expand-collect loop
         t0 = time.time()
         res = T.collect_many(current, case, hostile=hostile, max_workers=max_conc)
@@ -546,13 +695,16 @@ async def run_case_parallel(seeds: list[str], case: str, *, hostile: bool, max_c
         if conv:
             _log("convergence · " + conv.splitlines()[0])
         if depth == 1:
+            stop = "round-cap"
             break
         if _is_converged(case, stale):
             _log(f"CONVERGED — last {stale} rounds added nothing. Stopping expansion.")
+            stop = "converged"
             break
         new = _discover_new_seeds(case, _all_collected(case), max_new)
         if not new:
             _log("no new uncollected cluster peers. Stopping expansion.")
+            stop = "no-frontier"
             break
         _log(f"→ round {rnd + 1}: +{len(new)} new seed(s): {', '.join(new)}")
         current = new                                                                # only collect the frontier
@@ -583,6 +735,7 @@ async def run_case_parallel(seeds: list[str], case: str, *, hostile: bool, max_c
         for k, v in ph.items():
             allphases[f"c{i}:{k}"] = v
     _report_cost(allphases, case=case)
+    _hand_back(case, stop, rounds=rnd, seeds=_all_collected(case), depth=depth)
     return entries
 
 
