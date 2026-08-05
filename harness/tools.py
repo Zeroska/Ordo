@@ -1107,24 +1107,36 @@ async def intelx_search(args: dict[str, Any]) -> dict[str, Any]:
 
 @tool(
     "anyrun_lookup",
-    "ANY.RUN Threat Intelligence Lookup — what samples carrying this indicator actually DID when "
-    "detonated: the domains, IPs, URLs and ports they contacted, the family label, Suricata context "
-    "and public sandbox tasks. The file half's counterpart to a reverse search: run it after "
-    "analyze_artifact on the sample's sha256, its backend host or its C2 `ip:port`. It is the ONLY "
-    "way to recover a PACKED sample's real endpoints — those exist only at runtime, so a thin static "
-    "string sweep plus a `binary:protection` finding is exactly the cue to call this. `indicator` is "
-    "auto-typed (sha256/md5/domain/ip[:port]/url); pass query='field:\"value\"' for a raw TI Lookup "
+    "ANY.RUN READ-ONLY side — nothing is ever submitted by this tool (that is `anyrun_submit`). "
+    "Threat Intelligence Lookup: what samples carrying this indicator DID when detonated — the "
+    "domains, IPs, URLs and ports contacted, the family label, Suricata context, public task links. "
+    "Run it after analyze_artifact on the sample's sha256, its backend host or its C2 `ip:port`; it "
+    "is the cheapest way to recover a PACKED sample's real endpoints, which exist only at runtime, "
+    "so a thin static sweep plus a `binary:protection` finding is the cue to call it. NOTE TI Lookup "
+    "is a SEPARATE and limited licence — a plain sandbox key answers 403 here, so a failure usually "
+    "means 'not entitled', not 'nothing known'; mode='history' lists YOUR OWN past tasks and "
+    "mode='report' with indicator=<task-uuid> fetches one, both of which need only the sandbox key. "
+    "`indicator` is auto-typed (sha256/md5/domain/ip[:port]/url); query='field:\"value\"' for a raw "
     "query. Contacted hosts may support an operator edge once corroborated; a shared threat FAMILY "
-    "is same-KIT only and never attribution on its own. NOTHING IS EVER SUBMITTED — read-only, no "
-    "detonation. METERED (needs a TI Lookup licence, separate from a sandbox subscription) and "
-    "capped per run. With no ANYRUN_API_KEY the layer still runs at ~50%: it composes the correct "
-    "query and returns the UI address — say so rather than reporting silence as 'unknown sample'.",
-    {"indicator": str},  # query:str, days:int optional -> args.get()
+    "is same-KIT only, never attribution alone. METERED and capped per run. With no ANYRUN_API_KEY "
+    "the layer still runs at ~50%: it composes the correct query and returns the UI address — say "
+    "so rather than reporting silence as 'unknown sample'.",
+    {"indicator": str},  # mode:'lookup'|'history'|'report', query:str, days:int -> args.get()
     annotations=READONLY,
 )
 async def anyrun_lookup(args: dict[str, Any]) -> dict[str, Any]:
     import re
     script = os.path.join("BinaryPivot", "tools", "bp_anyrun.py")
+    mode = str(args.get("mode") or "lookup").lower()
+    if mode == "history":
+        r = _run([PY, script, "history", "--limit", str(int(args.get("limit", 25)))], timeout=120)
+        return _ok((r.stdout or "") + ("\n" + r.stderr if r.stderr else ""))
+    if mode == "report":
+        cmd = [PY, script, "report", str(args["indicator"])]
+        if args.get("iocs"):
+            cmd.append("--iocs")
+        r = _run(cmd, timeout=180)
+        return _ok((r.stdout or "") + ("\n" + r.stderr if r.stderr else ""))
     cmd = [PY, script, "lookup"]
     if args.get("query"):
         cmd += ["--query", str(args["query"])]
@@ -1152,10 +1164,58 @@ async def anyrun_lookup(args: dict[str, Any]) -> dict[str, Any]:
     return _ok((r.stdout or "") + ("\n" + r.stderr if r.stderr else ""))
 
 
+@tool(
+    "anyrun_submit",
+    "DETONATE a file or URL in the ANY.RUN sandbox. **YOU MUST ASK THE USER FIRST, EVERY TIME.** "
+    "Call it with confirm=false (or omitted) to get the RISK BRIEFING, show that briefing to the "
+    "analyst, and only call again with confirm=true after they explicitly say yes to THIS "
+    "submission. Consent to 'analyze this sample' is NOT consent to detonate it. Why it is gated: a "
+    "submission is outbound, attributable and irreversible — it hands case material to a third "
+    "party, and a URL detonation FETCHES the live target from published ANY.RUN egress, so the "
+    "operator learns they are being sandboxed and rotates or starts serving a decoy (which also "
+    "poisons the verdict: 'info' from a datacenter IP is not exoneration). On a free plan the task "
+    "is PUBLIC and searchable, and operators watch that feed. Deleting the task afterwards un-sends "
+    "nothing. TRY FIRST and say what you tried: static analyze_artifact, then an EXISTING detonation "
+    "of the hash (anyrun_lookup / VirusTotal / MalwareBazaar / Triage / Koodous). Prefer submitting "
+    "the downloaded FILE over the live URL. Privacy defaults to owner (only you); public is refused "
+    "unless the analyst separately authorizes it. NEVER put a case ID or an analyst/client name in "
+    "`tags` or the filename. kind='file' (a local path) or 'url'.",
+    {"target": str},  # kind:'file'|'url', confirm:bool, privacy:str, allow_public:bool, tags:str
+    annotations=ToolAnnotations(readOnlyHint=False),
+)
+async def anyrun_submit(args: dict[str, Any]) -> dict[str, Any]:
+    script = os.path.join("BinaryPivot", "tools", "bp_anyrun.py")
+    kind = str(args.get("kind") or ("url" if str(args["target"]).startswith(("http://", "https://"))
+                                    else "file")).lower()
+    cmd = [PY, script, "submit", str(args["target"])]
+    if kind == "url":
+        cmd.append("--url")
+    confirmed = bool(args.get("confirm"))
+    if confirmed:
+        cmd.append("--confirm-submission")
+    if args.get("privacy"):
+        cmd += ["--privacy", str(args["privacy"])]
+    if args.get("allow_public"):
+        cmd.append("--allow-public")
+    if args.get("tags"):
+        cmd += ["--tags", str(args["tags"])]
+    r = _run(cmd, timeout=300)
+    body = (r.stdout or "") + ("\n" + r.stderr if r.stderr else "")
+    if not confirmed:
+        # rc=3 is the gate firing, which is the DESIGNED outcome, not a failure. Returning it as an
+        # error would push the model to retry with confirm=true on its own — the exact thing this
+        # gate exists to prevent.
+        return _ok("NOTHING WAS SUBMITTED — confirmation required.\n"
+                   "Show the briefing below to the analyst, ask them explicitly whether to "
+                   "detonate, and only then call anyrun_submit again with confirm=true.\n\n" + body)
+    return _ok(body)
+
+
 # ---------------------------------------------------------------- servers + names
 COLLECT_SERVER = create_sdk_mcp_server(
     "collect", tools=[pivot_extract, analyze_artifact, fallback_probe, impersonation_hunt,
-                      search_pivot, intelx_search, anyrun_lookup, kb_ingest])
+                      search_pivot, intelx_search, anyrun_lookup, anyrun_submit,
+                      kb_ingest])
 ANALYZE_SERVER = create_sdk_mcp_server(
     "analyze", tools=[kb_cluster, kb_entity, kb_query_shared, risk_signals,
                       reverse_whois, cert_overlap, reference_check, reference_add,
@@ -1166,7 +1226,8 @@ ANALYZE_SERVER = create_sdk_mcp_server(
 COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__analyze_artifact",
                  "mcp__collect__fallback_probe", "mcp__collect__impersonation_hunt",
                  "mcp__collect__search_pivot", "mcp__collect__intelx_search",
-                 "mcp__collect__anyrun_lookup", "mcp__collect__kb_ingest"]
+                 "mcp__collect__anyrun_lookup", "mcp__collect__anyrun_submit",
+                 "mcp__collect__kb_ingest"]
 ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__kb_query_shared", "mcp__analyze__risk_signals",
                  "mcp__analyze__reverse_whois", "mcp__analyze__cert_overlap",

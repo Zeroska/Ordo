@@ -69,11 +69,14 @@ python3 BinaryPivot/tools/bp_anyrun.py keycheck   # entitled to TI Lookup?
 python3 BinaryPivot/tools/bp_anyrun.py budget     # this month's request spend (offline, free)
 ```
 
-Read-only by design: there is **no submit path** — BinaryPivot never detonates. Without the key the
-layer still composes the correct TI Lookup query for every artifact and gives the UI address to
-paste it into (**~50% capability**). Capped per run and per month
-(`references/anyrun.json → request_budget`, or `ANYRUN_MAX_REQUESTS_PER_RUN` /
-`ANYRUN_MONTHLY_REQUESTS`).
+**Submitting is gated on the analyst's explicit yes, every time.** `bp_anyrun.py submit <target>`
+prints the risk briefing and sends **nothing**; only `--confirm-submission` actually detonates.
+Privacy defaults to `owner` (only you), `public` is refused unless separately authorized, and a
+free-plan submission is refused rather than silently downgraded to a public task. Nothing in the
+collector path can submit — `analyze_artifact --anyrun` does lookups only. Without the key the layer
+still composes the correct TI Lookup query for every artifact and gives the UI address to paste it
+into (**~50% capability**). Capped per run and per month (`references/anyrun.json →
+request_budget`, or `ANYRUN_MAX_REQUESTS_PER_RUN` / `ANYRUN_MONTHLY_REQUESTS`).
 
 `URLSCAN_VISIBILITY` — set to `private` with a **urlscan Pro** key so submitted scans of hostile
 infra stay team-only (never in the public feed); defaults to `unlisted`. A Pro key also auto-enables

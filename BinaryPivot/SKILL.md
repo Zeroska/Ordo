@@ -20,9 +20,11 @@ hash it, and pull the identifiers that cluster an operator's whole app portfolio
 re-skin the front end.
 
 > ⚠️ **Authorization + safety first.** Only pull artifacts from infrastructure you are authorized
-> to investigate, from **non-attributable egress** (research VPS/VPN). This tool never executes the
-> sample — it is static analysis. For dynamic detonation use an isolated sandbox (MobSF, Triage,
-> Any.Run), never your workstation.
+> to investigate, from **non-attributable egress** (research VPS/VPN). `analyze_artifact.py` never
+> executes the sample — it is static analysis, and nothing in the collector path detonates anything.
+> For dynamic detonation use an isolated sandbox (MobSF, Triage, ANY.RUN), never your workstation —
+> and treat **sending a sample or URL to a third-party sandbox as an OPSEC decision the analyst
+> makes explicitly**, every time. See *ANY.RUN — the sandbox layer, and the confirmation gate*.
 
 ## The tool — `tools/analyze_artifact.py`
 
@@ -83,33 +85,65 @@ A web domain and an APK that share a signing cert / backend host / Firebase proj
 operator behind a re-skinned website. Set `meta.host` to the **download host** (default when you pass
 a URL) so the artifact anchors onto the site that served it.
 
-## ANY.RUN — what the file DID, not just what it IS (**keyless ≈ 50% of it**)
+## ANY.RUN — the sandbox layer, and the confirmation gate on submitting
 
-Everything above is **static**: it reads the file. ANY.RUN's **Threat Intelligence Lookup** reports
-what samples carrying these indicators actually **did when detonated** — the domains, IPs, URLs and
-ports they contacted, the family label, Suricata alerts, and public sandbox sessions you can open
-and watch. Two things follow, and the second is the reason this layer exists:
-
-- **It recovers infrastructure static extraction cannot see.** A backend assembled at runtime, or
-  decrypted out of a packed payload, is absent from the strings sweep *by construction*. So a thin
-  result **plus** a `binary:protection` finding is the exact cue to call this — the operator's real
-  endpoints are in someone's detonation record and nowhere else.
-- **A contacted host is an observation, not a reputation score** — far stronger than "this string
-  appears in the file", and it feeds straight back into **WebPivot**.
+Everything above is **static**: it reads the file. ANY.RUN runs it. The API is, in practice, a
+**submission API** — send a file or URL, get an interactive detonation with the network log, dropped
+files and a verdict. **Threat Intelligence Lookup** (searching *other people's* detonations without
+running your own) is a **separate, comparatively limited product**: its own licence, a small
+allowance, and **not included with a plain sandbox subscription** — so `keycheck` first, and treat a
+403 there as *"not entitled"*, never as *"nothing known"*.
 
 ```bash
 BP=~/.claude/skills/BinaryPivot
 python3 "$BP/tools/bp_anyrun.py" query file:sha256 <sha256>     # OFFLINE: build the query, no key
-python3 "$BP/tools/bp_anyrun.py" lookup --sha256 <sha256>       # 1 request
-python3 "$BP/tools/bp_anyrun.py" lookup --ip 203.0.113.10:8443  # a C2 endpoint (auto-split)
-python3 "$BP/tools/bp_anyrun.py" keycheck                       # TI Lookup is a SEPARATE licence
-python3 "$BP/tools/analyze_artifact.py <target> --anyrun        # run it inside an analysis
+python3 "$BP/tools/bp_anyrun.py" keycheck                       # entitled to TI Lookup at all?
+python3 "$BP/tools/bp_anyrun.py" lookup --sha256 <sha256>       # TI Lookup (separate licence)
+python3 "$BP/tools/bp_anyrun.py" history                        # YOUR OWN past tasks (sandbox key)
+python3 "$BP/tools/bp_anyrun.py" report <task-uuid> [--iocs]    # one task's report / IOCs
+python3 "$BP/tools/analyze_artifact.py" <target> --anyrun       # lookups inside an analysis
 ```
 
-- **Read-only. Nothing is ever submitted.** There is no detonation path here and the submission
-  endpoint is deliberately absent from the reference file: submitting a scam-funnel sample spends a
-  run, is visible to the operator on a public plan, and is an analyst's explicit decision made in
-  the sandbox UI — not a side effect of a collector.
+### 🛑 Submitting is ALWAYS the analyst's call — ask, every time
+
+```bash
+python3 "$BP/tools/bp_anyrun.py" submit ./sample.bin            # prints the briefing, REFUSES
+python3 "$BP/tools/bp_anyrun.py" submit ./sample.bin --confirm-submission   # only after a yes
+```
+
+A lookup asks a question; a **submission acts**. It hands your case material to a third party and
+then **reaches out and touches the target** from a fingerprintable sandbox. Neither half is
+reversible — deleting the task afterwards un-sends nothing and un-notifies nobody. During triage
+that is a live OPSEC failure mode, not a theoretical one:
+
+- **Public exposure.** On a free plan every task is world-readable and searchable — sample, URL,
+  screenshots, full network log. Operators monitor that feed for their own domains and hashes.
+- **Tipping the operator.** A URL detonation *fetches the live target* from published ANY.RUN
+  egress ranges. They see a known sandbox hit their funnel, and rotate or start cloaking.
+- **A poisoned verdict.** The same filtering means a clean result may just be the decoy these
+  funnels serve to datacenter IPs. **`info` is not exoneration.**
+- **Third-party data handling.** The sample may carry victim PII or client data. Uploading it is a
+  disclosure decision, sometimes a legal one.
+
+**The rule:** never submit as a side effect of "analyze this". Run the static analysis, look for an
+**existing** detonation of the hash (TI Lookup if licensed, VirusTotal, MalwareBazaar, Triage,
+Koodous — someone has often already run it), and if it still must be detonated, **put the risks in
+front of the analyst and get an explicit yes for that submission.** Prefer detonating the downloaded
+**file** over the live **URL** where that answers the question. The code enforces this: `submit()`
+returns the risk briefing and sends nothing unless `confirm=True`; privacy defaults to `owner`
+(only you) with `public` refused unless separately authorized; a free-plan submission is **refused
+rather than silently downgraded** to a public one; and the gate lives in the function signature, so
+editing `references/anyrun.json` can tighten it but never switch it off. MCP tool: `anyrun_submit`
+— call it once *without* `confirm` to get the briefing, ask, then call again with `confirm=true`.
+**Never put a case ID or an analyst/client name in `--tags` or the filename** (RULE 1 crossing an
+API boundary).
+
+### Reading the lookup side
+
+- **It recovers infrastructure static extraction cannot see.** A backend assembled at runtime, or
+  decrypted out of a packed payload, is absent from the strings sweep *by construction* — so a thin
+  result **plus** a `binary:protection` finding is the cue to look here (and the cue that a
+  detonation may genuinely be warranted; see the gate above).
 - **Only observation fields map.** Hashes, contacted domains/IPs/URLs, JARM. A **signing cert, an
   APK package name and a firebase project id are identity, not observation** — those get no ANY.RUN
   query (reverse them on VirusTotal / Koodous / Triage, which the pivot already carries).

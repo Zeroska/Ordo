@@ -68,8 +68,8 @@
         "metered": true,
         "impact": "medium",
         "power_without_key": 50,
-        "unlocks": "Threat Intelligence Lookup over sandbox DETONATION OBSERVATIONS — the domains, IPs, URLs and ports samples actually contacted, the family label, Suricata context and the public task links. Needs a TI Lookup licence, which is separate from a sandbox subscription",
-        "without_it": "BinaryPivot stays limited to what is statically visible in the file. That is worst exactly where it hurts: a PACKED or protected sample's real backend only exists at runtime, so the endpoints are recoverable from a detonation record and from nowhere else. Roughly HALF the layer — the TI Lookup query is still composed for every artifact, it is just never run",
+        "unlocks": "the ANY.RUN sandbox — your own task history and reports, and (behind an explicit per-submission confirmation gate) detonating a file or URL. Threat Intelligence Lookup over OTHER people's detonations is a separate, more limited licence that a plain sandbox key does NOT include; check with `bp_anyrun.py keycheck` rather than assuming",
+        "without_it": "BinaryPivot stays limited to what is statically visible in the file. That is worst exactly where it hurts: a PACKED or protected sample's real backend only exists at runtime, so the endpoints are recoverable from a detonation record and from nowhere else. Roughly HALF the layer — the TI Lookup query is still composed for every artifact, it is just never run. NOTE the key does not lower the bar for SUBMITTING: that stays gated on the analyst's explicit yes, because it is outbound, attributable and irreversible",
         "free_fallback": "the composed TI Lookup query plus the intelligence.any.run UI address to paste it into, and the existing keyless VirusTotal / MalwareBazaar / Triage / Koodous query strings",
         "signup": "https://app.any.run/profile (API and Limits tab)"
       },
