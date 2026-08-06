@@ -238,6 +238,12 @@ def main():
                                "refusal, observation-field mapping, false-cluster policy, spend guard"),
         ("test_docmeta", "document/image metadata — PDF /Info + XMP, EXIF incl. GPS, PNG chunks, "
                          "magic-byte dispatch, base-rate filter on both the pivot and ingest paths"),
+        ("test_tool_registry", "tool registry (RULE 2) — every @tool served by an SDK server and "
+                               "allowlisted, so Claude Code and the SDK harness cannot diverge"),
+        ("test_paths_capture", "URL-path layer + raw-evidence capture — kit extraction, the "
+                               "base-rate control (a generic path clusters NOTHING), template "
+                               "normalisation, cross-host patterns, manifest hashing + tamper "
+                               "detection"),
         ("test_references", "reference DATA layer — files documented, consumers not on fallback, no drift"),
         ("test_tool_gate", "tool-call gate — hostile egress blocked above the tools, submission "
                            "needs approval, credit budget, ledger, all 3 front-ends, hand-back"),

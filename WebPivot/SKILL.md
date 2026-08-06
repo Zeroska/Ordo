@@ -130,7 +130,7 @@ is unchanged whether or not you read it). **Exhaust both pivot modes.**
 | Historical analytics | `tools/wayback_ga.py` | every GA/GTM/verification ID across full Wayback history (Bellingcat) |
 | Live TLS cert | (auto, https) | SANs, `tls_cert:co_san` cross-apex link, `tls_cert:fingerprint_sha256` |
 | **Censys Platform** ⚠️ **100 credits/MONTH** | (auto with `CENSYS_PAT`) · off with `--no-censys` · `tools/wp_censys.py` · `censys` MCP tool | the **server-side** view FOFA/urlscan don't give. Every pivot gets a **CenQL query + a click-to-run `platform.censys.io` URL** built **offline, keyless, free**. With a key it also runs the three **lookup** endpoints — the only ones a **FREE Censys plan** can call: `cert <sha256>` → the certificate's own `names` (every hostname on that exact leaf cert — the cert stating its own coverage, not crt.sh's fuzzy overlap), `host <ip>` → ASN/WHOIS org + DNS names + ports + cert fingerprints (folded into IPPivot), `webproperty <host>` → cert/favicon/body-hash/software/threat labels (folded into domain enrichment). **`search` is Starter+** — on Free it degrades to `skipped` **plus the UI link that runs the same query**. **SPEND IT SPARINGLY — see the credit rule below.** Setup: `references/Setup.md` |
-| **Intelligence X** — leaks / stealer logs / pastes / darknet / historical WHOIS | queries **auto** on every pivot (keyless) · `--intelx` runs them live · `tools/wp_intelx.py` · `intelx_search` MCP tool | the only layer that reaches a corpus **outside the live internet**. Every email / phone / domain / IP / BTC pivot gets its **IntelX selector + a click-to-run `intelx.io` URL**, built **offline, keyless, free**; a domain also gets the **phonebook** link. With `INTELX_KEY` + `--intelx` it runs them: leak/stealer-log/paste/darknet/WHOIS-snapshot sightings per selector, and **phonebook(domain) → every email address, subdomain and URL** IntelX has seen under the apex (a *collection input*, not just evidence — feed the emails and subdomains straight back into `pivot_extract`). **STRONG SELECTORS ONLY** — a brand or person name is refused. Every record is graded and **ranked**: `leaks.logs` (infostealer) first, public combolists last — a stealer log is one machine at one moment (panel URLs, and sometimes the **operator's own box**), a breach dump is an address and a year. Neither is clusterable on its own; only `whois`/`pastes`/darknet hits may support a same-operator edge. Keyless = **~50% capability** — see below |
+| **Intelligence X** — leaks / stealer logs / pastes / darknet / historical WHOIS | queries **auto** on every pivot (keyless) · `--intelx` runs them live · `tools/wp_intelx.py` · `intelx_search` MCP tool | the only layer that reaches a corpus **outside the live internet**. Every email / phone / domain / IP / BTC pivot gets its **IntelX selector + a click-to-run `intelx.io` URL**, built **offline, keyless, free**; a domain also gets the **phonebook** link. With `INTELX_KEY` + `--intelx` it runs them: leak/stealer-log/paste/darknet/WHOIS-snapshot sightings per selector, and **phonebook(domain) → every email address, subdomain and URL** IntelX has seen under the apex (a *collection input*, not just evidence — feed the emails and subdomains straight back into `pivot_extract`). **STRONG SELECTORS ONLY** — a brand or person name is refused. The **domain and the email are pivoted first** (a stealer log is indexed by the URL it captured, so the case domain names the machines that held credentials for it), and the **stealer logs are QUERIED in their own pass before the general one** so a bounded page can't fill with recycled combolist rows — a stealer log is one machine at one moment (panel URLs, and sometimes the **operator's own box**), a breach dump is an address and a year. Neither is clusterable on its own; only `whois`/`pastes`/darknet hits may support a same-operator edge. Keyless = **~50% capability** — see below |
 | CORS backend probe | (auto, primary page) | foreign-Origin GET+preflight → `cors_allowed_origin` backend/sibling hosts the HTML never names |
 | Mail intel | (auto, `dig`) | MX provider / `m365_tenant` / custom `mail_server`, SPF `include`/sender-IP, DMARC contacts |
 | CT / SSL search | (auto) | crt.sh + Shodan CTL merged, resilient, wildcard-aware, SAN siblings |
@@ -165,6 +165,75 @@ free escape hatch. Twenty searches empty the month.
   `CENSYS_MAX_CREDITS_PER_RUN` for one run).
 - **Report Censys spend** alongside the Anthropic cost — they are separate ledgers.
 
+### ⭐ The URL PATH is a campaign identifier — and raw capture is the evidence
+
+**The technique.** Every other pivot in this skill hangs off the **hostname** — favicon, TLS,
+registrant, nameserver, JARM. A kit operator who has noticed that inverts the model: they buy a
+pool of disposable hosts (numeric labels, cheap TLDs, rotated weekly, a fresh certificate each) and
+select which branded template a victim sees by the **URL path**:
+
+```
+host-a.example/<kit-x>/     host-b.example/<kit-x>/     host-c.example/<kit-y>/
+```
+
+Nothing at host level connects those. Collect path-blind and you file **three unrelated one-domain
+cases**. Keep the path and the same three rows collapse into *one operator, two kits, three hosts* —
+and the kit directory becomes a pivot you can hunt with, which finds the **next** host before it is
+reported anywhere. The path outlives the host, because the path is the product and the host is
+packaging.
+
+```bash
+python3 "$WP/tools/wp_paths.py" analyze "https://host.example/kit-x/step2/9f3a1c"
+python3 "$WP/tools/wp_paths.py" patterns "cases/<case>/raw/*.json"   # which kits recur, on how many hosts
+python3 "$WP/tools/wp_capture.py" "https://host.example/kit-x/" --case <case>
+python3 "$WP/tools/wp_capture.py" cases/<case>/evidence/captures/<host>/<kit>/<ts>   # verify
+```
+
+- **Every run keeps the path.** `meta.url_path`, `meta.path_template`, `meta.kit`, `meta.locale`,
+  `meta.location` (`host+path` — on a path-routed estate *that* is the unit of investigation, not
+  the host). The path is read from the **final** URL, after redirects, because a kit entry link
+  routinely lands you somewhere short and redirects into the template directory.
+- **`path:kit` is the artifact that survives host rotation** — the template directory, the one
+  string the operator cannot randomise without rebuilding their own routing. It ships reverse
+  queries for the indexes that store a full URL: `urlscan page.url:`, an `inurl:` dork, FOFA,
+  PublicWWW, and a Wayback CDX sweep across *any* host.
+- **`path:template` normalises the variable parts** — session ids, build hashes, dates and locales
+  become `{hex}` / `{uuid}` / `{date}` / `{locale}`, so a kit that hands every victim a unique URL
+  still collapses to one countable template. The concrete locale is kept separately: which market a
+  template was localised for is **target-selection evidence**, not noise.
+- 🚫 **Base-rate controlled, or this layer would fuse the internet.** `/login`, `/assets`, `/api/v1`,
+  `/wp-admin`, a `.js` file — all denylisted in `references/url_paths.json`, and a path with no
+  distinctive segment emits **nothing at all**. That is the correct result for an ordinary site,
+  not a failure. Add a segment there the moment a run produces a cluster joined only by a path.
+- 🚫 **A shared kit directory is SAME-KIT, not same-operator** — two resellers of one kit have the
+  same directory names, exactly like two tenants of a white-label platform. It is a strong
+  *collection* lead; the operator claim needs a second, independent artifact class. The KB edge is
+  `serves_kit` at **medium**, never `same_operator`.
+- **`patterns` is where the finding lives**: one kit on **N distinct hosts**, and the mirror image —
+  **`multi_kit_hosts`**, one back end serving several brands. Both halves of the same technique.
+
+**Raw capture — the DOM, every JS and every CSS, hashed.** Everything else here is *derived*: a
+hash, a fingerprint, an extracted wallet — assertions about a page that will be gone in days, after
+which nobody can re-check them, including us. So a run with `--case` **captures by default**:
+
+```
+cases/<case>/evidence/captures/<host>/<kit>/<UTC>/
+    dom.html            manifest.json     ← per-file sha256 + capture_sha256
+    assets/             third_party/
+```
+
+- **Cite the `capture_sha256`, not the directory** — it is computed over the sorted per-file
+  digests, so any later edit, addition or removal changes it. `wp_capture.py <dir>` re-hashes and
+  tells you whether the bundle still matches its manifest.
+- **CSS is captured here and nowhere else.** A shared theme is same-kit evidence, and until now the
+  stylesheet was the one artifact class WebPivot never retained.
+- **Captures are timestamped and never overwritten.** Re-collecting next week is a *new*
+  observation — the **diff between two captures is how you date a re-skin**.
+- **Budgeted, and it says so.** Same-site assets (the operator's own code) get the generous
+  allowance, third-party CDN libs a small one. Anything dropped is listed in `skipped_for_budget`
+  and the manifest is stamped `INCOMPLETE` — **read that before treating a bundle as the whole
+  page.** Tune in `references/capture.json`; `--no-capture` / `--no-capture-third-party` to narrow.
+
 ### Intelligence X — the leak / paste / darknet selector layer (**keyless ≈ 50% of it**)
 
 Every other engine here indexes the **live internet**. IntelX indexes what has **leaked out of it**:
@@ -175,7 +244,9 @@ advertising copy.
 
 ```bash
 python3 "$WP/tools/wp_intelx.py" query <selector>            # OFFLINE: classify + build the UI URLs
-python3 "$WP/tools/wp_intelx.py" search registrant@example.com   # 1 unit
+python3 "$WP/tools/wp_intelx.py" search example.com          # logs pass + general pass (2 units)
+python3 "$WP/tools/wp_intelx.py" search example.com --logs-only   # 1 unit — the high-yield question
+python3 "$WP/tools/wp_intelx.py" search registrant@example.com    # the operator's own selector
 python3 "$WP/tools/wp_intelx.py" phonebook example.com --target emails   # PAID endpoint
 python3 "$WP/tools/wp_intelx.py" budget                      # OFFLINE: this month's spend
 python3 "$WP/tools/pivot_extract.py" <url> --intelx           # run it inside a collection
@@ -185,6 +256,22 @@ python3 "$WP/tools/pivot_extract.py" <url> --intelx           # run it inside a 
   MAC/UUID/IBAN/credit-card. A **brand or person name is a soft term** — IntelX refuses it and the
   attempt still costs a unit, so the classifier rejects it locally first. For keyword work use FOFA
   `body=` / PublicWWW / `search_pivot`.
+- ⭐ **Pivot the DOMAIN and the EMAIL first — in that order.** A stealer-log record is indexed by the
+  **URL the malware captured**, so the case domain is a first-class selector, not an afterthought:
+  searching it returns *the machines that held credentials for that domain* — the campaign's victims,
+  the **admin/panel URLs the public site never links**, and, when the operator signed into their own
+  panel from an infected box, **the operator's own machine**. Nothing else in this toolkit reaches
+  that. The email comes next: it is the selector that carries **identity** across corpora. Contact
+  artifacts (phone, wallet) follow. Order lives in `references/intelx.json → search_plan.selector_priority`,
+  and the **seed host is searched ahead of any discovered sibling**.
+- ⭐ **Query the logs FIRST — this is a retrieval rule, not a display preference.** IntelX returns a
+  **bounded page**. On a long-exposed selector the recycled public-breach rows fill it and the one
+  infostealer record is **truncated away before any sort can reach it**. So `search()` runs a
+  bucket-scoped **`leaks.logs` pass first**, then the general pass, and merges (`search_plan`;
+  1 unit each — and when only one unit is left, **the logs pass is the one that runs**). The result
+  carries **`logs_pass`**: with it true, an empty `read_these` is a *real negative*; without it,
+  it means nothing. Use `--logs-only` on a tight allowance, `--no-logs-first` to go back to one
+  general search.
 - **`phonebook(domain)` is the highest-value call** for web casework, and PAID-only: one apex →
   every email, subdomain and URL IntelX has seen under it. Treat the results as **new collection
   targets**, then corroborate before they attribute anything.
@@ -199,11 +286,12 @@ python3 "$WP/tools/pivot_extract.py" <url> --intelx           # run it inside a 
   with its session context — so it dates the compromise to a **host**, exposes **admin/panel URLs
   the public site never links** (straight into the victim / access-vector layer), and — the
   case-making part — **operators get infected too**: a log holding the campaign's own panel or
-  registrar/CMS/exchange logins is **direct attribution**, not exposure. Results are ranked
-  accordingly (`bucket_rank`, logs first) and log hits come back as **`read_these`** — items to
-  open one at a time and ask *whose machine is this: a victim of this campaign, or the operator?*
-  Corpus co-membership is still not an edge; the item is where the evidence lives. Handle as real
-  victim credentials — **cite metadata, never paste secrets into the case file**.
+  registrar/CMS/exchange logins is **direct attribution**, not exposure. Log hits come back as
+  **`read_these`** — items to open one at a time and ask *whose machine is this: a victim of this
+  campaign, or the operator?* Corpus co-membership is still not an edge; the item is where the
+  evidence lives. Handle as real victim credentials — **cite metadata, never paste secrets into the
+  case file**. Judging an item is the analyst's call: **`IntelAnalysis` §1.7 +
+  `Workflows/StealerLog.md`**.
 - **Metered**, capped per run and per month from the same ledger as everything else
   (`references/intelx.json → search_budget`, or `INTELX_MAX_SEARCHES_PER_RUN` /
   `INTELX_MONTHLY_SEARCHES` for one run). `--free-only` suppresses it entirely.
@@ -317,7 +405,9 @@ and which direction is the safe one to be wrong in; every group has its own `_co
 | `references/pivot_tables.json` | a SaaS token's confidence is wrong (a vendor started sharing tenant ids → set it to `null`), or a new affiliate param appeared |
 | `references/asn_registry.json` | an ASN's `noise` / `kind` call is wrong. Grows automatically — `wp_ippivot` banks each new ASN it meets |
 | `references/censys_queries.json` | Censys renamed a CenQL field, changed a credit price, you upgraded plan, or an artifact kind should (or should not) get a Censys query — `pivot_kind_map` is the single place that decides. **`credit_budget` is the spend guard**: raise `monthly_credits` after buying credits, `max_credits_per_run` for a batch that genuinely needs it |
-| `references/intelx.json` | IntelX added a bucket you need graded, an artifact kind should (or should not) get an IntelX selector (`pivot_kind_map`), a real-world value is being misclassified (`selector_types`), or — most important — a bucket is on the wrong side of **`clustering_policy`**: `cluster_on` may support an operator edge, `never_cluster_on` (every breach corpus and stealer log) may not. **`search_budget` is the spend guard** |
+| `references/url_paths.json` | A path segment produced a bad cluster — add it to **`generic_segments`**, the base-rate control that decides what is never a kit. Also: `variable_patterns` (an operator is randomising a segment you keep clustering on), `locale_segments`, `asset_extensions` (a filename is being read as a kit), `kit_thresholds.min_hosts_for_pattern` (how many hosts before a repeated kit is called a pattern) |
+| `references/capture.json` | A capture is truncating what you need — raise `budgets` (`same_site_total_bytes`, `max_assets`, `max_asset_bytes`). Also `capture_kinds` to start capturing images/fonts, and `layout` to change where bundles land |
+| `references/intelx.json` | IntelX added a bucket you need graded, an artifact kind should (or should not) get an IntelX selector (`pivot_kind_map`), a real-world value is being misclassified (`selector_types`), or — most important — a bucket is on the wrong side of **`clustering_policy`**: `cluster_on` may support an operator edge, `never_cluster_on` (every breach corpus and stealer log) may not. **`search_plan`** owns the retrieval order: `first_pass_buckets` (the stealer logs, queried before anything else so the breach corpora can't fill the page), `general_pass` (set false on a tight allowance to buy log coverage on twice as many selectors), and `selector_priority` (domain and email first). **`search_budget` is the spend guard** |
 | `references/api_keys.json` | a new optional key exists, a provider changed what a tier includes, or the keyless banner overstates/understates what an absent key costs — this is what `wp_capabilities.py` prints and what `meta.capability` records |
 | `references/cdn_ranges.json` | **never by hand** — generated cache; rerun `python3 tools/cdn_ranges.py --refresh` |
 

@@ -52,7 +52,7 @@ MUST_KNOW = ["domainsbyproxy", "withheldforprivacy", "privacyprotect", "namechea
 # WebPivot/tools both land on sys.path in the same process (ingest_webpivot inserts both), where
 # a shared `refs.py` would collide.
 LOADERS = ["WebPivot/tools/wp_refs.py", "tools/kb/kb_refs.py", "BinaryPivot/tools/bp_refs.py",
-           "IntelGraph/scripts/ig_refs.py"]
+           "IntelGraph/scripts/ig_refs.py", "IntelReport/scripts/ir_refs.py"]
 
 
 def _loader_body(relpath):
@@ -78,6 +78,7 @@ def check():
               os.path.join(ROOT, "tools", "kb"),
               os.path.join(ROOT, "BinaryPivot", "tools"),
               os.path.join(ROOT, "IntelGraph", "scripts"),
+              os.path.join(ROOT, "IntelReport", "scripts"),
               os.path.join(ROOT, "harness")):
         if p not in sys.path:
             sys.path.insert(0, p)
@@ -132,11 +133,14 @@ def check():
     # catches that, and unlike a hardcoded count it does not rot as analysts extend a list.
     import wp_pivots, wp_analyze, wp_assets, wp_recon, wp_ippivot, wp_impersonate  # noqa: E401
     import wp_censys, wp_capabilities, wp_intelx, wp_docmeta                       # noqa: E401
+    import wp_paths, wp_capture                                                    # noqa: E401
     import bp_anyrun                                                               # noqa: E401
     import whois_enrich, evidence_report                                           # noqa: E401
     import ingest_webpivot, hypothesize, ingest_report, noise_filters              # noqa: E401
+    import risk_signals                                                            # noqa: E401
     import analyze_artifact                                                        # noqa: E401
     import case_timeline                                                           # noqa: E401
+    import render_report                                                           # noqa: E401
     import victim_profile                                                          # noqa: E401
     import audit                                                                   # noqa: E401
 
@@ -191,6 +195,13 @@ def check():
         ("wp_intelx.ENDPOINTS", wp_intelx.ENDPOINTS, wp_intelx._INTELX_FALLBACK["endpoints"]),
         ("wp_intelx.CLUSTERING_POLICY", wp_intelx.CLUSTERING_POLICY,
          wp_intelx._INTELX_FALLBACK["clustering_policy"]),
+        # The retrieval PLAN. IntelX returns a bounded page, so what is asked for first is what
+        # actually comes back: on the fallback the analyst's tuning is lost (`general_pass`, the
+        # full selector order) even though the logs-first guarantee itself survives by design.
+        # Losing `selector_priority` silently demotes the DOMAIN — the selector a stealer log is
+        # indexed by, and therefore the only one that can name an infected machine.
+        ("wp_intelx.SEARCH_PLAN", wp_intelx.SEARCH_PLAN,
+         wp_intelx._INTELX_FALLBACK["search_plan"]),
         # ANY.RUN. On the fallback the observation-field map covers six kinds instead of ten and
         # the clustering policy is empty, so a shared malware FAMILY would be ungraded rather than
         # explicitly context-only — the exact same-kit/same-operator confusion this layer must not
@@ -292,6 +303,45 @@ def check():
         ("audit.MUTATING_TOOLS", audit.MUTATING_TOOLS,
          audit._POLICY_FALLBACK["mutating_tools"]),
         ("audit.REDACT_ARGS", audit.REDACT_ARGS, audit._POLICY_FALLBACK["redact_args"]),
+        # Risk scoring. The fallback carries the NRD day-thresholds ONLY — a date comparison still
+        # works with no reference data, a denylist match cannot. So on the fallback `bph` and
+        # `money_trail` are empty dicts and every bulletproof-hosting / money-trail check matches
+        # nothing: a domain on known BPH scores CLEAN. That is the fail-open direction, and it is
+        # why this module was moved off its hand-rolled `except: return {}` loader.
+        ("risk_signals.RISK_INDICATORS['bph']", risk_signals.RISK_INDICATORS["bph"],
+         risk_signals._RISK_FALLBACK["bph"]),
+        ("risk_signals.RISK_INDICATORS['money_trail']",
+         risk_signals.RISK_INDICATORS["money_trail"],
+         risk_signals._RISK_FALLBACK["money_trail"]),
+        # URL-path layer. `generic_segments` IS the base-rate control: on the fallback it knows ~20
+        # common segments instead of ~145, so the first unlisted-but-universal directory an
+        # operator's site happens to use (`/portal/`, `/service/`, `/verify/`) is emitted as a kit
+        # fingerprint and fuses every unrelated site that uses the same ordinary word into one
+        # cluster. That is the false-cluster direction, and it is silent. `asset_extensions` keeps
+        # `app.js` from becoming a "kit"; `locale_segments` keeps one kit in twelve markets from
+        # reading as twelve kits.
+        ("wp_paths.GENERIC_SEGMENTS", wp_paths.GENERIC_SEGMENTS,
+         wp_paths._PATH_FALLBACK["generic_segments"]),
+        ("wp_paths.LOCALE_SEGMENTS", wp_paths.LOCALE_SEGMENTS,
+         wp_paths._PATH_FALLBACK["locale_segments"]),
+        ("wp_paths.VARIABLE_PATTERNS", wp_paths.VARIABLE_PATTERNS,
+         wp_paths._PATH_FALLBACK["variable_patterns"]),
+        ("wp_paths.ASSET_EXTENSIONS", wp_paths.ASSET_EXTENSIONS,
+         wp_paths._PATH_FALLBACK["asset_extensions"]),
+        # Evidence capture: on the fallback the capture still runs and still hashes, it just runs
+        # on the SMALLER budget and fetches fewer resource kinds — so a bundle silently stops
+        # being the whole page. That is survivable only because `skipped_for_budget` says so.
+        ("wp_capture.CAPTURE_KINDS", wp_capture.CAPTURE_KINDS,
+         wp_capture._CAP_FALLBACK["capture_kinds"]),
+        # Report language. On the fallback a Vietnamese render still produces a document — it just
+        # produces one with an English cover, English figure captions and, worse, an ESTIMATIVE
+        # GLOSSARY missing eight of its ten terms. The glossary is the calibrated confidence scale
+        # an author is meant to copy verbatim, so a thinned one invites a paraphrase, and a
+        # paraphrased estimative term silently changes what the report claims.
+        ("render_report.ESTIMATIVE_TERMS", render_report.ESTIMATIVE_TERMS,
+         render_report._I18N_FALLBACK["estimative_terms"]),
+        ("render_report.SECTION_NAMES", render_report.SECTION_NAMES,
+         render_report._I18N_FALLBACK["section_names"]),
     ]
     for name, loaded, fallback in consumers:
         ok(len(loaded) > len(fallback),

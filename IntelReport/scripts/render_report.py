@@ -7,7 +7,18 @@ a reviewer can redline it.
 
 No new Python deps — shells out to `pandoc` (+ `xelatex` for PDF), both of which
 the repo already relies on. Embedded IntelGraph figures (`![](fig_hires.png)`)
-render into the PDF automatically. Vietnamese diacritics render via DejaVu.
+render into the PDF automatically.
+
+LANGUAGE — `--lang en|vi` (or frontmatter `lang:`). It localises the GENERATED
+FURNITURE only: cover labels, TOC title, "Appendix", figure/table captions, the
+audience stamp. It does NOT touch the body, and that is deliberate. An assessment
+is a calibrated text — "we assess with high confidence", "likely" — where each
+term carries an ICD-203 probability band, so a machine paraphrase silently changes
+what the report claims. Write the body in the target language from the start and
+take the wording verbatim from `--glossary`. Strings live in
+`references/report_i18n.json` (RULE 3); a `--lang vi` render also warns when no
+installed font DECLARES Vietnamese coverage, because tofu boxes in a deliverable
+are not a cosmetic defect.
 
 Metadata: title / case id / classification / subtitle / date come from CLI args,
 else a YAML frontmatter block in the markdown, else sensible defaults. Per repo
@@ -37,6 +48,56 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATES = os.path.join(os.path.dirname(HERE), "templates")
 HOUSE_HEADER = os.path.join(TEMPLATES, "house-header.tex")
 REFERENCE_DOCX = os.path.join(TEMPLATES, "reference.docx")
+
+if HERE not in sys.path:                       # importable however the script was invoked
+    sys.path.insert(0, HERE)
+from ir_refs import ref_path, load_ref  # noqa: E402 — reference DATA lives in references/*.json
+
+# --- reference DATA (RULE 3): the report's LANGUAGE. Everything the renderer prints that the
+#     analyst did not write — cover labels, TOC title, "Appendix", figure/table captions — is
+#     finite, generated furniture and belongs in a data file, not in Python string literals.
+#     The fallback below is English-only plus the two Vietnamese labels a reader would notice
+#     immediately; load_ref warns loudly when the real file is missing.
+_I18N_FALLBACK = {
+    "strings": {
+        "en": {"reference": "Reference", "date": "Date", "basis": "Basis",
+               "basis_default": "Passive OSINT", "handling": "Handling", "contents": "Contents",
+               "appendix": "Appendix", "figure": "Figure", "table": "Table",
+               "audience_technical": "Technical briefing",
+               "audience_executive": "Executive briefing",
+               "audience_le": "Law-enforcement briefing"},
+        "vi": {"contents": "Mục lục", "appendix": "Phụ lục"},
+    },
+    # Deliberately thin: these are the analyst's WORDS, and a half-remembered fallback glossary
+    # is worse than none — a paraphrased estimative term silently changes what the report claims.
+    "estimative_terms": {
+        "high_confidence": {"en": "we assess with high confidence",
+                            "vi": "chúng tôi đánh giá với độ tin cậy cao"},
+        "likely": {"en": "likely / probably", "vi": "có khả năng", "band": "55-80%"},
+    },
+    "section_names": {
+        "key_judgments": {"en": "Key Judgments", "vi": "Nhận định chính"},
+        "findings": {"en": "Findings", "vi": "Kết quả phân tích"},
+    },
+}
+_REFS = load_ref(ref_path(__file__, "report_i18n.json"), _I18N_FALLBACK)
+STRINGS = _REFS["strings"]
+ESTIMATIVE_TERMS = _REFS["estimative_terms"]
+SECTION_NAMES = _REFS["section_names"]
+DEFAULT_LANG = "en"
+
+
+def S(lang, key):
+    """One piece of generated furniture in `lang`, falling back to English.
+
+    English fallback rather than an empty string on purpose: a cover row with a blank label is a
+    defect every reader notices, while an English "Date" on a Vietnamese cover is an obvious,
+    fixable gap in the data file."""
+    langs = STRINGS if isinstance(STRINGS, dict) else {}
+    val = (langs.get(lang) or {}).get(key)
+    if val:
+        return val
+    return (langs.get(DEFAULT_LANG) or {}).get(key) or key
 
 TEX_ESCAPE = {"&": r"\&", "%": r"\%", "$": r"\$", "#": r"\#", "_": r"\_",
               "{": r"\{", "}": r"\}", "~": r"\textasciitilde{}",
@@ -253,13 +314,17 @@ def installed_families(lang=None):
     return fams
 
 
-def pick_fonts():
+def pick_fonts(lang=DEFAULT_LANG):
     """(serif, sans). Prefer a family that actually DECLARES Vietnamese coverage
     (:lang=vi) — many nice serifs (PT Serif, Charter, DejaVu on macOS) miss the
     stacked-diacritic glyphs (ộ, ừ, ả) and render tofu. Fall back to any installed
     preferred family, then Latin Modern (TeX-bundled — note: Latin Modern does NOT
     cover Vietnamese, so on a box with no fontconfig/fc-list a VN report can still
-    tofu; install a Noto/Georgia/Times family there)."""
+    tofu; install a Noto/Georgia/Times family there).
+
+    With --lang vi this is no longer best-effort: tofu boxes are not a cosmetic
+    defect in a deliverable, and a silent fallback ships a report nobody can read.
+    So a VN render with no Vietnamese-declaring family WARNS by name."""
     vi = installed_families(lang="vi")
     allf = installed_families()
 
@@ -267,7 +332,15 @@ def pick_fonts():
         return (next((f for f in prefs if f in vi), None)
                 or next((f for f in prefs if f in allf), default))
 
-    return first(SERIF_PREF, "Latin Modern Roman"), first(SANS_PREF, "Latin Modern Sans")
+    serif, sans = first(SERIF_PREF, "Latin Modern Roman"), first(SANS_PREF, "Latin Modern Sans")
+    if lang == "vi" and not (serif in vi and sans in vi):
+        sys.stderr.write(
+            "WARNING: --lang vi but no installed family DECLARES Vietnamese coverage "
+            "(picked %r / %r). Stacked diacritics (ộ, ừ, ả) may render as tofu boxes. "
+            "Install one: `brew install --cask font-noto-serif font-noto-sans` (macOS) or "
+            "`apt install fonts-noto`. Check the rendered PDF before sending it.\n"
+            % (serif, sans))
+    return serif, sans
 
 
 def build_defs_and_cover(m, tmpdir, resource_dir="."):
@@ -277,7 +350,8 @@ def build_defs_and_cover(m, tmpdir, resource_dir="."):
     the internal case-store id — see OPSEC note in main()."""
     cls = tex_escape(m["classification"])
     caseid = tex_escape(m["ref"]) if m.get("ref") else ""
-    serif, sans = pick_fonts()
+    lang = m.get("lang") or DEFAULT_LANG
+    serif, sans = pick_fonts(lang)
     defs = os.path.join(tmpdir, "defs.tex")
     with open(defs, "w", encoding="utf-8") as fh:
         # defs.tex is included before house-header.tex, so load fontspec here
@@ -294,11 +368,20 @@ def build_defs_and_cover(m, tmpdir, resource_dir="."):
         fh.write("\\setmainfont{%s}[Scale=1.0]\n" % serif)
         fh.write("\\setsansfont{%s}[Scale=1.0]\n" % sans)
         fh.write("\\newfontfamily\\headingfont{%s}\n" % sans)
+        # Generated furniture, in the report's language. \APPENDIXNAME is consumed by
+        # house-header.tex's \appendix hook; \figurename / \tablename by every caption.
+        # Set here (not in the header) because the header is a static template shared by
+        # every render — the language is a per-report fact.
+        fh.write("\\newcommand{\\APPENDIXNAME}{%s}\n" % tex_escape(S(lang, "appendix")))
+        fh.write("\\renewcommand{\\figurename}{%s}\n" % tex_escape(S(lang, "figure")))
+        fh.write("\\renewcommand{\\tablename}{%s}\n" % tex_escape(S(lang, "table")))
 
     title = tex_escape(m["title"])
     subtitle = tex_escape(m["subtitle"]) if m["subtitle"] else ""
     date = tex_escape(m["date"])
-    caserow = (r"\textbf{Reference} & %s \\" % caseid) if caseid else ""
+    caserow = ((r"\textbf{%s} & %s \\" % (tex_escape(S(lang, "reference")), caseid))
+               if caseid else "")
+    basis = tex_escape(m.get("basis") or S(lang, "basis_default"))
     cover = os.path.join(tmpdir, "cover.tex")
     with open(cover, "w", encoding="utf-8") as fh:
         fh.write(r"""\begin{titlepage}
@@ -314,14 +397,17 @@ def build_defs_and_cover(m, tmpdir, resource_dir="."):
 \vfill
 {\headingfont\color{ink}\begin{tabular}{@{}l l@{}}
 %s
-\textbf{Date} & %s \\
-\textbf{Basis} & Passive OSINT \\
+\textbf{%s} & %s \\
+\textbf{%s} & %s \\
 \end{tabular}\par}
 \vspace{0.6cm}{\color{grid}\hrule height 0.6pt}\par
-\vspace{0.25cm}{\footnotesize\headingfont\color{muted} Handling: %s}\par
+\vspace{0.25cm}{\footnotesize\headingfont\color{muted} %s: %s}\par
 \end{titlepage}
 \clearpage
-""" % (cls, title, subtitle, caserow, date, cls))
+""" % (cls, title, subtitle, caserow,
+            tex_escape(S(lang, "date")), date,
+            tex_escape(S(lang, "basis")), basis,
+            tex_escape(S(lang, "handling")), cls))
     return defs, cover
 
 
@@ -340,10 +426,16 @@ def render_pdf(body, stem, m, resource_dir):
     try:
         defs, cover = build_defs_and_cover(m, tmp, resource_dir)
         out = f"{stem}.pdf"
+        lang = m.get("lang") or DEFAULT_LANG
+        # toc-title (not -V lang): pandoc's LaTeX template turns `lang` into a polyglossia
+        # \setmainlanguage, and a TeX install without polyglossia's `vietnamese` then fails the
+        # whole render. The TOC heading is the only thing we actually need from it, and
+        # toc-title sets it directly — on the DOCX path too.
         ok = run(["pandoc", body, "-o", out,
                   "--pdf-engine=xelatex",
                   "--from", "markdown+yaml_metadata_block+pipe_tables+grid_tables",
                   "--number-sections", "--toc", "--toc-depth=%d" % m.get("toc_depth", 3),
+                  "-M", "toc-title=%s" % S(lang, "contents"),
                   "-V", "fontsize=10pt", "-V", "linestretch=1.08",
                   "-V", "linkcolor=steel",
                   "--include-in-header", defs,
@@ -360,11 +452,16 @@ def render_docx(body, stem, m, resource_dir):
     sub = m["subtitle"] or ""
     if m["classification"]:
         sub = (m["classification"] + (" — " + sub if sub else "")).strip()
+    lang = m.get("lang") or DEFAULT_LANG
     cmd = ["pandoc", body, "-o", out,
            "--from", "markdown+yaml_metadata_block+pipe_tables+grid_tables",
            "--number-sections", "--toc", "--toc-depth=%d" % m.get("toc_depth", 3),
            "-M", f"title={m['title']}",
            "-M", f"date={m['date']}",
+           "-M", "toc-title=%s" % S(lang, "contents"),
+           # Word tags the runs with this, so the reviewer's spellchecker stops underlining
+           # every Vietnamese word in a document they are supposed to redline.
+           "-M", f"lang={lang}",
            "--resource-path", resource_dir]
     if sub:
         cmd += ["-M", f"subtitle={sub}"]
@@ -373,10 +470,35 @@ def render_docx(body, stem, m, resource_dir):
     return out if run(cmd) else None
 
 
+def print_glossary(lang=None):
+    """The wording an author must use VERBATIM — estimative terms and house section names.
+
+    Printed rather than applied, because this is the one part of a report the tool must not
+    touch: the ICD-203 terms are a calibrated scale, and paraphrasing one silently changes what
+    the report claims. `--lang vi` localises the furniture; this is how the ARGUMENT stays
+    calibrated in Vietnamese."""
+    langs = [lang] if lang else sorted(STRINGS.keys())
+    print("ESTIMATIVE LANGUAGE (ICD-203) — use these strings verbatim, never a synonym.")
+    print("Confidence (quality of the evidence) is NOT probability (likelihood of the event);")
+    print("never mix the two in one sentence.\n")
+    for key, spec in (ESTIMATIVE_TERMS or {}).items():
+        if not isinstance(spec, dict):
+            continue
+        band = spec.get("band") or ""
+        print(f"  {key:<22} {band:<26} " +
+              "  |  ".join(f"{lg}: {spec.get(lg) or '—'}" for lg in langs))
+    print("\nHOUSE SECTION NAMES — same skeleton in every language, same order.\n")
+    for key, spec in (SECTION_NAMES or {}).items():
+        if not isinstance(spec, dict):
+            continue
+        print(f"  {key:<24} " + "  |  ".join(f"{lg}: {spec.get(lg) or '—'}" for lg in langs))
+    print("\nTune both in IntelReport/references/report_i18n.json (RULE 3).")
+
+
 def main():
     ap = argparse.ArgumentParser(description="markdown assessment -> PDF/DOCX")
-    ap.add_argument("markdown", help="input assessment .md")
-    ap.add_argument("stem", help="output path stem (no extension)")
+    ap.add_argument("markdown", nargs="?", help="input assessment .md")
+    ap.add_argument("stem", nargs="?", help="output path stem (no extension)")
     ap.add_argument("--title", default=None)
     ap.add_argument("--subtitle", default=None)
     ap.add_argument("--case-id", default=None, help="INTERNAL case-store id — used only as a "
@@ -389,6 +511,15 @@ def main():
     ap.add_argument("--no-figures", action="store_true",
                     help="do NOT regenerate figures from figures.json before rendering "
                          "(by default IntelReport chains to IntelGraph to refresh the chart)")
+    ap.add_argument("--lang", default=None, choices=sorted(STRINGS.keys()) or ["en"],
+                    help="language of the GENERATED furniture — cover labels, TOC title, "
+                         "'Appendix', figure/table captions (default: en, or frontmatter `lang:`). "
+                         "The BODY is never translated by this tool: write the assessment in the "
+                         "target language from the start, using the fixed estimative wording from "
+                         "`--glossary` so the confidence scale does not drift.")
+    ap.add_argument("--glossary", action="store_true",
+                    help="print the ICD-203 estimative terms + house section names in every "
+                         "language and exit (no render) — the wording an author must use verbatim")
     ap.add_argument("--classification", default=None, help="handling caveat, e.g. TLP:AMBER")
     ap.add_argument("--date", default=None, help="YYYY-MM-DD (default: UTC today)")
     ap.add_argument("--audience", choices=["technical", "executive", "le"], default=None,
@@ -398,6 +529,11 @@ def main():
     ap.add_argument("--docx", action="store_true", help="render DOCX")
     args = ap.parse_args()
 
+    if args.glossary:
+        print_glossary(args.lang)
+        return
+    if not args.markdown or not args.stem:
+        ap.error("markdown and stem are required (omit them only with --glossary)")
     if not shutil.which("pandoc"):
         sys.exit("pandoc not found — install pandoc (brew install pandoc).")
     if not os.path.isfile(args.markdown):
@@ -413,6 +549,17 @@ def main():
                           or fm.get("tlp") or "UNCLASSIFIED",
         "date": args.date or fm.get("date") or utc_today(),
     }
+    # Language of the GENERATED furniture only — the body is whatever the author wrote.
+    # An unknown code falls back to English rather than printing bare keys.
+    lang = (args.lang or fm.get("lang") or DEFAULT_LANG).strip().lower()
+    if lang not in STRINGS:
+        sys.stderr.write(f"WARNING: no strings for lang={lang!r} in report_i18n.json — "
+                         f"rendering the furniture in {DEFAULT_LANG}.\n")
+        lang = DEFAULT_LANG
+    m["lang"] = lang
+    # Collection basis shown on the cover. Set it honestly: a run that retrieved live pages,
+    # fingerprinted TLS or probed an endpoint is NOT passive. Frontmatter `basis:` overrides it.
+    m["basis"] = fm.get("basis") or S(lang, "basis_default")
 
     # OPSEC: the document displays an EXTERNAL reference, never the internal
     # case-store id. Resolve the reference in this order: explicit flag/frontmatter
@@ -435,15 +582,15 @@ def main():
     # Audience profile: a shorter TOC for executives, full depth otherwise, and a
     # cover-subtitle stamp if the author didn't supply one. Content tailoring is the
     # author's job (see SKILL.md "Audience"); this just labels + paces the document.
-    AUD = {"technical": ("Technical briefing", 3),
-           "executive": ("Executive briefing", 1),
-           "le": ("Law-enforcement briefing", 3)}
+    AUD = {"technical": ("audience_technical", 3),
+           "executive": ("audience_executive", 1),
+           "le": ("audience_le", 3)}
     audience = args.audience or fm.get("audience")
     m["toc_depth"] = 3
     if audience in AUD:
-        label, m["toc_depth"] = AUD[audience]
+        key, m["toc_depth"] = AUD[audience]
         if not m["subtitle"]:
-            m["subtitle"] = label
+            m["subtitle"] = S(lang, key)
 
     # default: produce both when neither flag is given
     neither = not (args.pdf or args.docx)

@@ -1,6 +1,6 @@
 ---
 name: IntelReport
-description: Render a finished assessment MARKDOWN file into a polished, report-ready PDF and/or editable DOCX using pandoc — with a muted editorial house template that matches IntelGraph (cover page, table of contents, running header/footer carrying the classification + case id, embedded figures, and Vietnamese-safe typography). Use this skill WHENEVER the user has a written assessment/report in markdown (e.g. from pivot_extract --report, evidence_report, or an IntelHarness assessment) and asks to "make a PDF", "export to Word/docx", "produce the report", "render the report", "turn this into a document", "beautiful report", or "deliverable". Produces both PDF and DOCX by default. Supports English and Vietnamese.
+description: Render a finished assessment MARKDOWN file into a polished, report-ready PDF and/or editable DOCX using pandoc — with a muted editorial house template that matches IntelGraph (cover page, table of contents, running header/footer carrying the classification + case id, embedded figures, and Vietnamese-safe typography). Use this skill WHENEVER the user has a written assessment/report in markdown (e.g. from pivot_extract --report, evidence_report, or an IntelHarness assessment) and asks to "make a PDF", "export to Word/docx", "produce the report", "render the report", "turn this into a document", "beautiful report", or "deliverable". Produces both PDF and DOCX by default. FULLY BILINGUAL EN/VI via --lang: the generated furniture (cover labels, table of contents, "Phụ lục", figure/table captions) is localised and a Vietnamese-capable font is picked, while the body stays the analyst's — with a fixed ICD-203 estimative glossary (`--glossary`) so the confidence scale does not drift in translation. USE ALSO WHEN Vietnamese report, báo cáo tiếng Việt, report in Vietnamese, bilingual report, localise the report, Vietnamese deliverable, xuất báo cáo PDF.
 ---
 
 > **OPSEC — this skill is portable/shared. Never write case data into it.** No real operator
@@ -288,9 +288,10 @@ That writes `out/report.pdf` **and** `out/report.docx` (both by default). Pass `
    subtitle: "Passive OSINT · N sites attributed to one operator"
    case_id: CASE-0001
    classification: "TLP:AMBER"
+   lang: vi          # optional — Vietnamese cover/TOC/captions; the BODY is never translated
    ---
    ```
-   CLI flags (`--title`, `--case-id`, `--classification`, `--subtitle`, `--date`) override
+   CLI flags (`--title`, `--case-id`, `--classification`, `--subtitle`, `--date`, `--lang`) override
    the frontmatter. Anything missing gets a sensible default (`classification` →
    `UNCLASSIFIED`, `date` → UTC today, `title` → first `#` heading or the filename).
    The `classification` fallback is a backstop, not an answer — **ask the user for the TLP**
@@ -339,13 +340,54 @@ python3 <IntelReport>/scripts/render_report.py cases/CASE-0001/assessment.md \
 - The LaTeX template is `templates/house-header.tex` (xelatex, palette copied from
   `IntelGraph/scripts/theme.py`). Edit it to adjust the house look; keep it case-data-free.
 
-### Fonts / Vietnamese
+## Vietnamese reports — `--lang vi`
+
+A report has two kinds of text, and the tool treats them differently **on purpose**.
+
+| | Who writes it | What `--lang vi` does |
+|---|---|---|
+| **Furniture** — cover labels, TOC title, "Appendix", figure/table captions, the audience stamp | the template | **swaps it wholesale** (`Số hiệu` / `Ngày` / `Cơ sở thu thập` / `Mục lục` / `Phụ lục` / `Hình` / `Bảng`) |
+| **Body** — the argument, the judgments, the evidence | the analyst | **nothing. It is never machine-translated.** |
+
+That split is the whole design. The furniture is finite and mechanical, so localising it is a
+one-line flag. The body is a *calibrated* text: "we assess with high confidence" and "likely" are
+ICD-203 terms with probability bands attached, and a paraphrase of one silently changes what the
+report claims. So **write the assessment in Vietnamese from the start** and take the wording
+verbatim from the glossary:
+
+```bash
+python3 "$REPORT/scripts/render_report.py" --glossary --lang vi   # the exact strings to use
+python3 "$REPORT/scripts/render_report.py" assessment.md out/report --lang vi --pdf --docx
+```
+
+Or set it once in frontmatter — `lang: vi` — alongside `title:` / `classification:`.
+
+**Rules for a Vietnamese deliverable:**
+
+1. **Use the glossary strings verbatim, never a synonym.** `rất có khả năng` (80–95%) and
+   `có khả năng` (55–80%) are different claims. Quote the ICD-203 band table once in
+   *Phương pháp và mức độ tin cậy* so the reader can grade the scale instead of guessing.
+2. **Never mix confidence with probability in one sentence.** `độ tin cậy` is about the evidence;
+   `khả năng` is about the event. Same rule as English, same failure if broken.
+3. **Keep the house skeleton.** Use the `section_names` headings so a Vietnamese and an English
+   rendering of the same case are a translation of each other, not two different reports.
+4. **Indicators stay literal and untranslated** — domains, IPs, hashes, brand names, registrar
+   names. Rules 12a/12b apply unchanged; a translated indicator is a broken indicator.
+5. **Check the PDF for tofu.** `--lang vi` warns loudly when no installed family *declares*
+   Vietnamese coverage, but it still renders — look at the output before sending it.
+
+Both languages live in `references/report_i18n.json` (RULE 3). Add a third by adding its key to
+every group; nothing in the code needs to change.
+
+### Fonts
 
 `render_report.py` auto-selects an installed serif + sans that actually **declare Vietnamese
 coverage** (`fc-list :lang=vi`) — many otherwise-nice serifs (PT Serif, Charter, DejaVu on
 macOS) miss the stacked-diacritic glyphs (ộ, ừ, ả) and render tofu, so they are skipped in
 favour of e.g. Noto Serif / Georgia / Times. Diacritics render correctly (cà phê, Hà Nội,
-lừa đảo). Latin Modern is the last-resort TeX-bundled fallback.
+lừa đảo). Latin Modern is the last-resort TeX-bundled fallback — it does **not** cover
+Vietnamese, so on a box with no fontconfig install a Noto family:
+`brew install --cask font-noto-serif font-noto-sans` / `apt install fonts-noto`.
 
 ### DOCX styling
 
@@ -364,7 +406,9 @@ Word/LibreOffice, and keep it case-data-free.
   section from III onward embeds one, and each figure's edges are labelled with the EVIDENCE that
   creates the link. Zero figures = the report is not finished.
 - Cover shows the right title, case id, and classification; NO analyst name.
-- Vietnamese text renders with correct diacritics (no tofu boxes).
+- Vietnamese text renders with correct diacritics (no tofu boxes) — and for a `--lang vi` report,
+  the cover/TOC/appendix furniture is Vietnamese too, the estimative terms match the glossary
+  verbatim, and no indicator was translated.
 - Embedded figures appear (use the `_hires.png`); tables render with rules.
 - Header/footer carry the classification + case id + page numbers on every body page.
 - The classification and report reference came from an argument or frontmatter — never hardcoded,

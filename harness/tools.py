@@ -999,7 +999,12 @@ async def case_timeline(args: dict[str, Any]) -> dict[str, Any]:
     "tables, the artifact register and per-domain-profile appendices, and — critically — naming every "
     "indicator (seed domain, IPs, hashes, impersonated brands) in the BODY while keeping internal "
     "tool/vendor/case-store names out of it. Required: markdown (path), stem (output path, no "
-    "extension). Optional: report_ref (EXTERNAL reference shown on the cover — use this, NOT case_id, "
+    "extension). Optional: lang ('en'|'vi') — localises the GENERATED furniture only (cover labels, "
+    "TOC title, 'Phụ lục', figure/table captions) and picks a Vietnamese-capable font; it does NOT "
+    "translate the body, so write the assessment in the target language from the start and take the "
+    "estimative wording verbatim from `render_report.py --glossary` (the ICD-203 scale is calibrated "
+    "— a paraphrase changes what the report claims). report_ref (EXTERNAL reference shown on the "
+    "cover — use this, NOT case_id, "
     "or the internal case-store id leaks onto every page), audience (technical|executive|le), title, "
     "subtitle, case_id (internal fallback only), classification (e.g. TLP:AMBER), date (YYYY-MM-DD), "
     "no_figures=true (skip figures.json regeneration — set this when the .mmd was hand-edited, else "
@@ -1013,7 +1018,7 @@ async def render_report(args: dict[str, Any]) -> dict[str, Any]:
     for k, flag in (("title", "--title"), ("subtitle", "--subtitle"),
                     ("report_ref", "--report-ref"), ("audience", "--audience"),
                     ("case_id", "--case-id"), ("classification", "--classification"),
-                    ("date", "--date")):
+                    ("date", "--date"), ("lang", "--lang")):
         if args.get(k):
             cmd += [flag, str(args[k])]
     if args.get("no_figures"):
@@ -1153,12 +1158,24 @@ async def victim_profile(args: dict[str, Any]) -> dict[str, Any]:
     "dumps, infostealer logs, pastes, darknet mirrors, historical WHOIS and IntelX's own web crawl. "
     "`selector` must be an email, domain (a `*.apex` wildcard is allowed), URL, IP/CIDR, phone "
     "number, wallet, MAC/UUID/IBAN — never a brand or person name (a soft term is refused and still "
-    "costs a unit). Use it on the artifacts that carry ATTRIBUTION: a registrant email, a support "
-    "phone, a payout wallet. mode='phonebook' instead turns ONE domain into an inventory of every "
-    "email address, subdomain and URL IntelX has seen under it — the highest-value call for web "
-    "casework, and PAID-only. Every record comes back graded: a hit in a breach corpus or a stealer "
-    "log is EXPOSURE evidence and is flagged NOT clusterable (two addresses in one combolist share "
-    "victims, not an operator); only whois/pastes/darknet hits may support a same-operator edge. "
+    "costs a unit). SEARCH THE CASE DOMAIN FIRST, then the operator's email: a stealer-log record is "
+    "indexed by the URL the malware captured, so the domain returns the MACHINES that held "
+    "credentials for it — the campaign's victims, the admin/panel URLs the public site never links, "
+    "and sometimes the operator's own infected box (direct attribution). Then the contact artifacts "
+    "(support phone, payout wallet), which carry the operator's own advertising copy in pastes. "
+    "The STEALER LOGS ARE QUERIED IN THEIR OWN PASS BEFORE the general one, because IntelX returns a "
+    "bounded page and recycled public-breach rows would otherwise fill it and truncate the one log "
+    "record away: a default search is 2 units (logs pass + general pass), buckets='leaks.logs' is "
+    "the 1-unit logs-only question. Check `logs_pass` in the output — only with it true is an empty "
+    "`read_these` a real negative. mode='phonebook' instead turns ONE domain into an inventory of "
+    "every email address, subdomain and URL IntelX has seen under it — the highest-value call for "
+    "web casework, and PAID-only. Every record comes back graded: a hit in a breach corpus or a "
+    "stealer log is EXPOSURE evidence and is flagged NOT clusterable (two addresses in one combolist "
+    "share victims, not an operator); only whois/pastes/darknet hits may support a same-operator "
+    "edge — but a stealer-log ITEM comes back in `read_these` to open one by one and ask whose "
+    "machine it is (victim = credentials FOR the front-end; operator = the back office, i.e. the "
+    "registrar/hosting/CMS/exchange logins behind it). Judgement lives in IntelAnalysis SKILL.md "
+    "§1.7 + Workflows/StealerLog.md. Never quote a password/cookie/token — metadata only. "
     "METERED and capped per run. With no INTELX_KEY the layer still runs at ~50%: it classifies the "
     "selector and returns the intelx.io / phonebook.cz URL to run by hand — say so rather than "
     "reporting an empty result as 'not in any leak'.",
@@ -1188,6 +1205,92 @@ async def intelx_search(args: dict[str, Any]) -> dict[str, Any]:
                    "\n\n(Keyless/limited IntelX: nothing was queried. Do NOT report this as "
                    "'the selector appears in no leak' — run the URL above by hand.)")
     return _ok((r.stdout or "") + ("\n" + r.stderr if r.stderr else ""))
+
+
+@tool(
+    "url_paths",
+    "THE URL PATH AS A CAMPAIGN IDENTIFIER — use this whenever the hosts in a case look disposable "
+    "(numeric/random labels, cheap TLDs, a fresh certificate each, nothing shared at host level) but "
+    "the pages are branded. That is a deliberate technique: the operator keeps one directory per "
+    "branded template on a shared back end and selects which victim sees which brand by the URL "
+    "PATH, so `host-a/<kit>/`, `host-b/<kit>/` and `host-c/<kit>/` are ONE operator running one kit "
+    "on three throwaway hosts. Every other pivot here (favicon, TLS, registrant, JARM, nameserver) "
+    "hangs off the hostname and therefore sees three unrelated sites; the kit directory is the one "
+    "string that survives the rotation, because it is the operator's own routing. "
+    "mode='analyze' (default) takes ONE url and returns the normalised path, the path TEMPLATE "
+    "(session ids / build hashes / dates / locales replaced by placeholders, so per-victim URLs "
+    "collapse to one template), the kit directory, the locale, and ready-to-run reverse queries "
+    "(urlscan page.url, an inurl: dork, FOFA, PublicWWW, a Wayback CDX sweep) that find the NEXT "
+    "host serving the same kit before it is reported anywhere. mode='patterns' takes `paths` (globs "
+    "of collected WebPivot result JSON, e.g. 'cases/<case>/raw/*.json') and reports which kits recur "
+    "and on how many DISTINCT hosts, plus multi_kit_hosts (one back end serving several brands — the "
+    "other half of the same technique). Offline, free, zero API credits. Base-rate controlled: "
+    "`/login`, `/assets`, `/api/v1`, `/wp-admin` and friends are denylisted in "
+    "WebPivot/references/url_paths.json and NEVER become a kit, so a path with nothing distinctive "
+    "returns no pivot — that is the correct result for an ordinary site, not a failure. A shared kit "
+    "directory is SAME-KIT evidence and a strong collection lead; it becomes a same-OPERATOR claim "
+    "only when an independent artifact class agrees (two resellers of one kit share these strings).",
+    {"url": str},  # mode:'analyze'|'patterns', paths:str (space-separated globs), min_hosts:int
+    annotations=READONLY,
+)
+async def url_paths(args: dict[str, Any]) -> dict[str, Any]:
+    script = os.path.join("WebPivot", "tools", "wp_paths.py")
+    mode = str(args.get("mode") or "analyze").lower()
+    # `url` is the one required field, so mode='patterns' accepts its globs in EITHER `paths` or
+    # `url` — a caller that has only the required field must still be able to run the mode.
+    if mode == "patterns":
+        globs = str(args.get("paths") or args.get("url") or "").split()
+        if not globs:
+            return _ok("url_paths(mode='patterns') needs result-JSON globs in `paths` (or `url`), "
+                       "e.g. 'cases/<case>/raw/*.json'.")
+        cmd = [PY, script, "patterns", *globs]
+        if args.get("min_hosts"):
+            cmd += ["--min-hosts", str(int(args["min_hosts"]))]
+    else:
+        cmd = [PY, script, "analyze", str(args["url"])]
+    r = _run(cmd, timeout=120)
+    return _ok((r.stdout or "") + ("\n" + r.stderr if r.stderr else ""))
+
+
+@tool(
+    "capture_evidence",
+    "STORE THE RAW BYTES the host served — the DOM plus every JavaScript and stylesheet the page "
+    "loaded, each with its own sha256, under cases/<case>/evidence/captures/<host>/<kit>/<UTC>/ with "
+    "a manifest and a bundle-level `capture_sha256`. Everything else this toolkit produces is "
+    "DERIVED: a favicon hash, a DOM fingerprint, an extracted wallet — assertions about a page that "
+    "will not exist next month. Once the host is gone nobody can re-check them, including us. "
+    "pivot_extract already captures automatically whenever --case is set, so call this tool for a "
+    "page you did NOT collect through the pipeline, for a re-capture (captures are timestamped and "
+    "never overwritten — the diff between two captures is how you date a re-skin), or with "
+    "verify=true to re-hash a stored capture and confirm it still matches its manifest before citing "
+    "it. Required: url (or dir with verify=true). Optional: case, outdir, third_party=false (record "
+    "third-party URLs in the manifest but do not download them). BUDGETED: same-site assets get the "
+    "generous allowance because they are the operator's own code, third-party CDN libraries a small "
+    "one — anything dropped is listed in `skipped_for_budget`, so read that before treating a bundle "
+    "as the whole page. Cite the capture_sha256, not the directory path.",
+    {"url": str},  # case:str, outdir:str, verify:bool, dir:str, third_party:bool
+)
+async def capture_evidence(args: dict[str, Any]) -> dict[str, Any]:
+    script = os.path.join("WebPivot", "tools", "wp_capture.py")
+    # verify=true takes a capture DIRECTORY; accept it in either `dir` or the required `url`, so a
+    # caller passing only the required field can still verify.
+    target = str(args.get("dir") or args.get("url") or "")
+    if not target:
+        return _ok("capture_evidence needs a `url` to capture, or a capture directory in `url`/"
+                   "`dir` with verify=true.")
+    cmd = [PY, script, target]
+    if args.get("verify") or args.get("dir"):
+        cmd += ["--verify"]
+    else:
+        if args.get("case"):
+            cmd += ["--case", str(args["case"])]
+        if args.get("outdir"):
+            cmd += ["--outdir", str(args["outdir"])]
+        if args.get("third_party") is False:
+            cmd += ["--no-third-party"]
+    r = _run(cmd, timeout=300)
+    return {"content": [{"type": "text", "text": (r.stdout or "") + (r.stderr or "") or "no output"}],
+            "is_error": r.returncode != 0}
 
 
 @tool(
@@ -1297,22 +1400,32 @@ async def anyrun_submit(args: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- servers + names
+# Every @tool MUST appear in exactly one server below AND in that server's *_TOOLS allowlist.
+# The stdio front-end (mcp_server.py) auto-discovers @tools, so a tool missing here is visible in
+# Claude Code and INVISIBLE to the SDK — the two front-ends silently diverge and a phase prompt
+# that references the tool just fails. The reverse is worse: an allowlist entry with no served
+# tool tells the model it may call something that does not exist. `tests/test_tool_registry.py`
+# asserts the three lists agree, so this can only drift again on purpose.
 COLLECT_SERVER = create_sdk_mcp_server(
-    "collect", tools=[pivot_extract, analyze_artifact, fallback_probe, impersonation_hunt,
-                      search_pivot, intelx_search, anyrun_lookup, anyrun_submit,
-                      kb_ingest])
+    "collect", tools=[pivot_extract, doc_metadata, analyze_artifact, fallback_probe,
+                      impersonation_hunt, search_pivot, censys, intelx_search,
+                      anyrun_lookup, anyrun_submit, capability_check,
+                      url_paths, capture_evidence, kb_ingest])
 ANALYZE_SERVER = create_sdk_mcp_server(
     "analyze", tools=[kb_cluster, kb_entity, kb_query_shared, risk_signals,
                       reverse_whois, cert_overlap, reference_check, reference_add,
-                      which_cases, domain_verdict, api_usage,
+                      which_cases, domain_verdict, api_usage, tool_calls,
                       case_clusters, case_frontier, case_loop, case_reopen,
                       render_diagram, case_timeline, render_report, victim_profile])
 
 COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__doc_metadata",
                  "mcp__collect__analyze_artifact",
                  "mcp__collect__fallback_probe", "mcp__collect__impersonation_hunt",
-                 "mcp__collect__search_pivot", "mcp__collect__intelx_search",
+                 "mcp__collect__search_pivot", "mcp__collect__censys",
+                 "mcp__collect__intelx_search",
                  "mcp__collect__anyrun_lookup", "mcp__collect__anyrun_submit",
+                 "mcp__collect__capability_check",
+                 "mcp__collect__url_paths", "mcp__collect__capture_evidence",
                  "mcp__collect__kb_ingest"]
 ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__kb_query_shared", "mcp__analyze__risk_signals",

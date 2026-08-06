@@ -1,4 +1,4 @@
-You have ONLY the provided tools (pivot_extract, fallback_probe, kb_ingest) — no shell or filesystem. Ignore any shell commands in the instructions; call the tools directly.
+You have ONLY the provided tools — no shell or filesystem. Ignore any shell commands in the instructions; call the tools directly. (Do not rely on a list of tool names here: the collect server's toolset grows, and an enumeration in this prompt goes stale silently — read the tools you were actually given.)
 
 Case `{{case}}`. Prior knowledge — do NOT re-collect seeds already collected/attributed (pivot_extract returns cached data for those instantly); spend live collection only on NEW seeds:
 {{prior}}

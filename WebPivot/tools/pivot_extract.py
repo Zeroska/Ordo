@@ -88,6 +88,8 @@ import wp_docmeta  # noqa  (document/image metadata layer: hosted PDFs + images 
 import wp_censys   # noqa  (Censys Platform: lookups + CenQL builder; --no-censys flips ENABLED)
 import wp_intelx   # noqa  (Intelligence X: leak/paste/darknet selector search; --intelx runs it live)
 import wp_capabilities  # noqa  (which keys are present -> what this run could and could not query)
+import wp_paths    # noqa  (URL PATH as a campaign identifier — kit directory, template, patterns)
+import wp_capture  # noqa  (raw evidence bundle: the DOM + every JS/CSS the host served, hashed)
 import wp_ippivot  # noqa  (IPPivot: bare-IP source runs passive IP recon instead of HTML)
 import wp_impersonate  # noqa  (ImpersonationHunt: --hunt-impersonation hunts lookalikes of a seed)
 try:
@@ -290,6 +292,20 @@ def main():
                          "(needs openpyxl) plus a sibling .csv.")
     ap.add_argument("--case", default=None,
                     help="case name tagged onto the report and every master-ledger row")
+    ap.add_argument("--capture", dest="capture", action="store_true", default=None,
+                    help="store the RAW EVIDENCE bundle — the served DOM plus every JavaScript and "
+                         "stylesheet the page loaded, each with its own sha256 and a bundle-level "
+                         "capture_sha256 — under cases/<case>/evidence/captures/<host>/<kit>/<UTC>/. "
+                         "DEFAULT ON whenever --case is given: derived artifacts (hashes, "
+                         "fingerprints) are assertions about a page that will be gone in days, and "
+                         "the capture is the only thing that lets anyone re-check them later.")
+    ap.add_argument("--no-capture", dest="capture", action="store_false",
+                    help="do NOT store the raw evidence bundle, even with --case")
+    ap.add_argument("--no-capture-third-party", dest="capture_third_party",
+                    action="store_false", default=True,
+                    help="record third-party asset URLs in the capture manifest but do not download "
+                         "them (they describe the library, not the operator). Same-site JS/CSS is "
+                         "always captured.")
     ap.add_argument("--classification", default="UNCLASSIFIED//FOR OFFICIAL USE ONLY",
                     help="classification banner printed at the top and bottom of the report")
     ap.add_argument("--analyst", default=None,
@@ -573,6 +589,24 @@ def main():
         dest_host = strip_www(urlparse(dest).netloc)
         if dest_host and dest_host != result["meta"].get("host"):
             result["meta"]["redirect_destination"] = dest_host
+    # --- the URL PATH as a campaign identifier -------------------------------------------------
+    # Runs AFTER the redirect chain on purpose: a kit operator routinely lands you on a short
+    # entry URL and redirects into the template directory, so the path that identifies the kit is
+    # the FINAL one, not the one we were handed. Every other pivot in this tool hangs off the
+    # hostname; on a path-routed estate the hostname is disposable packaging and this is the only
+    # field that survives the rotation. Offline, free, and emits nothing when the path is generic
+    # (the base-rate control in references/url_paths.json).
+    if src.startswith(("http://", "https://")) or result["meta"].get("final_url"):
+        _pu = result["meta"].get("final_url") or base_url or src
+        _pa = wp_paths.analyse(_pu, result["meta"].get("host") or "")
+        result["meta"].update({k: _pa[k] for k in
+                               ("url_path", "path_template", "kit", "locale", "location")
+                               if _pa.get(k) is not None})
+        _ppiv = wp_paths.path_pivots(_pu, result["meta"].get("host") or "")
+        if _ppiv:
+            result["pivots"].extend(_ppiv)
+            sort_pivots(result["pivots"])
+
     url_pool = [src] + [h.get("to", "") for h in redirects]
     if base_url:
         url_pool.append(base_url)
@@ -671,12 +705,57 @@ def main():
         wp_intelx.enrich_result(result, do_phonebook=not args.no_intelx_phonebook,
                                 free_only=args.free_only)
 
-    # --- store the raw DOM (the collected page) ---
+    # --- RAW EVIDENCE: the DOM plus every JS/CSS the host served, hashed ------------------------
+    # Default ON with --case. Everything else this tool emits is DERIVED — a hash, a fingerprint,
+    # an extracted address — i.e. an assertion about a page that will not exist next month. The
+    # capture is the primary source those assertions can be re-checked against, by a reviewer or
+    # by us when the same kit resurfaces on a new host and we want to diff it.
+    want_capture = args.capture if args.capture is not None else bool(args.case)
+    if want_capture and html and src.startswith(("http://", "https://")):
+        try:
+            cap = wp_capture.capture(
+                result["meta"].get("final_url") or src, html=html, case=args.case,
+                # seed_ua / seed_proxy, NOT args.* — those are unresolved (--ua defaults to None,
+                # and --rotate-ua picks per run). The capture must go out on the SAME identity the
+                # page was fetched with, or the assets come from a different session than the DOM.
+                ua=seed_ua, proxy=seed_proxy, third_party=args.capture_third_party,
+                rendered=bool(getattr(args, "render", False)), timeout=args.timeout)
+            if cap.get("error"):
+                print(f"[!] capture failed: {cap['error']}", file=sys.stderr)
+            else:
+                m = cap["manifest"]
+                result["meta"]["capture"] = {
+                    "dir": cap["dir"], "capture_sha256": cap["capture_sha256"],
+                    "files": m["counts"]["total"], "js": m["counts"]["js"],
+                    "css": m["counts"]["css"], "bytes": m["bytes"],
+                    "captured_at": m["captured_at"],
+                    "incomplete": m.get("completeness"),
+                }
+                print(f"[+] captured {m['counts']['total']} file(s) "
+                      f"({m['counts']['js']} js, {m['counts']['css']} css) -> {cap['dir']}",
+                      file=sys.stderr)
+                print(f"    capture_sha256 {cap['capture_sha256']}", file=sys.stderr)
+                if m.get("skipped_for_budget"):
+                    print(f"    [!] {len(m['skipped_for_budget'])} asset(s) skipped for budget — "
+                          f"this bundle is NOT the whole page (see manifest).", file=sys.stderr)
+        except Exception as e:
+            # Never lose a collection because evidence storage failed — but say so loudly, since
+            # a run that reports no capture must not be mistaken for one that had nothing to store.
+            print(f"[!] capture failed ({e}) — the analysis below stands, but the raw bytes were "
+                  f"NOT stored for this run.", file=sys.stderr)
+
+    # --- store the raw DOM on its own (superseded by --capture, kept for ad-hoc use) ---
     if args.save_dom and html:
         if isinstance(args.save_dom, str):
             dom_path = args.save_dom
         elif args.out:
             dom_path = re.sub(r"\.json$", "", args.out) + ".html"
+        elif args.case:
+            # Never the bare CWD when a case exists: a stray <host>.dom.html at the repo root is
+            # case data outside cases/, which the contributor rules exist to prevent.
+            dom_dir = os.path.join("cases", args.case, "evidence", "dom")
+            os.makedirs(dom_dir, exist_ok=True)
+            dom_path = os.path.join(dom_dir, (result["meta"].get("host") or "page") + ".dom.html")
         else:
             dom_path = (result["meta"].get("host") or "page") + ".dom.html"
         try:

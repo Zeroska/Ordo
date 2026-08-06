@@ -337,6 +337,50 @@ def _ingest_ip(kb, d, meta, ip, observed, day):
     return n
 
 
+def _ingest_paths(kb, d, meta, host, observed, ev):
+    """The URL PATH as a clustering indicator — `path_kit:<kit>`.
+
+    Standard clustering hangs off the hostname. An operator who has noticed that buys a pool of
+    disposable hosts and selects which branded template a victim sees by the URL PATH instead:
+    `host-a/<kit>/`, `host-b/<kit>/`, `host-c/<kit>/`. Nothing at host level connects those, so
+    without this edge they ingest as three unrelated one-domain cases. With it they land in one
+    cluster keyed on the kit directory — the one string the operator cannot randomise without
+    rebuilding their own routing.
+
+    Weight is deliberately MEDIUM and the relation is `serves_kit`, not `same_operator`: a shared
+    kit directory is SAME-KIT evidence, exactly like a shared white-label platform artifact. Two
+    resellers of one kit have the same directory names. It is a strong collection lead; the
+    operator claim needs a second, independent artifact class.
+
+    A generic path emits nothing — `wp_paths.kit_segment()` applies the base-rate denylist, so
+    `/login` and `/assets` never become an edge. That guard is the whole reason this is safe."""
+    kit = (meta.get("kit") or "").strip().lower()
+    if not kit:
+        return 0
+    ind = f"path_kit:{kit}"
+    kb.touch("indicator", ind, observed)
+    kb.add_fact("indicator", ind, "kind", "url_path_kit", "webpivot", COLLECTOR, observed,
+                "high", ev)
+    kb.touch("domain", host, observed)
+    kb.add_edge("domain", host, "serves_kit", "indicator", ind, "webpivot", COLLECTOR,
+                observed, "medium", ev)
+    n = 1
+    # The full path is a FACT on the domain, not an edge: two hosts serving the same kit at
+    # different depths are still the same kit, and clustering on the deep path would split them.
+    if meta.get("url_path"):
+        kb.add_fact("domain", host, "url_path", meta["url_path"], "webpivot", COLLECTOR,
+                    observed, "high", ev)
+    if meta.get("path_template"):
+        kb.add_fact("domain", host, "path_template", meta["path_template"], "webpivot",
+                    COLLECTOR, observed, "medium", ev)
+    # Which market the template was localised for — target-selection evidence, never a cluster key
+    # (every kit in a country shares its locale segment).
+    if meta.get("locale"):
+        kb.add_fact("domain", host, "path_locale", meta["locale"], "webpivot", COLLECTOR,
+                    observed, "low", ev)
+    return n
+
+
 def _ingest_impersonation(kb, d, meta, host, observed, day):
     """Ingest an ImpersonationHunt result (meta.kind=='impersonation'). The seed's brand keyword
     becomes an `indicator brand:<label>`; the seed and every CONFIRMED lookalike get an edge to it,
@@ -393,6 +437,9 @@ def ingest_file(kb, path):
     n = 0
 
     kb.touch("domain", host, observed)
+    # URL-path kit FIRST: on a path-routed estate this is the only edge that survives the host
+    # rotation, so it must land even if the rest of the page yielded nothing clusterable.
+    n += _ingest_paths(kb, d, meta, host, observed, ev)
     if art.get("title"):
         kb.add_fact("domain", host, "title", art["title"], "webpivot", COLLECTOR, observed, "high", ev)
         n += 1

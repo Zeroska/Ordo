@@ -1,6 +1,6 @@
 ---
 name: IntelAnalysis
-description: The analyst / judgment layer for OSINT — correlation, attribution, confidence calibration, and next-pivot decisions over the knowledge base. Does NOT collect; it reasons over facts that collectors (WebPivot, etc.) already gathered. USE WHEN correlate findings, attribute infrastructure, who is behind this, same operator, same actor, build the case, assess confidence, weigh evidence, cluster analysis, what should I pivot on next, is this the same owner, investigation judgment, connect the dots, threat attribution, generate hypothesis, prove or disprove, newly registered domain, NRD, bulletproof hosting, money trail, trace the money, reused wallet, scam red flags, my investigation style, feed past reports, case timeline, when was this registered, registration and expiry dates, renewal pattern, same expiry, which IP hosted it when, hosting window, co-tenancy overlap, certificate issuance batch, registrant era, when did they change hands, was this contemporaneous, campaign start and end, cite the evidence, archived link, urlscan link.
+description: The analyst / judgment layer for OSINT — correlation, attribution, confidence calibration, and next-pivot decisions over the knowledge base. Does NOT collect; it reasons over facts that collectors (WebPivot, etc.) already gathered. USE WHEN correlate findings, attribute infrastructure, who is behind this, same operator, same actor, build the case, assess confidence, weigh evidence, cluster analysis, what should I pivot on next, is this the same owner, investigation judgment, connect the dots, threat attribution, generate hypothesis, prove or disprove, newly registered domain, NRD, bulletproof hosting, money trail, trace the money, reused wallet, scam red flags, my investigation style, feed past reports, case timeline, when was this registered, registration and expiry dates, renewal pattern, same expiry, which IP hosted it when, hosting window, co-tenancy overlap, certificate issuance batch, registrant era, when did they change hands, was this contemporaneous, campaign start and end, cite the evidence, archived link, urlscan link, stealer log, infostealer log, leak corpus, breach dump, whose machine is this, is this the operator's machine, credentials for the panel, admin panel URL from a log, IntelX hit, does this leak prove same operator.
 ---
 
 > **OPSEC — this skill is portable/shared. Never write case data into it.** No real operator
@@ -438,6 +438,131 @@ every concentration. Exclude it explicitly — the tool cannot tell, only you ca
 ▢ **Your thresholds:** _how many victims you need before you'll call a shape; which platforms you
 treat as base-rate noise in your region; whether you fold victim-side findings into the operator
 assessment or report them separately to the hosting providers._
+
+## 1.65 Path-routed estates — when the hostname is packaging  ▢ TUNE
+
+**If every host in a set looks disposable but every page looks branded, stop clustering on hosts.**
+
+A mature kit operator knows what we pivot on. Their counter is to make the hostname carry no
+information: numeric or random labels on cheap TLDs, a fresh certificate each, registered in small
+batches, rotated on a schedule. What they *cannot* make disposable is their own routing — so the
+brand a victim sees is selected by the **URL path**:
+
+    host-a/<kit-x>/     host-b/<kit-x>/     host-c/<kit-y>/
+
+### Recognising it
+
+Any two of these mean you are probably looking at one estate, not several cases:
+
+- hostnames that carry **no semantics** (digits, random strings) while the *pages* impersonate
+  named brands — the meaning moved out of the name and into the path;
+- the **same path directory on hosts that share nothing else** — no registrant, no certificate, no
+  favicon, no ASN;
+- **one host serving several unrelated brands** at different paths (the mirror image, and equally
+  diagnostic — one back end, many storefronts);
+- host-level artifacts that are all *unique per host* while the page-level artifacts (DOM skeleton,
+  CSS, bundle hashes) are **identical**.
+
+### What it changes
+
+1. **The unit of investigation is `host + path`, not host.** Two paths on one host can be two
+   different kits with different victims, targets and takedown routes. Collapsing them to the host
+   averages away the distinction.
+2. **The kit directory is your best collection pivot**, because it is the artifact that survives
+   the rotation. Hunt it in the indexes that store full URLs — urlscan `page.url`, an `inurl:`
+   dork, FOFA, a Wayback CDX sweep across *any* host. That is how you find the next host **before**
+   it is reported.
+3. **Count hosts, not sightings.** One kit seen 40 times on one host is one host. The finding is
+   *N distinct hosts*, and N is what you report.
+
+### The limit — say it out loud
+
+🚫 **A shared kit directory is SAME-KIT evidence, not same-operator.** Two resellers of one
+purchased kit have the same directory names, exactly as two tenants of a white-label platform share
+its artifacts (§2). It is a strong lead and a legitimate pivot; it becomes attribution only when an
+**independent artifact class agrees** — registrant, hosting window, tracker, wallet, or the
+back-office evidence from §1.7.
+
+🚫 **And base-rate it first (§1 *Base-rate a CONFIGURATION*).** `/login`, `/assets`, `/api/v1`,
+`/wp-admin` are on every site alive. The tooling denylists them and emits nothing, but the
+discipline is yours: before you treat a path as a fingerprint, ask how many unrelated sites use
+that exact word. If the answer is "millions", it is a convention, not a campaign.
+
+Tools: `wp_paths.py analyze` / `patterns` (`url_paths` MCP tool) — and the raw capture
+(`wp_capture.py`, automatic with `--case`) is what lets you compare two hosts' actual DOM/JS/CSS
+bytes rather than two summaries of them.
+
+## 1.7 Leak-corpus analysis — read the logs, skim the dumps  ▢ TUNE
+
+Every other layer tells you what the operator **published**. The leak corpus (IntelX) tells you what
+**leaked out from behind it** — and one bucket in it is different in kind from all the others.
+
+### The two corpora are not the same evidence
+
+| | **Public breach dump** | **Infostealer log** |
+|---|---|---|
+| What one hit is | one site's user table — an address in a row | **one machine at one moment** |
+| What it proves | this address existed somewhere, some year | this **host** held these credentials on this **date** |
+| Freshness | recycled through combolists for years | dated to the infection |
+| What it reveals | nothing the address didn't already say | the **URL/user/password triple with session context**, cookies, autofill, and the machine's own identity |
+| Analytic use | **a date, and only a date** | **admin/panel URLs the public site never links** — and sometimes the operator's own box |
+
+So the order of work is fixed: **read the logs item by item; skim the dumps for the date and move
+on.** Inverting it is the classic way to spend an afternoon on a combolist and never open the one
+record that mattered. The tooling enforces this at the *retrieval* layer — `wp_intelx.search()`
+queries `leaks.logs` in its own pass before the general one, because IntelX returns a bounded page
+and the recycled rows will otherwise fill it (see WebPivot § *Intelligence X*).
+
+### Pivot the DOMAIN, not just the contacts
+
+A stealer log is indexed by **the URL the malware captured**. That makes the case domain a
+first-class selector: searching it returns *the machines that held credentials for it*. Three
+distinct products, in ascending order of value:
+
+1. **Victim machines** — customers phished by the site. Feeds §1.6 (dispersion, onset, demographics).
+2. **Non-public URLs** — `/admin`, `/panel`, the CMS path, a staging host. These are collection
+   targets the live site never links, and they date the build.
+3. **The operator's own machine.** Operators get infected too. A log whose host holds *the campaign's
+   panel credentials plus the registrar / CMS / hosting / exchange logins behind it* is **direct
+   attribution**, not exposure — the strongest single artifact this toolkit can surface.
+
+Search the **seed apex first**, then the operator's email, then discovered siblings. Recipe:
+`Workflows/StealerLog.md`.
+
+### Whose machine is this? — the only question that matters on a log item
+
+Judge each item; never judge the corpus. A machine is a **victim** when it holds credentials *for*
+the campaign's front-end alongside ordinary consumer accounts, and the geography/language matches
+the campaign's target market. It is the **operator's** when it holds the *back* of the operation —
+the admin panel, the registrar or hosting account the domains were bought through, the CMS login,
+a bulk-mail or SMS console, the exchange or payment account the money lands in — and typically the
+builder-side residue too: FTP/SFTP entries for the case hosts, a second unrelated scam's panel,
+and geography that matches the operator hypothesis rather than the victim market. Two or three of
+those together, on one host, is the finding.
+
+**Three failure modes to reject explicitly.**
+
+- 🚫 **Co-membership is never a link.** "Both selectors appear in the log corpus" is a statement
+  about millions of infected machines. `clustering_policy.never_cluster_on` includes `leaks.logs`
+  and it fails closed for exactly this reason. The **item** is evidence; the **corpus** is not.
+- 🚫 **A victim's machine is not the operator's.** A log holding a credential *for* the scam site
+  is the most common shape by far, and it is a victim artifact. Requiring the *back office* — not
+  the front end — is what separates the two.
+- 🚫 **Absence is only a finding if the logs pass ran.** A keyless run built the query and executed
+  nothing; a budget-capped run may have dropped the pass. Check `logs_pass` / `logs_coverage`
+  before writing "does not appear in any stealer log", and say which selectors were covered.
+
+### Handling — these are real victim credentials
+
+Cite the item's **metadata** (systemid, bucket, date, the host or URL that matched). **Never paste a
+password, cookie, token or session artifact into a case file, an assessment or a chat.** If a
+credential's *existence* is the finding, say that it exists and where it was seen — that is the
+whole evidentiary content. Victim identities go to the provider or to law enforcement, not into the
+operator assessment.
+
+▢ **Your thresholds:** _how many back-office artifacts on one host before you'll call it the
+operator's machine; whether you report victim-side findings separately; how stale a log can be
+before you stop treating its URLs as live collection targets._
 
 ## 2. Correlation & the same-* distinction  ▢ TUNE
 

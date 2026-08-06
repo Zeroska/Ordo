@@ -96,8 +96,12 @@
 \renewcommand{\thesubsubsection}{\arabic{section}.\arabic{subsection}.\arabic{subsubsection}}
 % Appendices switch to letters (Appendix A, B, ...). Pandoc has no \appendix hook,
 % so a report emits a raw-LaTeX \appendix before its first appendix heading.
+% \APPENDIXNAME is written into the generated defs.tex by render_report.py in the
+% report's language (--lang), so a Vietnamese deliverable reads "Phụ lục A".
+% Guarded: defs.tex always defines it, but a hand-rolled pandoc call might not.
+\providecommand{\APPENDIXNAME}{Appendix}
 \gappto\appendix{\renewcommand{\thesection}{\Alph{section}}%
-  \titleformat{\section}{\headingfont\Large\bfseries\color{slate}}{Appendix~\thesection}{0.6em}{}[{\color{grid}\titlerule[0.8pt]}]}
+  \titleformat{\section}{\headingfont\Large\bfseries\color{slate}}{\APPENDIXNAME~\thesection}{0.6em}{}[{\color{grid}\titlerule[0.8pt]}]}
 
 % Text-heavy tables must stay compact — shrink the font + padding inside every
 % table environment (pandoc pipe/grid tables become longtable or tabular).

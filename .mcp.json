@@ -2,7 +2,9 @@
   "mcpServers": {
     "intel": {
       "command": "./harness/mcp-server",
-      "args": []
+      "args": [],
+      "_comment_timeout": "IntelX phonebook/search can sit silent for tens of minutes waiting on the upstream API; without this the client aborts the tool call and the spent credits are lost.",
+      "timeout": 2700000
     }
   }
 }
