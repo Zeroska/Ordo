@@ -1,0 +1,106 @@
+' Shared editorial theme for the Ordo README diagrams.
+' Palette is copied from IntelGraph/scripts/theme.py and IntelReport/templates/house-header.tex,
+' so a diagram in the README, a figure in a report and a rendered case graph look like one system.
+' Included by every .puml here: !include _theme.puml
+
+!$ink   = "#1F1D1A"
+!$muted = "#6F6A61"
+!$steel = "#3B5566"
+!$slate = "#22333F"
+!$ochre = "#B0790F"
+!$brick = "#8C2D2D"
+!$grid  = "#D9D3C7"
+!$paper = "#FBFAF7"
+!$fill  = "#FFFFFF"
+
+skinparam backgroundColor $paper
+skinparam shadowing false
+skinparam defaultFontName "Helvetica Neue"
+skinparam defaultFontSize 13
+skinparam defaultTextAlignment center
+skinparam roundCorner 6
+skinparam ArrowColor $steel
+skinparam ArrowFontColor $muted
+skinparam ArrowFontSize 11
+
+skinparam rectangle {
+  BackgroundColor $fill
+  BorderColor $grid
+  FontColor $ink
+  BorderThickness 1.2
+}
+skinparam database {
+  BackgroundColor $fill
+  BorderColor $ochre
+  FontColor $ink
+}
+skinparam note {
+  BackgroundColor #FDF8EC
+  BorderColor $ochre
+  FontColor $ink
+  FontSize 11
+}
+skinparam activity {
+  BackgroundColor $fill
+  BorderColor $grid
+  FontColor $ink
+  DiamondBackgroundColor $fill
+  DiamondBorderColor $steel
+  DiamondFontColor $ink
+}
+skinparam partition {
+  BorderColor $grid
+  FontColor $slate
+}
+skinparam sequence {
+  ParticipantBackgroundColor $fill
+  ParticipantBorderColor $grid
+  ParticipantFontColor $ink
+  LifeLineBorderColor $grid
+  ArrowColor $steel
+  BoxBorderColor $grid
+  BoxFontColor $slate
+}
+
+' --- accent stereotypes -------------------------------------------------------
+' Inline styling (`rectangle "x" as X #fff;line:...`) does not parse in this
+' PlantUML build, so every accent is a STEREOTYPE defined once here. Use
+' <<seed>> / <<store>> / <<contract>> / <<driver>> / <<stop>> / <<refuse>>.
+skinparam rectangle<<seed>> {
+  BorderColor #3B5566
+  BorderThickness 2.4
+  BackgroundColor #FFFFFF
+}
+skinparam rectangle<<contract>> {
+  BorderColor #B0790F
+  BorderThickness 2
+  BackgroundColor #FDF8EC
+}
+skinparam rectangle<<store>> {
+  BorderColor #B0790F
+  BorderThickness 1.6
+  BackgroundColor #FDF8EC
+}
+skinparam rectangle<<driver>> {
+  BorderColor #6F6A61
+  BorderThickness 1.2
+  BackgroundColor #F4F2ED
+}
+skinparam rectangle<<stop>> {
+  BorderColor #B0790F
+  BorderThickness 2
+  BackgroundColor #FDF8EC
+}
+skinparam rectangle<<refuse>> {
+  BorderColor #8C2D2D
+  BorderThickness 1.8
+  BackgroundColor #FBF0EF
+}
+skinparam rectangle<<new>> {
+  BorderColor #1d857e
+  BorderThickness 2
+  BackgroundColor #F0F8F7
+}
+
+' The «stereotype» text is styling metadata, not content — keep the colour, drop the label.
+hide stereotype

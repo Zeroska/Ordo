@@ -1,0 +1,35 @@
+@startuml
+' TWO FRONT-ENDS, ONE TOOL SURFACE — and one policy point in front of every call.
+' What differs between the drivers is only where the REASONING comes from. The tools, the gate
+' and the case files are identical, which is why a case started in one can be finished in the other.
+!include _theme.puml
+skinparam nodesep 28
+skinparam ranksep 34
+
+package "DRIVERS — what supplies the reasoning" as D {
+  rectangle "**You, in Claude Code**\n<size:11>subscription</size>\n<size:11>you pick the next move</size>" as CC <<seed>>
+  rectangle "**orchestrator.py**\n<size:11>Agent SDK · headless · per-token</size>\n<size:11>phase prompts + pinned SKILL body</size>" as ORCH <<driver>>
+  rectangle "**intel.py loop**\n<size:11>no LLM at all</size>\n<size:11>fully deterministic</size>" as LOOP <<driver>>
+}
+
+rectangle "**mcp_server.py**\n<size:11>stdio MCP · auto-discovers every @tool</size>" as MCP
+rectangle "**SDK servers**\n<size:11>collect / analyze · allow-listed per phase</size>" as SDK
+
+rectangle "**harness/tools.py**\n<size:11>ONE typed surface · 34 @tool definitions</size>" as TOOLS <<contract>>
+
+rectangle "**audit.gate**  — the policy point\n<size:11>every tool call, on all three front-ends</size>\n<size:11>hostile egress · sandbox submission · credit budget</size>\n<size:11>a denial is returned to the CALLER so it adapts</size>" as GATE <<refuse>>
+
+rectangle "**The tools**\n<size:11>pivot_extract · analyze_artifact · url_paths · capture_evidence</size>\n<size:11>intelx_search · censys · kb_* · case_* · render_*</size>" as IMPL
+
+rectangle "**cases/<case>/**\n<size:11>raw · evidence · assessments · rounds.jsonl</size>\n<size:11>tool_calls.jsonl · run_cost.jsonl · **state.json**</size>" as CASE <<store>>
+
+CC --> MCP
+ORCH --> SDK
+MCP --> TOOLS
+SDK --> TOOLS
+TOOLS --> GATE
+LOOP --> GATE : direct calls
+GATE --> IMPL : allowed
+IMPL --> CASE : write
+CASE -[#6F6A61,dashed]-> D : **state.json** resumes\n<size:10>either driver</size>
+@enduml

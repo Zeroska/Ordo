@@ -1,0 +1,59 @@
+@startuml
+' THE CASE LOOP — expand the frontier until nothing new comes back.
+' Convergence is the stop condition; a depth/round cap is only a backstop, and hitting it is
+' reported as `awaiting-analyst`, never as done.
+!include _theme.puml
+
+start
+:**Collect the pending seeds**
+<size:11>free-only pivots -> zero API credits</size>;
+:**Ingest -> KB**
+<size:11>every artifact becomes a shared node</size>;
+:**Cluster · snapshot the round**
+<size:11>rounds.jsonl (append-only)</size>;
+
+:**Compute the FREE frontier**
+<size:11>new registrable apexes found for free this round:</size>
+<size:11>crt.sh SAN siblings · passive-DNS co-hosts · urlscan related</size>
+<size:11>CORS trusted origins · impersonation lookalikes · path-kit peers</size>;
+
+if (Co-tenancy guard) then (**shared infra**)
+  :**Held back — recorded as a LEAD**
+  multi-tenant cert (>4 apexes)
+  shared / CDN IP (>12 apexes)
+  bulk registrant term (>25 domains)
+  <size:11>A bad seed gets INGESTED and becomes a fake</size>
+  <size:11>shared indicator in every later case.</size>; <<#FBF0EF>>
+else (**operator-owned**)
+endif
+
+if (Metered pivot?\n<size:11>FOFA ip= / icon_hash= · WhoisXML reverse · Censys search</size>) then (**yes**)
+  :**Deferred to `metered_leads`**
+  <size:11>auto-chase FREE sources only;</size>
+  <size:11>pause before spending credits</size>; <<#FDF8EC>>
+else (**free**)
+endif
+
+:**Render the assessment**
+<size:11>gaps · next_pivots · metered_leads</size>
+<size:11>the analyst edits this to STEER the next round</size>;
+
+if (**Stop?**) then (last N rounds added\n0 hosts AND 0 indicators)
+  :**converged**; <<#F0F8F7>>
+  stop
+elseif (frontier empty) then ( )
+  :**cold**
+  <size:11>"the free search is exhausted" —</size>
+  <size:11>a CLAIM, never asserted from a failed probe</size>; <<#FDF8EC>>
+  stop
+elseif (round cap hit,\nwork still queued) then ( )
+  :**awaiting-analyst**
+  <size:11>a cap is not a finding</size>; <<#FDF8EC>>
+  stop
+else (**new seeds**)
+  :**NEXT ROUND**
+  <size:11>fold analyst-directed leads in FIRST,</size>
+  <size:11>then the mechanically-discovered ones</size>;
+  detach
+endif
+@enduml

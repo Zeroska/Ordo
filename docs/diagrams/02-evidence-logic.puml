@@ -1,0 +1,82 @@
+@startuml
+' THE CHAIN OF LOGIC — how one extracted artifact becomes (or fails to become) a claim.
+' This is the diagram that matters: every guard here exists because skipping it produces a
+' confident, wrong answer. Re-render: plantuml -tsvg -tpng docs/diagrams/*.puml
+!include _theme.puml
+skinparam ActivityDiamondFontSize 12
+
+start
+:**Artifact extracted**
+<size:11>favicon · tracker ID · TLS cert · JARM · wallet</size>
+<size:11>registrant · signing cert · URL-path kit · doc metadata</size>;
+
+if (**Base-rate it.** How many\nunrelated hosts carry this\nexact value?) then (**many**)
+  :**Convention, not campaign.**
+  Parked-page favicon, managed NS,
+  `/login`, a bundler filename,
+  a provider default banner.
+  <size:11>Recorded as a FACT. Never an edge.</size>; <<#FBF0EF>>
+  stop
+else (**few**)
+endif
+
+if (On a **noise denylist**?\n<size:11>registrar / privacy proxy / CDN range /</size>\n<size:11>generic label / role placeholder</size>) then (**yes**)
+  :**Shared infrastructure.**
+  It names other *customers*,
+  not an operator.
+  <size:11>Lead only — never auto-seeded.</size>; <<#FBF0EF>>
+  stop
+else (**no**)
+endif
+
+:**Becomes a KB node**
+<size:11>the host that carried it links to it</size>;
+
+if (How many **independent**\nartifact CLASSES do the\nhosts share?) then (**one**)
+  :**LEAD.**
+  A single shared node is a
+  lead, never proof.
+  <size:11>→ collect more, or say so out loud</size>; <<#FDF8EC>>
+  stop
+else (**two or more**)
+endif
+
+if (Is the shared thing the\n**operator's**, or the **kit's**?) then (kit / platform)
+  :**SAME-KIT.**
+  Shared template, white-label
+  platform, purchased kit,
+  malware family, path directory.
+  <size:11>Two resellers look identical here.</size>; <<#FDF8EC>>
+  stop
+else (operator-controlled)
+endif
+
+:**SAME-OPERATOR**
+<size:11>account tokens · registrant · payout wallet</size>
+<size:11>origin IP with overlapping hosting window</size>;
+
+if (**Temporal check** — did the\nshared value overlap in TIME?) then (no overlap)
+  :**Sequential tenancy.**
+  Same value, different eras =
+  two owners, not one.; <<#FDF8EC>>
+  stop
+else (overlaps)
+endif
+
+:**Adversarially verify**
+<size:11>try HARD to refute the link before committing it</size>;
+
+if (Survived?) then (**no**)
+  :**Rejected.**
+  Record the rejection —
+  a tested-and-dropped link is
+  worth as much as a kept one.; <<#FBF0EF>>
+  stop
+else (**yes**)
+endif
+
+:**Attributed claim + calibrated confidence**
+<size:11>ICD-203 estimative language · every dated fact cited</size>
+<size:11>to an ONLINE source, never a cases/ path</size>; <<#F0F8F7>>
+stop
+@enduml

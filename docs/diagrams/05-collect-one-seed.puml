@@ -1,0 +1,58 @@
+@startuml
+' WHAT ACTUALLY HAPPENS TO ONE SEED — the inside of a single pivot_extract call.
+' Read left to right as time. Everything before "Extract" exists so that a hostile, dead or
+' Cloudflare-fronted target still produces a verdict instead of silence.
+!include _theme.puml
+
+participant "**Recall**\n<size:10>have we seen it?</size>" as R
+participant "**Gate**\n<size:10>audit.gate</size>" as G
+participant "**Acquire**\n<size:10>escalate, then fall back</size>" as A
+participant "**Extract**\n<size:10>the Pivot Matrix</size>" as E
+participant "**Enrich**\n<size:10>keyed reverse lookups</size>" as N
+participant "**Persist**\n<size:10>cases/<case>/</size>" as P
+
+R -> R : search cases/*/raw/ across **every** case
+note right of R
+  A seed already collected returns CACHED —
+  the cheapest possible answer, and it tells you
+  the host is already in another case.
+end note
+
+R -> G : proceed?
+G -> G : hostile target, no passive mode, no proxy?
+note right of G #FBF0EF
+  **Refused.** Fetching a hostile host from your own IP
+  tells the operator they are under investigation.
+end note
+
+G -> A : allowed
+A -> A : direct GET
+A -> A : rotate-ua  ->  proxy  ->  render  ->  FlareSolverr
+A -> A : still cold? Wayback snapshot, then urlscan stored DOM
+note right of A
+  A cold seed never ends on silence: if every path fails,
+  fallback_probe returns PIVOTABLE (with surviving leads)
+  or NO-PIVOT-YET (with next steps).
+end note
+
+A -> E : DOM (live, rendered or archived)
+E -> E : favicon · trackers · wallets · Telegram · QR
+E -> E : TLS cert + **JARM** · CORS backends · mail/SPF/DMARC
+E -> E : keyless RDAP WHOIS · Wayback CDX timeline
+E -> E : own JS/CSS bundles, source maps, SPA routes
+E -> E : hosted PDFs/images -> /Info, XMP, EXIF
+E -> E : **URL path -> kit directory + template**
+E -> E : **raw capture** — DOM + every JS/CSS, hashed
+
+E -> N : artifacts
+N -> N : FOFA · urlscan · Censys · Shodan · WhoisXML reverse
+N -> N : **IntelX** — stealer-log pass FIRST, then general
+note right of N #FDF8EC
+  Every absent key is DECLARED. A keyless run
+  says what it could not query, so "nothing found"
+  is never mistaken for "nothing exists".
+end note
+
+N -> P : one JSON per host
+P -> P : raw/<host>.json · evidence/captures/ · tool_calls.jsonl
+@enduml

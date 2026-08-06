@@ -1,0 +1,40 @@
+@startuml
+' THE SKILL CHAIN — what each skill is for, and the one contract that makes them chain.
+' Re-render:  plantuml -tsvg -tpng docs/diagrams/*.puml
+' Conventions: styling is by STEREOTYPE (see _theme.puml) because inline `#fff;line:…` does not
+' parse in this PlantUML build; formatting tags are per-LINE, because a tag opened before a \n
+' leaks its closing tag into the rendered label.
+!include _theme.puml
+
+rectangle "**SEED**\n<size:11>domain · URL · IP · APK · installer</size>" as SEED <<seed>>
+
+package "COLLECT — pull what an operator cannot cheaply rotate" as COL {
+  rectangle "**WebPivot**\n<size:11>favicon · trackers · TLS + JARM</size>\n<size:11>WHOIS · wallets · CORS backends</size>\n<size:11>doc/EXIF metadata · leak selectors</size>\n<size:11>**URL path -> kit**  ·  **raw capture**</size>" as WP
+  rectangle "**BinaryPivot**\n<size:11>APK · exe · dmg · msi</size>\n<size:11>signing cert · package</size>\n<size:11>embedded C2 / backend hosts</size>" as BP
+}
+
+rectangle "**ONE JSON CONTRACT**\n<size:11>meta · artifacts · ranked pivots</size>" as CONTRACT <<contract>>
+
+rectangle "**Shared KB**\n<size:11>graph of SHARED artifacts</size>\n<size:11>entities · edges · evidence</size>" as KB <<store>>
+
+rectangle "**IntelAnalysis**\n<size:11>correlate · attribute · calibrate</size>\n<size:11>decide the next pivot</size>" as IA
+
+package "PUBLISH" as PUB {
+  rectangle "**IntelGraph**\n<size:11>network graph · timeline</size>" as IG
+  rectangle "**IntelReport**\n<size:11>PDF · DOCX · EN / VI</size>" as IR
+}
+
+rectangle "**IntelHarness**\n<size:11>drives the loop</size>" as IH <<driver>>
+
+SEED --> WP
+SEED --> BP
+WP --> CONTRACT
+BP --> CONTRACT
+CONTRACT --> KB : ingest
+KB --> IA : read facts
+IA --> IG
+IA --> IR
+IA -[#B0790F,dashed]-> COL : <b>next pivot</b>
+IH -[#6F6A61,dashed]-> COL
+IH -[#6F6A61,dashed]-> IA
+@enduml
