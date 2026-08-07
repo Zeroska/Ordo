@@ -133,7 +133,7 @@ def check():
     # catches that, and unlike a hardcoded count it does not rot as analysts extend a list.
     import wp_pivots, wp_analyze, wp_assets, wp_recon, wp_ippivot, wp_impersonate  # noqa: E401
     import wp_censys, wp_capabilities, wp_intelx, wp_docmeta                       # noqa: E401
-    import wp_paths, wp_capture                                                    # noqa: E401
+    import wp_paths, wp_capture, wp_serp                                           # noqa: E401
     import bp_anyrun                                                               # noqa: E401
     import whois_enrich, evidence_report                                           # noqa: E401
     import ingest_webpivot, hypothesize, ingest_report, noise_filters              # noqa: E401
@@ -202,6 +202,24 @@ def check():
         # indexed by, and therefore the only one that can name an infected machine.
         ("wp_intelx.SEARCH_PLAN", wp_intelx.SEARCH_PLAN,
          wp_intelx._INTELX_FALLBACK["search_plan"]),
+        # The advertising layer. On the fallback the parameter table knows 14 names instead of 37,
+        # so a click id it has not heard of stops being recognised as proof of a paid arrival and —
+        # worse — stops being stripped for the probe's PLAIN view, which then carries the ad
+        # parameters and silently compares the unlocked page against itself. `generic_values` is the
+        # base-rate control that keeps `utm_campaign=google` from becoming an operator fingerprint,
+        # and `clustering_policy` carries the agency threshold that stops a media buyer's account
+        # fusing a dozen unrelated clients into one operator.
+        ("wp_serp.AD_PARAMETERS", wp_serp.AD_PARAMETERS, wp_serp._SERP_FALLBACK["ad_parameters"]),
+        ("wp_serp.GENERIC_VALUES", wp_serp.GENERIC_VALUES, wp_serp._SERP_FALLBACK["generic_values"]),
+        # On the fallback the probe knows 10 anti-bot markers instead of 20, so a challenge wall it
+        # has not heard of is scored as a page — and two challenge interstitials differ from each
+        # other by design, which is a `divergent` verdict accusing a site of deliberate evasion.
+        ("wp_serp.CHALLENGE_MARKERS", wp_serp.CHALLENGE_MARKERS,
+         wp_serp._SERP_FALLBACK["challenge_markers"]),
+        ("wp_serp.CLUSTERING_POLICY", wp_serp.CLUSTERING_POLICY,
+         wp_serp._SERP_FALLBACK["clustering_policy"]),
+        ("wp_serp.REGIONS", wp_serp.REGIONS, wp_serp._SERP_FALLBACK["regions"]),
+        ("wp_serp.ENDPOINTS", wp_serp.ENDPOINTS, wp_serp._SERP_FALLBACK["endpoints"]),
         # ANY.RUN. On the fallback the observation-field map covers six kinds instead of ten and
         # the clustering policy is empty, so a shared malware FAMILY would be ungraded rather than
         # explicitly context-only — the exact same-kit/same-operator confusion this layer must not

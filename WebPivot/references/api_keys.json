@@ -49,7 +49,22 @@
         "free_fallback": "keyless RDAP (+ port-43 for ccTLDs like .vn) still fills registrar, registration/expiry/updated dates, name servers and domain status on EVERY domain, so the Domain Summary table is never blank",
         "signup": "https://whois.whoisxmlapi.com/"
       },
-      "INTELX_KEY": {
+      "SERPAPI_KEY": {
+       "service": "SerpApi (Google Ads Transparency Center + SERP)",
+       "aliases": [
+           "SERPAPI_API_KEY",
+           "SERP_API_KEY"
+       ],
+       "companion": [],
+       "metered": true,
+       "impact": "high",
+       "power_without_key": 55,
+       "unlocks": "the Google Ads Transparency Center: WHO ADVERTISES a domain — a Google-VERIFIED, paying advertiser account and the legal name its ads are 'funded by' — the REVERSE (every other domain that account advertised), opening a creative for `ad_funded_by` (the verified LEGAL ENTITY, more precise than the display name) plus the per-region markets the ad ran in and when each last ran — and, when the archive stores one, the creative's destination link with the operator's own utm/gclid tagging (often absent: text ads are commonly archived as a rendered image). The live SERP `ads` block is best-effort — Google serves it inconsistently to automated clients",
+       "without_it": "the advertising identity is unqueried. That costs an evidence class WHOIS privacy cannot hide and a re-skin cannot change — an operator does not re-verify a new ad account for each throwaway host — 'No advertiser found' in a keyless run means the archive was never asked. The CLOAKING PROBE is unaffected: it is plain HTTP to the target and always runs",
+       "free_fallback": "the adstransparency.google.com address for the domain and for any advertiser id (the same data, by hand, free), full classification of every ad parameter, and the click-keyed cloaking probe in full",
+       "signup": "https://serpapi.com/ (free tier: 100 searches/month)"
+   },
+   "INTELX_KEY": {
         "service": "Intelligence X",
         "aliases": ["INTELX_API_KEY", "INTELLIGENCEX_KEY"],
         "companion": ["INTELX_BASE_URL"],

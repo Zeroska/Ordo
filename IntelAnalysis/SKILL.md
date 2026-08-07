@@ -492,6 +492,94 @@ Tools: `wp_paths.py analyze` / `patterns` (`url_paths` MCP tool) — and the raw
 (`wp_capture.py`, automatic with `--case`) is what lets you compare two hosts' actual DOM/JS/CSS
 bytes rather than two summaries of them.
 
+## 1.67 Paid traffic — the advertiser is a payer, and the page may be lying to you  ▢ TUNE
+
+**If the operator buys ads, two things become available that no other layer gives you: an identity
+that was verified against documents, and a reason to distrust the page you just collected.**
+
+### The page you collected may be the decoy
+
+A kit that pays for clicks can gate on the arrival. Present the campaign's `utm` set and a `gclid`
+and it serves the scam; arrive without them — directly, from a crawler, from Google's own reviewer
+on an unexpected referrer — and it serves something harmless. **The collection does not fail. It
+succeeds on the wrong page**, and every artifact in the result — favicon, DOM skeleton, wallets,
+contacts — describes the decoy. This is the one failure mode in this skill where a *clean* result is
+the alarming one.
+
+Suspect it when the seed came from an **advertisement, a victim's browser history, a stealer log or
+a takedown report** (all of which carry the click parameters), when the page is **implausibly thin
+for a domain that is paying for traffic** (nobody buys clicks to a parked page), or when the page's
+own code contradicts what it renders — an `AW-` conversion id, an analytics container or a funnel
+route table sitting behind a "coming soon" screen.
+
+Read the probe's verdict literally:
+
+| Verdict | What it licenses you to say |
+|---|---|
+| `divergent` | **Click-keyed cloaking observed.** Re-collect from `unlock_url` and treat the earlier artifacts as void. The evasion itself is a finding — serving reviewers one page and victims another is deliberate, and it speaks to intent, not identity. |
+| `identical` | No click-keyed cloaking **on this URL, today**. It does not exclude cloaking keyed on geography, ASN, device, time or a server-validated click id — say which you tested. |
+| `dynamic` | An ordinary live page. Not a finding. |
+| `inconclusive_unstable` | The page differs between two *identical* requests, so nothing can be attributed to the click. Re-probe from a stable path or compare captured evidence bundles. **Never write this up as evasion.** |
+| `inconclusive` | A view could not be fetched, **or an anti-bot wall answered instead of the page** (`challenge_detected`). Neither view is what a victim sees, so nothing can be compared — and the wall is the *host's* defence, never the operator's evasion. Re-probe through a proxy. Silence is not exoneration. |
+
+### The advertiser is the strongest identity artifact here
+
+To spend money on Google the operator passed **identity verification**, and the Ads Transparency
+Center publishes the result — an `advertiser_id`, the legal name the ads are *funded by*, and the
+domains that account pointed at. Two consequences worth stating in an assessment:
+
+1. **It is a same-PAYER link, not a same-template one.** Money is harder to share than code. A
+   shared advertiser account outranks a shared favicon or a shared kit directory, because a second
+   operator cannot copy it off the first — they would have to be inside the billing.
+2. **It outlives the infrastructure.** Registrations, certificates and hosts rotate weekly; the ad
+   account does not, because re-verifying one is slow and the budget lives in the old one. When the
+   domain-level trail goes cold, this is often the only line still running.
+
+The *funded by* name is the under-used half: it is a name checked against documents, so it is the
+string to run through the corporate registry of the stated country and through reverse-WHOIS — one
+of the few places a real-world identity and the infrastructure can be made to meet.
+
+### The limits — say them out loud
+
+🚫 **An agency-shaped advertiser is not an operator.** A media buyer or affiliate network advertises
+for many unrelated clients from one account. When the account points at many distinct domains, what
+you have proven is that **one buyer bought traffic for all of them** — which may be a vendor, not a
+principal. The tooling drops those to leads at
+`serpapi.json → clustering_policy.agency_domain_threshold`; the judgement is still yours, and the
+tell is whether the domains form a coherent campaign (§2) or an unrelated portfolio.
+
+🚫 **A click id is never a pivot.** `gclid` / `fbclid` / `msclkid` are unique per click. They prove
+the visit was **paid traffic** and nothing about who.
+
+🚫 **`utm_source=google` is not a fingerprint** — base-rate it (§1). An operator-chosen
+`utm_campaign` is same-CAMPAIGN evidence, in the same class as a shared kit directory (§1.65).
+
+🚫 **Two domains bidding on the same keyword are competitors.** Co-appearance in a sponsored block
+is target-selection evidence about the brand being abused, never a link between the bidders.
+
+🚫 **A keyless run never queried the archive.** "No advertiser found" then means *nobody asked*.
+Check `meta.capability` before writing a negative.
+
+### What the archive reliably gives you, and what it does not
+
+Opening a creative reliably returns **`ad_funded_by`** — the legal entity, not the display name —
+and the **markets the ad ran in, each with its own last-shown date**. Use both: the entity name is
+the registry query, and the market list tells you who was being targeted and until when, which is
+dated evidence you can put on a timeline (§1.5).
+
+It does **not** reliably return the ad's destination URL — Google's archive commonly stores a text
+ad as a rendered image with no link — so do not build a plan around recovering the operator's own
+`utm` set that way. When you need the real parameters, take them from a URL you already hold: a
+takedown report, a victim's browser history, a stealer log (§1.7). The probe works without them.
+
+The live sponsored-block lookup is **best-effort**; Google withholds it from automated clients often
+enough that an empty result carries no information. Never write "nobody is advertising against this
+brand" from it.
+
+Tools: `wp_serp.py advertiser` / `creatives` / `cloak` / `serp` (`serp_ads` MCP tool), and
+`pivot_extract --serp --serp-region <market>` — the archive is queried **per region**, so a campaign
+aimed at one country returns nothing from the default.
+
 ## 1.7 Leak-corpus analysis — read the logs, skim the dumps  ▢ TUNE
 
 Every other layer tells you what the operator **published**. The leak corpus (IntelX) tells you what

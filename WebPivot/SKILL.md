@@ -1,6 +1,6 @@
 ---
 name: WebPivot
-description: Website content & DOM analysis for OSINT and cybercrime investigation — extracts pivot artifacts (favicon mmh3 hash, tracking/analytics IDs, crypto wallets, emails, contact phones, Telegram channels/invites, Google Doc/Sheet/Form/Drive IDs, footer postal address, page description, ETag, WHOIS registrant name/org/phone/email/dates, third-party infra, template/DOM fingerprints) from a page's HTML/DOM and produces ready-to-run pivot queries (Shodan, PublicWWW, crt.sh, urlscan, Validin, Chainabuse). USE WHEN analyze website, analyze HTML, analyze DOM, page analysis, find pivot, pivoting point, pivot artifact, favicon hash, tracking ID, analytics ID, GA GTM pixel, reverse analytics, phone number, telegram channel, google sheet, google form, footer address, whois registrant, cluster sites, campaign clustering, phishing kit, scam site, infrastructure link, source code search, who owns this site, related domains, threat infrastructure, impersonation domain, typosquat, typo domain, lookalike domain, spoofed domain, brand impersonation, TLD sweep, keyword hunt, domain permutation, homoglyph, combosquat, hunt lookalikes, search a selector in leaks, breach data, stealer logs, infostealer log, paste sites, darknet search, Intelligence X, IntelX, phonebook, find emails for a domain, emails under this domain, subdomain inventory, has this email leaked, where else has this phone number appeared, wallet in a paste, historical WHOIS snapshot.
+description: Website content & DOM analysis for OSINT and cybercrime investigation — extracts pivot artifacts (favicon mmh3 hash, tracking/analytics IDs, crypto wallets, emails, contact phones, Telegram channels/invites, Google Doc/Sheet/Form/Drive IDs, footer postal address, page description, ETag, WHOIS registrant name/org/phone/email/dates, third-party infra, template/DOM fingerprints) from a page's HTML/DOM and produces ready-to-run pivot queries (Shodan, PublicWWW, crt.sh, urlscan, Validin, Chainabuse). USE WHEN analyze website, analyze HTML, analyze DOM, page analysis, find pivot, pivoting point, pivot artifact, favicon hash, tracking ID, analytics ID, GA GTM pixel, reverse analytics, phone number, telegram channel, google sheet, google form, footer address, whois registrant, cluster sites, campaign clustering, phishing kit, scam site, infrastructure link, source code search, who owns this site, related domains, threat infrastructure, impersonation domain, typosquat, typo domain, lookalike domain, spoofed domain, brand impersonation, TLD sweep, keyword hunt, domain permutation, homoglyph, combosquat, hunt lookalikes, search a selector in leaks, breach data, stealer logs, infostealer log, paste sites, darknet search, Intelligence X, IntelX, phonebook, find emails for a domain, emails under this domain, subdomain inventory, has this email leaked, where else has this phone number appeared, wallet in a paste, historical WHOIS snapshot, google ads, who advertises this domain, ads transparency, advertiser id, ad account, malvertising, sponsored result, cloaking, cloaked landing page, the site looks empty, utm, gclid, ad click parameters, different page for ad traffic, decoy page, SerpApi, SERP ads.
 ---
 
 > **OPSEC — this skill is portable/shared. Never write case data into it.** No real operator
@@ -12,7 +12,7 @@ description: Website content & DOM analysis for OSINT and cybercrime investigati
 ## API keys — and the keyless disclosure rule (read before reporting any "nothing found")
 
 **Optional API keys enable live pivoting** (`URLSCAN_API_KEY`, `FOFA_KEY`/`FOFA_EMAIL`,
-`WHOISXML_API_KEY`, `PDNS_USERNAME`/`PDNS_PASSWORD`, `CENSYS_PAT`, `INTELX_KEY`, and for IPPivot `IPINFO_TOKEN` / `SHODAN_KEY`) —
+`WHOISXML_API_KEY`, `PDNS_USERNAME`/`PDNS_PASSWORD`, `CENSYS_PAT`, `INTELX_KEY`, `SERPAPI_KEY`, and for IPPivot `IPINFO_TOKEN` / `SHODAN_KEY`) —
 read from the environment first, then from the first `chmod 600` `.env` found: the invocation
 directory, the repo root, then a skill-local `.env`. **No keys → keyless mode: every tool still
 runs, nothing errors.** Full setup, what each key + urlscan-Pro unlocks, passive-DNS, and the
@@ -131,6 +131,7 @@ is unchanged whether or not you read it). **Exhaust both pivot modes.**
 | Live TLS cert | (auto, https) | SANs, `tls_cert:co_san` cross-apex link, `tls_cert:fingerprint_sha256` |
 | **Censys Platform** ⚠️ **100 credits/MONTH** | (auto with `CENSYS_PAT`) · off with `--no-censys` · `tools/wp_censys.py` · `censys` MCP tool | the **server-side** view FOFA/urlscan don't give. Every pivot gets a **CenQL query + a click-to-run `platform.censys.io` URL** built **offline, keyless, free**. With a key it also runs the three **lookup** endpoints — the only ones a **FREE Censys plan** can call: `cert <sha256>` → the certificate's own `names` (every hostname on that exact leaf cert — the cert stating its own coverage, not crt.sh's fuzzy overlap), `host <ip>` → ASN/WHOIS org + DNS names + ports + cert fingerprints (folded into IPPivot), `webproperty <host>` → cert/favicon/body-hash/software/threat labels (folded into domain enrichment). **`search` is Starter+** — on Free it degrades to `skipped` **plus the UI link that runs the same query**. **SPEND IT SPARINGLY — see the credit rule below.** Setup: `references/Setup.md` |
 | **Intelligence X** — leaks / stealer logs / pastes / darknet / historical WHOIS | queries **auto** on every pivot (keyless) · `--intelx` runs them live · `tools/wp_intelx.py` · `intelx_search` MCP tool | the only layer that reaches a corpus **outside the live internet**. Every email / phone / domain / IP / BTC pivot gets its **IntelX selector + a click-to-run `intelx.io` URL**, built **offline, keyless, free**; a domain also gets the **phonebook** link. With `INTELX_KEY` + `--intelx` it runs them: leak/stealer-log/paste/darknet/WHOIS-snapshot sightings per selector, and **phonebook(domain) → every email address, subdomain and URL** IntelX has seen under the apex (a *collection input*, not just evidence — feed the emails and subdomains straight back into `pivot_extract`). **STRONG SELECTORS ONLY** — a brand or person name is refused. The **domain and the email are pivoted first** (a stealer log is indexed by the URL it captured, so the case domain names the machines that held credentials for it), and the **stealer logs are QUERIED in their own pass before the general one** so a bounded page can't fill with recycled combolist rows — a stealer log is one machine at one moment (panel URLs, and sometimes the **operator's own box**), a breach dump is an address and a year. Neither is clusterable on its own; only `whois`/`pastes`/darknet hits may support a same-operator edge. Keyless = **~50% capability** — see below |
+| **Advertising — Google Ads Transparency + the cloaking probe** | `--serp` / `--serp-region` (metered) · `--ad-params` · `--cloak-probe` / `--no-cloak-probe` (FREE, auto on ad evidence) · `tools/wp_serp.py` · `serp_ads` MCP tool | reads what the operator **BOUGHT**, not what they provisioned. `ads:advertiser_id` is a Google-**VERIFIED, paying** account — an identity WHOIS privacy cannot hide and a re-skin cannot change — plus the `ads:advertiser` legal name it is *funded by* (run it through a corporate registry / reverse-WHOIS), and the **reverse**: every other domain that account advertised (**same-PAYER**, HIGH; downgraded to leads when the account is agency-shaped). Opening a creative adds `ad_funded_by` (the verified legal entity) + the dated per-region markets. `ads:campaignid` / `adgroupid` / `creative` are object ids inside ONE ad account. **The cloaking probe is free and needs no key**: many fraud landing pages serve the real scam ONLY to arrivals carrying the right `utm`/`gclid` and show everyone else a decoy — the probe fetches the page as a plain visitor, as a paid ad click and as a control, and on `divergent` the run **re-points at the click view** and collects the real page. 🚫 A click id is never a pivot; `dynamic`/`inconclusive_unstable` are never cloaking. Keyless **~55%** |
 | CORS backend probe | (auto, primary page) | foreign-Origin GET+preflight → `cors_allowed_origin` backend/sibling hosts the HTML never names |
 | Mail intel | (auto, `dig`) | MX provider / `m365_tenant` / custom `mail_server`, SPF `include`/sender-IP, DMARC contacts |
 | CT / SSL search | (auto) | crt.sh + Shodan CTL merged, resilient, wildcard-aware, SAN siblings |
@@ -233,6 +234,91 @@ cases/<case>/evidence/captures/<host>/<kit>/<UTC>/
   allowance, third-party CDN libs a small one. Anything dropped is listed in `skipped_for_budget`
   and the manifest is stamped `INCOMPLETE` — **read that before treating a bundle as the whole
   page.** Tune in `references/capture.json`; `--no-capture` / `--no-capture-third-party` to narrow.
+
+### ⭐ The ADVERTISING layer — who PAID for the traffic, and what the page shows *them*
+
+Every other pivot here reads something the operator **provisioned**. This one reads what they
+**bought**, and that changes two things.
+
+**1. A Google advertiser is a verified, paying identity.** Google will not take the money without
+identity verification, and the **Ads Transparency Center publishes the result**: a stable
+`advertiser_id`, the legal name the ads are *"funded by"*, and every creative that account ran with
+the domain each one pointed at. So a domain whose WHOIS is behind privacy and whose host is a week
+old can still carry a KYC'd identity — and it **survives domain rotation**, because nobody
+re-verifies a fresh ad account for each throwaway host. Reverse the `advertiser_id` and you get the
+operator's other landing domains, often before they are reported anywhere.
+
+**2. A page that buys traffic frequently only shows its real self to that traffic.** The kit gates
+on the arrival: present a `gclid` and the campaign's `utm` set and it serves the scam; arrive
+without them — directly, from a crawler, from Google's own reviewer — and it serves a **decoy**. The
+run does not fail, which is the danger: it *succeeds on the wrong page*, and "no scam content found"
+gets written down as a finding.
+
+```bash
+python3 "$WP/tools/wp_serp.py" advertiser scam-site.example --region VN --details 1
+python3 "$WP/tools/wp_serp.py" creatives AR00000000000000000001     # reverse → their other domains
+python3 "$WP/tools/wp_serp.py" cloak "https://scam-site.example/" --ad-params 'utm_campaign=vn_q3&gclid=E1'
+python3 "$WP/tools/wp_serp.py" serp "brand keyword" --gl vn         # who is buying it now (best-effort)
+python3 "$WP/tools/wp_serp.py" budget                               # searches left this month
+# in the pipeline:
+python3 "$WP/tools/pivot_extract.py" "https://scam-site.example/" --case <case> --serp --serp-region VN
+```
+
+- **The cloaking probe is FREE and runs automatically** whenever there is advertising evidence (an
+  `AW-` conversion id, an `ads.txt`, ad parameters on the URL) — three requests to the target, no
+  API credit. It fetches the page **as a plain visitor**, **as a paid ad click** (parameters + a
+  Google `Referer` + cross-site fetch metadata), and **as a plain visitor again, as a control**.
+  On `divergent` the run **switches to the click view and collects that instead**, and says so.
+  Force with `--cloak-probe`, disable with `--no-cloak-probe`.
+- 🚫 **An anti-bot wall is not a page.** If either view comes back as a Cloudflare/DataDome/CAPTCHA
+  interstitial the verdict is `inconclusive` — two challenge pages differ from each other by design
+  (nonces, padding), and scoring them would report the *bot wall* as the operator's evasion, on
+  exactly the hostile infrastructure where that finding would be believed hardest. Re-probe through
+  a residential `--proxy`, or `--solve-cf` and pass the resulting URL to `wp_serp.py cloak`. Markers
+  are tunable in `references/serpapi.json → challenge_markers`.
+- 🚫 **A length difference alone is never cloaking.** Bytes change for nonces, padding and inlined
+  tokens; the question is whether the *visible text* changed. Length only corroborates a difference
+  that the title, host, status or text-similarity check already found.
+- 🚫 **`dynamic` and `inconclusive_unstable` are NOT cloaking.** Every live page differs a little
+  between two fetches (session ids, CSRF tokens, rotating banners). The control fetch is the
+  falsification step: if the plain view also differs from *itself*, the verdict is
+  `inconclusive_unstable` and **nothing is attributed to the click**. Reporting an unstable CMS as
+  deliberate evasion is an accusation, and this layer refuses to make it on one observation.
+- **`--details 1` opens a creative and names the payer precisely**: `ad_funded_by` is the **legal
+  entity** Google verified (`<Brand> B.V.` rather than `<Brand>`), and the response carries the
+  **per-region markets** the ad ran in with a last-shown date each — dated target-selection
+  evidence, and the answer to which `--serp-region` to query next. ⚠️ The creative's **destination
+  link is a bonus, not a plan**: Google's archive commonly stores a text ad as a rendered image with
+  no URL, and the tool says so (`no_link_note`) rather than looking broken. When a link *is*
+  returned, its `utm` set is the operator's own cloaking key — feed it back with `--ad-params`.
+  Otherwise the reliable sources for real ad parameters are a URL you already hold (report, victim's
+  browser history, stealer log) or the probe's synthetic profile.
+- **`ads:advertiser_id` is same-PAYER evidence at HIGH** — money is harder to share than code. The
+  KB edge is `advertised_by` and every co-advertised domain hangs off the same indicator, so they
+  cluster automatically. 🚫 **Unless the account is agency-shaped**: past
+  `clustering_policy.agency_domain_threshold` distinct target domains it is a media buyer or
+  affiliate network *buying traffic for others*, the confidence drops to a lead, and the ingest
+  keeps its clients as **facts, not edges**. Same discipline as a white-label platform artifact.
+- **`ads:advertiser` (the funded-by name) is worth as much as the id** and is easy to under-use: it
+  is a name Google **verified against documents**, so it is the string to run through a corporate
+  registry and through reverse-WHOIS — where a real-world identity and the infrastructure meet.
+- **`ads:campaignid` / `adgroupid` / `creative`** are ValueTrack object ids allocated *inside one ad
+  account*, so the same value under the same parameter name on another domain means **one account
+  paid for both**. Medium — they are short integers.
+- 🚫 **A click id is never a pivot.** `gclid` / `fbclid` / `msclkid` values are unique per click; they
+  prove the visit was **paid traffic** (`ads:paid_arrival`, informational) and nothing more.
+  `utm_*` values stay owned by the `affiliate:*` pivots — this layer does not duplicate them.
+- 🚫 **Two domains bidding on the same keyword are competitors**, never an operator link. And the
+  `serp` mode is **best-effort**: Google serves the sponsored block inconsistently to automated
+  clients (live testing saw it absent even for high-commercial-intent queries), so an empty result
+  sets `ads_block_present: false` and is a fact about the *response* — never the finding "nobody
+  advertises against this brand". The Ads Transparency archive is the reliable path.
+- **Metered, capped, and honest keyless.** One SerpApi search per call, capped per run and per month
+  from the same ledger (`references/serpapi.json → search_budget`), skipped under `--free-only`.
+  With no `SERPAPI_KEY` the layer runs at **~55%**: the cloaking probe in full, every parameter
+  classified, and the free `adstransparency.google.com` address for the domain and for any
+  advertiser id — but the archive is **never queried**, so *"no advertiser found" means "never
+  asked"* and must not be reported as a finding.
 
 ### Intelligence X — the leak / paste / darknet selector layer (**keyless ≈ 50% of it**)
 
@@ -408,6 +494,7 @@ and which direction is the safe one to be wrong in; every group has its own `_co
 | `references/url_paths.json` | A path segment produced a bad cluster — add it to **`generic_segments`**, the base-rate control that decides what is never a kit. Also: `variable_patterns` (an operator is randomising a segment you keep clustering on), `locale_segments`, `asset_extensions` (a filename is being read as a kit), `kit_thresholds.min_hosts_for_pattern` (how many hosts before a repeated kit is called a pattern) |
 | `references/capture.json` | A capture is truncating what you need — raise `budgets` (`same_site_total_bytes`, `max_assets`, `max_asset_bytes`). Also `capture_kinds` to start capturing images/fonts, and `layout` to change where bundles land |
 | `references/intelx.json` | IntelX added a bucket you need graded, an artifact kind should (or should not) get an IntelX selector (`pivot_kind_map`), a real-world value is being misclassified (`selector_types`), or — most important — a bucket is on the wrong side of **`clustering_policy`**: `cluster_on` may support an operator edge, `never_cluster_on` (every breach corpus and stealer log) may not. **`search_plan`** owns the retrieval order: `first_pass_buckets` (the stealer logs, queried before anything else so the breach corpora can't fill the page), `general_pass` (set false on a tight allowance to buy log coverage on twice as many selectors), and `selector_priority` (domain and email first). **`search_budget` is the spend guard** |
+| `references/serpapi.json` | An advertising artifact produced a bad link or a missed one. **`generic_values`** is the base-rate control (`utm_campaign=google` must never be a fingerprint); **`clustering_policy.agency_domain_threshold`** decides when an advertiser is a media buyer rather than an operator; **`ad_parameters`** adds a click id / ValueTrack macro the tool does not know yet; **`cloaking_probe`** tunes how different two views must be before it is called cloaking (raise `min_similarity` if a busy CMS keeps reading as divergent); **`probe_params` / `probe_headers`** are what the probe sends to look like a paid click; **`search_budget`** is the spend guard |
 | `references/api_keys.json` | a new optional key exists, a provider changed what a tier includes, or the keyless banner overstates/understates what an absent key costs — this is what `wp_capabilities.py` prints and what `meta.capability` records |
 | `references/cdn_ranges.json` | **never by hand** — generated cache; rerun `python3 tools/cdn_ranges.py --refresh` |
 

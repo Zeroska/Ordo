@@ -381,6 +381,105 @@ def _ingest_paths(kb, d, meta, host, observed, ev):
     return n
 
 
+def _ingest_ads(kb, d, meta, host, observed, ev):
+    """The ADVERTISING layer as clustering indicators — `ads_advertiser:<AR…>`, `ads_campaign:<id>`.
+
+    An advertiser id is the only artifact in this collector that identifies a PAYER. To run Google
+    ads the operator passed identity verification and put a card on file, so `ads_advertiser:` is a
+    verified, billed account — and unlike a favicon or a template, it is not something a second
+    operator can copy off the first. Every domain that account advertised gets an edge to the same
+    indicator, which is what makes them cluster.
+
+    Two guards, both of which fail toward LOSING a link rather than inventing one:
+
+      - `agency_shaped` (from `clustering_policy.agency_domain_threshold`) marks an advertiser whose
+        creatives point at many unrelated domains. That is a media buyer or affiliate network buying
+        traffic FOR others, and fusing its clients into one operator would be the same mistake as
+        clustering on a shared white-label platform. Those co-advertised domains are recorded as
+        FACTS on the indicator, never as edges, so they stay visible as leads without joining a
+        cluster.
+      - the campaign OBJECT ids (`campaignid`/`adgroupid`/`creative`) are short integers, so they get
+        the medium weight their base rate deserves.
+
+    Cloaking is deliberately NOT an indicator. It is a property of one page — this host serves paid
+    clicks a different page than everyone else — so it lands as a high-confidence FACT on the domain.
+    It is evidence of intent, not of identity, and an indicator would cluster every cloaking site on
+    the internet into one operator."""
+    n = 0
+    adv_block = d.get("advertising") or {}
+    for adv in adv_block.get("advertisers") or []:
+        aid = (adv.get("advertiser_id") or "").strip()
+        if not aid:
+            continue
+        agency = bool(adv.get("agency_shaped"))
+        ind = f"ads_advertiser:{aid}"
+        kb.touch("indicator", ind, observed)
+        kb.add_fact("indicator", ind, "kind", "google_ads_advertiser", "webpivot", COLLECTOR,
+                    observed, "high", ev)
+        if adv.get("advertiser"):
+            # The verified legal name — the string that takes this out of infrastructure and into a
+            # corporate registry. Kept on the indicator so every domain in the cluster inherits it.
+            kb.add_fact("indicator", ind, "funded_by", adv["advertiser"], "webpivot", COLLECTOR,
+                        observed, "high", ev)
+        for k in ("first_shown", "last_shown"):
+            if adv.get(k):
+                kb.add_fact("indicator", ind, k, adv[k], "webpivot", COLLECTOR, observed,
+                            "medium", ev)
+        kb.add_edge("domain", host, "advertised_by", "indicator", ind, "webpivot", COLLECTOR,
+                    observed, "medium" if agency else "high", ev)
+        n += 1
+        if agency:
+            kb.add_fact("indicator", ind, "agency_shaped",
+                        adv.get("agency_note") or "many unrelated target domains", "webpivot",
+                        COLLECTOR, observed, "high", ev)
+        for peer in adv.get("target_domains") or []:
+            peer = _norm_domain(peer)
+            if not peer or peer == host or _is_ip_host(peer):
+                continue
+            if agency:
+                kb.add_fact("indicator", ind, "co_advertised", peer, "webpivot", COLLECTOR,
+                            observed, "low", ev)
+            else:
+                kb.touch("domain", peer, observed)
+                kb.add_edge("domain", peer, "advertised_by", "indicator", ind, "webpivot",
+                            COLLECTOR, observed, "medium", ev)
+            n += 1
+
+    # Campaign object ids come through as pivots (`ads:campaignid` and friends) rather than as a
+    # block, because they are read off the URL and exist even when no key resolved an advertiser.
+    for piv in d.get("pivots") or []:
+        # str(): a pivot value is not always a string (favicon_hash is an int), and this loop sees
+        # every pivot before it filters down to the `ads:` ones.
+        kind, val = (piv.get("kind") or ""), str(piv.get("value") or "").strip()
+        if not val or not kind.startswith("ads:") or kind in ("ads:paid_arrival", "ads:cloaking",
+                                                              "ads:advertiser", "ads:advertiser_id",
+                                                              "ads:co_advertised_domain"):
+            continue
+        ind = f"ads_campaign:{kind.split(':', 1)[1]}={val}"
+        kb.touch("indicator", ind, observed)
+        kb.add_fact("indicator", ind, "kind", "google_ads_campaign_object", "webpivot", COLLECTOR,
+                    observed, "medium", ev)
+        kb.add_edge("domain", host, "ran_campaign", "indicator", ind, "webpivot", COLLECTOR,
+                    observed, "medium", ev)
+        n += 1
+
+    cloak = (meta.get("cloaking") or {})
+    if cloak.get("verdict") == "divergent":
+        kb.add_fact("domain", host, "cloaking", "click_keyed: serves paid-click traffic different "
+                    "content than plain visitors", "webpivot", COLLECTOR, observed, "high", ev)
+        if cloak.get("unlock_url"):
+            kb.add_fact("domain", host, "cloaking_unlock_url", cloak["unlock_url"], "webpivot",
+                        COLLECTOR, observed, "high", ev)
+        n += 1
+    elif cloak.get("verdict") in ("dynamic", "identical"):
+        # Recorded so a later reader knows the probe RAN and what it found — an absent fact and a
+        # negative result must not look the same.
+        kb.add_fact("domain", host, "cloaking_probe", cloak["verdict"], "webpivot", COLLECTOR,
+                    observed, "medium", ev)
+        n += 1
+    return n
+
+
 def _ingest_impersonation(kb, d, meta, host, observed, day):
     """Ingest an ImpersonationHunt result (meta.kind=='impersonation'). The seed's brand keyword
     becomes an `indicator brand:<label>`; the seed and every CONFIRMED lookalike get an edge to it,
@@ -440,6 +539,10 @@ def ingest_file(kb, path):
     # URL-path kit FIRST: on a path-routed estate this is the only edge that survives the host
     # rotation, so it must land even if the rest of the page yielded nothing clusterable.
     n += _ingest_paths(kb, d, meta, host, observed, ev)
+    # The advertising layer next, for the same reason: an advertiser account is the one artifact
+    # here that identifies a PAYER rather than a configuration, and it survives the re-skin that
+    # invalidates the favicon and DOM facts collected below.
+    n += _ingest_ads(kb, d, meta, host, observed, ev)
     if art.get("title"):
         kb.add_fact("domain", host, "title", art["title"], "webpivot", COLLECTOR, observed, "high", ev)
         n += 1

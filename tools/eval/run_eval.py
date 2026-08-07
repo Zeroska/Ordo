@@ -248,6 +248,9 @@ def main():
         ("test_tool_gate", "tool-call gate — hostile egress blocked above the tools, submission "
                            "needs approval, credit budget, ledger, all 3 front-ends, hand-back"),
         ("test_timeline", "temporal layer — format parsing / overlap vs shared value / expiry cohort / online citations"),
+        ("test_serp", "advertising layer — ad-parameter base rates (a click id is never a pivot), "
+                      "the agency threshold, and the cloaking probe's falsification control "
+                      "(an unstable page is never reported as evasion)"),
     ]
     # tests/ modules follow the same check() contract; make them importable here too.
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HERE)), "tests"))

@@ -1253,6 +1253,74 @@ async def url_paths(args: dict[str, Any]) -> dict[str, Any]:
 
 
 @tool(
+    "serp_ads",
+    "THE ADVERTISING LAYER — who PAID to send traffic to this domain, and whether the page shows "
+    "those visitors something different from what it shows you. Use it whenever a target buys "
+    "traffic: an `AW-` conversion id in the page, an ads.txt, a URL carrying a gclid/utm set, a "
+    "victim who says they clicked an ad, or a brand you suspect is being impersonated in search "
+    "results. Modes: "
+    "**advertiser** (default, needs `target`=domain) — the Google Ads Transparency Center, which "
+    "publishes a VERIFIED, paying advertiser account for the domain plus the legal name its ads are "
+    "'funded by'. That identity survives WHOIS privacy and domain rotation, because nobody "
+    "re-verifies a fresh ad account for each throwaway host. "
+    "**creatives** (`target`=an AR… advertiser id) — the reverse, and the reason to be here: every "
+    "OTHER domain that account advertised. Same-PAYER evidence, stronger than a shared template — "
+    "unless the advertiser is agency-shaped (many unrelated domains), which the result flags, and "
+    "then the co-advertised domains are leads, not operator links. "
+    "**serp** (`target`=a keyword) — who is buying that keyword right now, in market `gl`. "
+    "BEST-EFFORT: Google serves the sponsored block inconsistently to automated clients, so an empty "
+    "result means the response carried no ads block, NEVER 'nobody advertises this keyword'. Two "
+    "domains bidding on one keyword are competitors, NEVER an operator link. "
+    "**cloak** (`target`=a URL) — FREE, no API credit: fetch the page as a plain visitor, as a paid "
+    "ad click, and once more as a control, then compare. Many fraud landing pages serve the real "
+    "scam ONLY to traffic carrying the right utm/gclid and show everyone else a decoy, so a "
+    "collection of the bare domain describes the decoy and its 'nothing found' is worthless. A "
+    "`divergent` verdict returns the `unlock_url` — re-run pivot_extract on THAT. Pass the ad's own "
+    "parameters in `ad_params` (a landing URL or 'k=v&k=v') when you have them; the advertiser mode "
+    "sometimes recovers them from a creative, but the archive often stores a text ad as an image "
+    "with no URL — that is normal. Verdicts `dynamic` / `inconclusive_unstable` are NOT "
+    "cloaking — do not report them as evasion. "
+    "**params** (`target`=a URL) — offline classification of the advertising parameters. "
+    "METERED except cloak/params (1 SerpApi search per call, capped per run). Keyless it still runs "
+    "at ~55%: the cloaking probe in full plus the free adstransparency.google.com address — say so "
+    "rather than reporting an unqueried archive as 'the domain does not advertise'.",
+    {"target": str},  # mode:'advertiser'|'creatives'|'serp'|'cloak'|'params', region:str,
+                      # ad_params:str, gl:str, hl:str, details:int -> args.get()
+    annotations=READONLY,
+)
+async def serp_ads(args: dict[str, Any]) -> dict[str, Any]:
+    script = os.path.join("WebPivot", "tools", "wp_serp.py")
+    mode = str(args.get("mode") or "advertiser").lower()
+    target = str(args["target"]).strip()
+    if mode in ("cloak", "cloaking"):
+        cmd = [PY, script, "cloak", target]
+        if args.get("ad_params"):
+            cmd += ["--ad-params", str(args["ad_params"])]
+    elif mode == "params":
+        cmd = [PY, script, "params", target]
+    elif mode == "serp":
+        cmd = [PY, script, "serp", target]
+        for flag in ("gl", "hl"):
+            if args.get(flag):
+                cmd += [f"--{flag}", str(args[flag])]
+    else:
+        cmd = [PY, script, "creatives" if target.upper().startswith("AR") else "advertiser", target]
+        if args.get("region"):
+            cmd += ["--region", str(args["region"])]
+        if args.get("details"):
+            cmd += ["--details", str(int(args["details"]))]
+    r = _run(cmd, timeout=240)
+    body = (r.stdout or "") + ("\n" + r.stderr if r.stderr else "")
+    if r.returncode != 0 and not r.stdout:
+        # Keyless is a documented path, not a failure: returning it as an error teaches the model to
+        # stop asking, and the free UI address in the stderr block is the actual deliverable.
+        return _ok(body + "\n\n(Keyless/limited SerpApi: the Ads Transparency archive was NOT "
+                          "queried. Do NOT report this as 'the domain does not advertise' — open "
+                          "the adstransparency.google.com URL above by hand.)")
+    return _ok(body)
+
+
+@tool(
     "capture_evidence",
     "STORE THE RAW BYTES the host served — the DOM plus every JavaScript and stylesheet the page "
     "loaded, each with its own sha256, under cases/<case>/evidence/captures/<host>/<kit>/<UTC>/ with "
@@ -1410,7 +1478,7 @@ COLLECT_SERVER = create_sdk_mcp_server(
     "collect", tools=[pivot_extract, doc_metadata, analyze_artifact, fallback_probe,
                       impersonation_hunt, search_pivot, censys, intelx_search,
                       anyrun_lookup, anyrun_submit, capability_check,
-                      url_paths, capture_evidence, kb_ingest])
+                      url_paths, capture_evidence, serp_ads, kb_ingest])
 ANALYZE_SERVER = create_sdk_mcp_server(
     "analyze", tools=[kb_cluster, kb_entity, kb_query_shared, risk_signals,
                       reverse_whois, cert_overlap, reference_check, reference_add,
@@ -1426,6 +1494,7 @@ COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__doc_metadata",
                  "mcp__collect__anyrun_lookup", "mcp__collect__anyrun_submit",
                  "mcp__collect__capability_check",
                  "mcp__collect__url_paths", "mcp__collect__capture_evidence",
+                 "mcp__collect__serp_ads",
                  "mcp__collect__kb_ingest"]
 ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__kb_query_shared", "mcp__analyze__risk_signals",
