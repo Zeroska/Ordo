@@ -162,6 +162,16 @@ _CTX_FALLBACK = {
 }
 _CTX = _load_ref(_ref_path(__file__, "context_budget.json"), _CTX_FALLBACK)
 
+# The OPTIONAL parameters each handler reads via args.get(). They are not in the `@tool` schema
+# (which lists only the required ones), so before this they existed nowhere the model could see —
+# only inside the description prose. Strong models infer them; mid-size open-weight models mostly
+# do not, and the miss is expensive rather than loud: no `passive=true` on a hostile run means the
+# gate denies the call and the run burns turns. Attached to the tool objects below and read by
+# BOTH schema builders (mcp_server._input_schema, openai_backend._params_schema).
+_PARAMS_FALLBACK = {"optional_params": {}}
+OPTIONAL_PARAMS = _load_ref(_ref_path(__file__, "tool_params.json"),
+                            _PARAMS_FALLBACK)["optional_params"]
+
 RESULT_BUDGET = dict(_CTX["result_budget"])
 LARGE_RESULT_TOOLS = set(_CTX["large_result_tools"])
 TRANSCRIPT_BUDGET = dict(_CTX["transcript_budget"])
@@ -1693,6 +1703,12 @@ async def anyrun_submit(args: dict[str, Any]) -> dict[str, Any]:
 for _t in list(globals().values()):
     if hasattr(_t, "handler") and hasattr(_t, "name") and hasattr(_t, "input_schema"):
         _governed(_t)
+        # Same sweep, same reason: attach the declared optional params so every front-end's
+        # schema builder can show them. A tool with none simply gets {}.
+        try:
+            _t.optional_schema = dict(OPTIONAL_PARAMS.get(_t.name) or {})
+        except Exception:  # noqa: BLE001 — an immutable tool object still works, just without them
+            pass
 
 COLLECT_SERVER = create_sdk_mcp_server(
     "collect", tools=[pivot_extract, doc_metadata, analyze_artifact, fallback_probe,

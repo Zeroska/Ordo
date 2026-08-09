@@ -59,17 +59,35 @@ TOOLS = {
 _JSON_TYPE = {str: "string", int: "integer", float: "number", bool: "boolean"}
 
 
-def _input_schema(sdk_schema: dict) -> dict:
-    """Convert tools.py's `{param: python_type}` into a JSON Schema object. The declared params are
-    required (matching how the SDK treated them); optional args (documented in each description —
-    force/passive/proxy/max_domains/case/note) still pass through via additionalProperties."""
+def _input_schema(sdk_schema: dict, optional: dict | None = None) -> dict:
+    """Convert tools.py's `{param: python_type}` into a JSON Schema object.
+
+    The declared params are REQUIRED (matching how the SDK treated them). `optional` carries the
+    documented-but-undeclared arguments from references/tool_params.json — passive, free_only,
+    mode, max_domains and the rest — as real properties with types, one-line descriptions and, for
+    the fixed-value ones, an `enum`. They used to live only in the description paragraph, which a
+    strong model reads reliably and a mid-size open-weight model largely does not; a model that
+    cannot see `mode` accepts exactly six values invents a seventh. additionalProperties stays true
+    so an argument not yet declared here still passes through."""
     props = {k: {"type": _JSON_TYPE.get(v, "string")} for k, v in (sdk_schema or {}).items()}
+    required = list(props.keys())
+    for name, spec in (optional or {}).items():
+        extra = {k: v for k, v in spec.items() if k in ("type", "description", "enum")}
+        if name in props:
+            # A REQUIRED param keeps its declared type but still gains the description and the
+            # `enum` — censys.mode is required and accepts exactly six values, and without the
+            # enum a model sends a seventh. Required-ness is never changed here.
+            extra.pop("type", None)
+            props[name].update(extra)
+        else:
+            props[name] = extra
     return {"type": "object", "properties": props,
-            "required": list(props.keys()), "additionalProperties": True}
+            "required": required, "additionalProperties": True}
 
 
 def _list_tools() -> list[dict]:
-    return [{"name": t.name, "description": t.description, "inputSchema": _input_schema(t.input_schema)}
+    return [{"name": t.name, "description": t.description,
+             "inputSchema": _input_schema(t.input_schema, getattr(t, "optional_schema", None))}
             for t in TOOLS.values()]
 
 

@@ -276,6 +276,9 @@ def main():
         ("test_context_budget", "context management — every tool's output governed by name with "
                                 "head+tail kept and the cut ANNOUNCED, and the shim's transcript "
                                 "trimmed by whole rounds so tool-call pairing survives"),
+        ("test_openai_backend", "open-weight backend (Kimi/DeepSeek/local) — the tool loop driven "
+                                "against a stubbed endpoint, optional params + enums reaching the "
+                                "schema, and a denied call returning as output not an exception"),
     ]
     # tests/ modules follow the same check() contract; make them importable here too.
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HERE)), "tests"))

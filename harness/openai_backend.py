@@ -257,12 +257,30 @@ _SESSIONS: dict[str, list] = {}   # session_id -> message list (in-process resum
 EMIT_NAME = "emit_result"
 
 
-def _params_schema(input_schema: dict) -> dict:
-    """tools.py's {param: python_type} -> OpenAI function `parameters` JSON Schema. Optional args
-    (force/passive/proxy/…, documented in each tool description) pass via additionalProperties."""
+def _params_schema(input_schema: dict, optional: Optional[dict] = None) -> dict:
+    """tools.py's {param: python_type} -> OpenAI function `parameters` JSON Schema.
+
+    `optional` carries the documented-but-undeclared arguments from references/tool_params.json.
+    This matters MORE here than on the Anthropic path: this backend exists to run open-weight
+    models, and a mid-size model does not reliably infer `passive=true` or `free_only=true` from a
+    description paragraph the way a frontier model does. When it misses them the tool-call gate
+    denies the call — correctly — and the run burns turns looping instead of adapting. The `enum`
+    lists are the highest-value part: without them a model invents a seventh value for `mode`."""
     props = {k: {"type": _JSON_TYPE.get(v, "string")} for k, v in (input_schema or {}).items()}
+    required = list(props.keys())
+    for name, spec in (optional or {}).items():
+        extra = {k: v for k, v in spec.items() if k in ("type", "description", "enum")}
+        if name in props:
+            # A REQUIRED param keeps its declared type but still gains the description and — the
+            # part that matters — the `enum`. censys.mode is required and accepts exactly six
+            # values; without the enum a model sends a seventh and the call fails for no visible
+            # reason. Required-ness itself is never changed here.
+            extra.pop("type", None)
+            props[name].update(extra)
+        else:
+            props[name] = extra
     return {"type": "object", "properties": props,
-            "required": list(props.keys()), "additionalProperties": True}
+            "required": required, "additionalProperties": True}
 
 
 def _resolve_tools(options: ClaudeAgentOptions) -> tuple[dict, list]:
@@ -278,7 +296,9 @@ def _resolve_tools(options: ClaudeAgentOptions) -> tuple[dict, list]:
                 continue
             reg[fq] = t
             specs.append({"type": "function", "function": {
-                "name": fq, "description": t.description, "parameters": _params_schema(t.input_schema)}})
+                "name": fq, "description": t.description,
+                "parameters": _params_schema(t.input_schema,
+                                             getattr(t, "optional_schema", None))}})
     return reg, specs
 
 
