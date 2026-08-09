@@ -270,6 +270,12 @@ def main():
         ("test_serp", "advertising layer — ad-parameter base rates (a click id is never a pivot), "
                       "the agency threshold, and the cloaking probe's falsification control "
                       "(an unstable page is never reported as evasion)"),
+        ("test_liveness", "liveness guardrail — a 200 parking/default/suspended/soft-404 page is "
+                          "never 'live', a 404/403/5xx/bot-wall is never 'dead', only NXDOMAIN "
+                          "reports dead, and every still-controlled name sets reuse_watch"),
+        ("test_context_budget", "context management — every tool's output governed by name with "
+                                "head+tail kept and the cut ANNOUNCED, and the shim's transcript "
+                                "trimmed by whole rounds so tool-call pairing survives"),
     ]
     # tests/ modules follow the same check() contract; make them importable here too.
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HERE)), "tests"))

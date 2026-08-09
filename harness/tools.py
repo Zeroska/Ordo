@@ -13,6 +13,7 @@ your scripts (e.g. pivot_extract's --crawl / --rotate-ua, risk_signals' options)
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 import datetime
 import glob
 import json
@@ -129,12 +130,129 @@ def _find_cached_raw(host: str, exclude: str = "") -> str:
     return hits[0] if hits else ""
 
 
-def _err(text: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": text}], "is_error": True}
+# --- context governor -------------------------------------------------------
+# One place that bounds how much of a tool result enters the model's context, replacing the
+# four hand-placed slices that used to be the whole story (every other tool returned its full
+# payload, so one pivot_extract over a large cluster could crowd the phase's own instructions
+# out of the window). Budgets are DATA — references/context_budget.json (RULE 3).
+#
+# TRUNCATION IS NEVER SILENT. A quietly shortened result is indistinguishable from a tool that
+# found less, and "found less" is how a false negative enters a case — the same reason a
+# keyless run has to announce what it could not query. Every cut carries the original size,
+# what was dropped, and where to read the full copy.
+try:
+    from wp_refs import load_ref as _load_ref, ref_path as _ref_path   # the shared RULE 3 loader
+except Exception:  # noqa: BLE001 — degrade, never block a run
+    def _ref_path(module_file: str, name: str) -> str:
+        return os.path.join(os.path.dirname(os.path.abspath(module_file)), "references", name)
+
+    def _load_ref(path: str, fallback: dict) -> dict:
+        print(f"[tools] WARNING: wp_refs unavailable; {os.path.basename(path)} not read — "
+              f"running on the minimal embedded context budget.", file=sys.stderr)
+        return dict(fallback)
 
 
-def _ok(text: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": text}]}
+_CTX_FALLBACK = {
+    "result_budget": {"default_chars": 12000, "large_chars": 40000, "head_fraction": 0.7,
+                      "min_tail_chars": 800, "error_chars": 4000},
+    "large_result_tools": ["pivot_extract", "impersonation_hunt", "fallback_probe",
+                           "reverse_whois", "intelx_search", "censys"],
+    "transcript_budget": {"max_total_chars": 360000, "max_tool_result_chars": 24000,
+                          "keep_recent_rounds": 6},
+}
+_CTX = _load_ref(_ref_path(__file__, "context_budget.json"), _CTX_FALLBACK)
+
+RESULT_BUDGET = dict(_CTX["result_budget"])
+LARGE_RESULT_TOOLS = set(_CTX["large_result_tools"])
+TRANSCRIPT_BUDGET = dict(_CTX["transcript_budget"])
+# Per-run override without a code edit or a data edit (e.g. a cheap smoke run on a small model).
+_BUDGET_ENV = os.environ.get("HARNESS_RESULT_CHARS")
+
+
+# Which @tool is executing right now. A ContextVar (not a global) because collect_fanout runs
+# several collector agents concurrently in ONE process — a plain global would let one agent's
+# tool name decide another agent's budget. Set by _governed() below, read by _budget_for(), so
+# every tool is governed by NAME without editing ~60 _ok() call sites.
+_CURRENT_TOOL: contextvars.ContextVar = contextvars.ContextVar("harness_current_tool",
+                                                               default=None)
+
+
+def _budget_for(tool: str | None) -> int:
+    if _BUDGET_ENV:
+        try:
+            return max(500, int(_BUDGET_ENV))
+        except ValueError:
+            pass
+    name = tool or _CURRENT_TOOL.get()
+    key = "large_chars" if name in LARGE_RESULT_TOOLS else "default_chars"
+    return int(RESULT_BUDGET.get(key, 12000))
+
+
+def _governed(t):
+    """Bind a tool's NAME around its handler so _ok()/_err() inside it pick the right budget.
+
+    Wrapping here rather than at each return keeps the governor in one place and makes it
+    impossible for a NEW tool to escape it by forgetting to pass `tool=` — the failure mode
+    that left this gap open before, where only four of the tools capped themselves."""
+    h = getattr(t, "handler", None)
+    name = getattr(t, "name", None)
+    if h is None or name is None or getattr(t, "_governed", False):
+        return t
+
+    async def _wrapped(args, _h=h, _n=name):
+        token = _CURRENT_TOOL.set(_n)
+        try:
+            return await _h(args)
+        finally:
+            _CURRENT_TOOL.reset(token)
+
+    try:
+        t.handler = _wrapped
+        t._governed = True
+    except Exception:  # noqa: BLE001 — an immutable tool object still works, just at the default budget
+        pass
+    return t
+
+
+def _bounded(text: str, *, tool: str | None = None, budget: int | None = None,
+             where: str = "") -> str:
+    """Cap one tool result at its budget, keeping the HEAD and the TAIL and saying so.
+
+    The head is kept because our JSON leads with `meta` — host, http status, capability,
+    collection time — which the model needs to reason about the payload at all. The tail is
+    kept because list-shaped output carries its summary/last rows at the end. What disappears
+    is the middle, and the marker names its exact size so the model can ask for it narrowly
+    instead of assuming the tool came back empty."""
+    text = text if isinstance(text, str) else str(text)
+    limit = budget or _budget_for(tool)
+    if len(text) <= limit:
+        return text
+    head_n = max(1, int(limit * float(RESULT_BUDGET.get("head_fraction", 0.7))))
+    tail_n = max(int(RESULT_BUDGET.get("min_tail_chars", 800)), limit - head_n)
+    head_n = max(1, limit - tail_n)
+    dropped = len(text) - head_n - tail_n
+    marker = (
+        f"\n\n… ⚠️ RESULT TRUNCATED TO FIT THE CONTEXT BUDGET — "
+        f"{len(text):,} chars → {head_n + tail_n:,} (head {head_n:,} + tail {tail_n:,}); "
+        f"{dropped:,} chars omitted from the MIDDLE.\n"
+        f"This is a context cut, NOT the tool's full output and NOT evidence of absence — "
+        f"do not report the omitted portion as 'nothing found'.\n"
+        + (f"Full result on disk: {where}\n" if where else "")
+        + f"To see the omitted part, re-run narrowed (one host / one kind / a smaller limit) "
+          f"or raise HARNESS_RESULT_CHARS.\n… \n\n"
+    )
+    return text[:head_n] + marker + text[-tail_n:]
+
+
+def _err(text: str, *, tool: str | None = None) -> dict[str, Any]:
+    return {"content": [{"type": "text",
+                         "text": _bounded(text, tool=tool,
+                                          budget=int(RESULT_BUDGET.get("error_chars", 4000)))}],
+            "is_error": True}
+
+
+def _ok(text: str, *, tool: str | None = None, where: str = "") -> dict[str, Any]:
+    return {"content": [{"type": "text", "text": _bounded(text, tool=tool, where=where)}]}
 
 
 # ---------------------------------------------------------------- COLLECT tools
@@ -212,11 +330,16 @@ async def pivot_extract(args: dict[str, Any]) -> dict[str, Any]:
     if res.get("error"):
         return _err(res["error"])
     blob = json.dumps(res.get("data") or {}, ensure_ascii=False)
+    # No hand-placed slice here any more: the governor applies pivot_extract's LARGE budget and,
+    # if it has to cut, says so and names the raw JSON — a silent `blob[:6000]` looked identical
+    # to a host that simply had fewer pivots.
+    raw_path = os.path.join("cases", args.get("case", ""), "raw", res["host"] + ".json")
     if res["reused"]:
         return _ok(f"ALREADY INVESTIGATED — reused cached pivot for {res['host']} "
-                   f"({res['n_pivots']} pivots); NOT re-collected. force=true to refresh.\n{blob[:4000]}")
+                   f"({res['n_pivots']} pivots); NOT re-collected. force=true to refresh.\n{blob}",
+                   where=raw_path)
     return _ok(f"Extracted {res['n_pivots']} pivots from {res['host']}{res['note']}\n"
-               f"DOM saved for manual review: {res['dom']}\n{blob[:6000]}")
+               f"DOM saved for manual review: {res['dom']}\n{blob}", where=raw_path)
 
 
 def collect_one(url: str, case: str, *, hostile: bool = False, passive: bool = False,
@@ -387,7 +510,70 @@ async def impersonation_hunt(args: dict[str, Any]) -> dict[str, Any]:
     return _ok(f"ImpersonationHunt on {host}: generated {art.get('generated', 0)} candidates → "
                f"{art.get('existing_count', 0)} confirmed lookalikes (DNS/CT), "
                f"{art.get('candidate_count', 0)} on the monitoring watchlist. "
-               f"Written to {os.path.relpath(out, ROOT)} for kb_ingest.\n{blob[:6000]}")
+               f"Written to {os.path.relpath(out, ROOT)} for kb_ingest.\n{blob}",
+               where=os.path.relpath(out, ROOT))
+
+
+@tool(
+    "domain_liveness",
+    "Is this host actually SERVING the operator's content? Decides by READING THE PAGE plus DNS, "
+    "never by the HTTP status code alone — the guardrail in front of every 'is it still up' "
+    "claim. Two errors it exists to stop, both of which corrupt a case silently. (1) 200 IS NOT "
+    "ALIVE: a registrar parking page, a fresh 'Welcome to nginx' default page, a host's 'Account "
+    "Suspended' notice and a soft-404 all return HTTP 200 with a full HTML document, and "
+    "collecting pivots off one of those harvests a template shared by millions of unrelated "
+    "domains — which is how a parking favicon becomes a fifty-domain 'operator cluster' that "
+    "isn't one. (2) 404/403 IS NOT DEAD: the server ANSWERED, so the name is registered, "
+    "resolving and pointed at infrastructure someone controls — only that path is gone, or we "
+    "specifically are being refused (allowlist / geo-fence / cloaking). A Cloudflare interstitial "
+    "returns state='blocked' with live=null: the page was never seen, which is absence of RECORD, "
+    "not evidence about the target. States: live · parked · default_page · suspended · soft_404 · "
+    "not_found · forbidden · blocked · empty · redirected_offsite · server_error · no_http · "
+    "unresolved. EVERY state except live and unresolved sets reuse_watch=true, meaning the name "
+    "is STILL CONTROLLED and can be flipped to live content later (operators park names between "
+    "campaigns, and rebuild after a takedown while keeping the domain) — put those on the "
+    "re-check list, do not discard them. Only NXDOMAIN evidences a dead name. Pass "
+    "domain=<host|url>; case=<ID> to classify from the ALREADY-COLLECTED pivot JSON offline "
+    "(no new request to the target — use this on hostile infra).",
+    {"domain": str},   # case:str, offline:bool, timeout:int optional -> args.get()
+    annotations=READONLY,
+)
+async def domain_liveness(args: dict[str, Any]) -> dict[str, Any]:
+    target = str(args["domain"])
+    host = _host(target)
+    script = os.path.join("WebPivot", "tools", "wp_liveness.py")
+
+    # Offline path: classify from the pivot JSON we already hold — no packet to the target.
+    raw = ""
+    if args.get("case"):
+        cand = os.path.join(ROOT, "cases", str(args["case"]), "raw", host + ".json")
+        raw = cand if os.path.exists(cand) else ""
+    if not raw and args.get("offline"):
+        raw = _find_cached_raw(host)
+    if raw:
+        code = ("import json,sys;sys.path.insert(0,'WebPivot/tools');import wp_liveness;"
+                "print(json.dumps(wp_liveness.from_pivot_result("
+                "json.load(open(sys.argv[1],encoding='utf-8'))),ensure_ascii=False))")
+        r = _run([PY, "-c", code, raw], timeout=60)
+        v = _load_json_str(r.stdout or "")
+        if v is None:
+            return _err(f"domain_liveness (offline) failed for {host}: {(r.stderr or '')[-400:]}")
+        return _ok(f"LIVENESS {host} (offline, from the stored capture — no request sent)\n"
+                   f"{json.dumps(v, ensure_ascii=False, indent=2)}")
+
+    if POLICY.get("hostile"):
+        return _err(f"domain_liveness refused: this run is HOSTILE and a live probe would touch "
+                    f"attacker infrastructure from the analyst's own IP. Collect first "
+                    f"(pivot_extract with passive/proxy), then re-run with case=<ID> to classify "
+                    f"the stored capture offline.")
+    cmd = [PY, script, target, "--json"]
+    if args.get("timeout"):
+        cmd += ["--timeout", str(int(args["timeout"]))]
+    r = _run(cmd, timeout=120)
+    v = _load_json_str(r.stdout or "")
+    if not v:
+        return _err(f"domain_liveness failed for {host}: {(r.stderr or '')[-400:]}")
+    return _ok(f"LIVENESS {host}\n{json.dumps(v, ensure_ascii=False, indent=2)}")
 
 
 @tool(
@@ -849,7 +1035,7 @@ async def domain_verdict(args: dict[str, Any]) -> dict[str, Any]:
     cases = (ci.stdout or "").strip() or f"{d} (domain): NOT seen in any existing case."
     collected = bool(_find_cached_raw(d))
     return _ok(f"VERDICT for {d}  (pivot data on file: {'yes' if collected else 'no'})\n"
-               f"[cases] {cases}\n[operator] {verdict}\n[KB] {facts[:3000]}")
+               f"[cases] {cases}\n[operator] {verdict}\n[KB] {facts}")
 
 
 @tool(
@@ -1500,11 +1686,19 @@ async def anyrun_submit(args: dict[str, Any]) -> dict[str, Any]:
 # that references the tool just fails. The reverse is worse: an allowlist entry with no served
 # tool tells the model it may call something that does not exist. `tests/test_tool_registry.py`
 # asserts the three lists agree, so this can only drift again on purpose.
+# Bind every @tool's NAME around its handler, so the context governor knows which budget to
+# apply to that tool's output (see _bounded / _budget_for). Done by sweeping the module rather
+# than by listing tools, so a tool added later CANNOT escape the governor by being forgotten —
+# which is exactly how the old per-call slices ended up covering only four of them.
+for _t in list(globals().values()):
+    if hasattr(_t, "handler") and hasattr(_t, "name") and hasattr(_t, "input_schema"):
+        _governed(_t)
+
 COLLECT_SERVER = create_sdk_mcp_server(
     "collect", tools=[pivot_extract, doc_metadata, analyze_artifact, fallback_probe,
                       impersonation_hunt, search_pivot, censys, intelx_search,
                       anyrun_lookup, anyrun_submit, capability_check,
-                      url_paths, capture_evidence, serp_ads, kb_ingest])
+                      url_paths, capture_evidence, serp_ads, domain_liveness, kb_ingest])
 ANALYZE_SERVER = create_sdk_mcp_server(
     "analyze", tools=[kb_cluster, kb_entity, kb_query_shared, risk_signals,
                       reverse_whois, cert_overlap, reference_check, reference_add, reference_mirrors,
@@ -1520,7 +1714,7 @@ COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__doc_metadata",
                  "mcp__collect__anyrun_lookup", "mcp__collect__anyrun_submit",
                  "mcp__collect__capability_check",
                  "mcp__collect__url_paths", "mcp__collect__capture_evidence",
-                 "mcp__collect__serp_ads",
+                 "mcp__collect__serp_ads", "mcp__collect__domain_liveness",
                  "mcp__collect__kb_ingest"]
 ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__kb_query_shared", "mcp__analyze__risk_signals",

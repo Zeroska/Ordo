@@ -39,8 +39,31 @@ except Exception:                                        # pragma: no cover - de
     def is_privacy(v):  # noqa
         return False
 
+# Liveness is decided by wp_liveness (reads the PAGE, not just the status code) so a parking
+# page / server default page / soft-404 stops being reported as "live", and a 404 or 403 stops
+# being reported as dead. See WebPivot/tools/wp_liveness.py + references/liveness.json.
+try:
+    import wp_liveness                                     # type: ignore
+except Exception:                                          # pragma: no cover — degrade, don't block
+    wp_liveness = None
+    print("[domain_table] WARNING: wp_liveness unavailable; falling back to the old "
+          "status-code-only liveness check, which mislabels parked/suspended/default pages as "
+          "live and 404/403 as dead.", file=sys.stderr)
+
 PARKED_MARKERS = ("parked domain name", "domain is parked", "buy this domain",
                   "dns-parking.com")
+
+
+def _fmt_status(v: dict) -> str:
+    """Verdict dict -> the Status cell. `⟲` marks a name that is STILL CONTROLLED and can be
+    re-pointed to live content later (parked / suspended / default page / 404 / blocked) — those
+    belong on a re-check list, not in the discard pile. `?` marks an unconfident verdict."""
+    s = v.get("state", "unknown")
+    if v.get("reuse_watch") and s != "live":
+        s += " ⟲"
+    if not v.get("confident", True):
+        s += "?"
+    return s
 
 
 # ---------------------------------------------------------------- data gathering
@@ -80,16 +103,26 @@ def _asn_for_ip(ip, cache, timeout=8):
 
 
 def _status_from_result(result):
-    """Derive (status, hosting_ip) from a pivot_extract raw JSON dict."""
-    meta = result.get("meta", {}) or {}
-    arts = result.get("artifacts", {}) or {}
-    title = (arts.get("title") or "").lower()
-    # live IP from the domain pivot's live DNS (ground truth), else the raw DOM title
+    """Derive (status, hosting_ip) from a pivot_extract raw JSON dict — offline, no new request.
+
+    Classification is delegated to wp_liveness, which reads the captured DOM rather than the
+    title alone: a parking page's title is frequently just the bare domain, so a title-only
+    check saw nothing and reported the site as live."""
     ips = []
     for p in result.get("pivots", []):
         if p.get("kind") == "domain":
             ips = ((p.get("live_results", {}) or {}).get("dns", {}) or {}).get("ips", []) or []
             break
+    if wp_liveness is not None:
+        v = wp_liveness.from_pivot_result(result)
+        return _fmt_status(v), (ips[0] if ips else "")
+    return _legacy_status_from_result(result, ips)
+
+
+def _legacy_status_from_result(result, ips):
+    """Pre-wp_liveness behaviour, kept only for the degraded import path above."""
+    meta = result.get("meta", {}) or {}
+    title = ((result.get("artifacts", {}) or {}).get("title") or "").lower()
     if any(m in title for m in PARKED_MARKERS):
         return "parked", (ips[0] if ips else "")
     if ips:
@@ -104,7 +137,15 @@ def _status_from_result(result):
 
 
 def _status_from_live(domain):
-    """Status for a domain with no raw JSON: live DNS + a quick page peek."""
+    """Status for a domain with no raw JSON: DNS + one bounded page READ.
+
+    The read happens for every status code — the body of a 404 is what separates "this path is
+    gone" from "this host is a parking page that answers 404 for everything", and the old
+    version threw that body away inside a bare `except`."""
+    if wp_liveness is not None:
+        v = wp_liveness.probe(domain)
+        ips = v.get("ips") or []
+        return _fmt_status(v), (ips[0] if ips else "")
     ips = _resolve(domain)
     if not ips:
         return "dead/pulled", ""
@@ -238,8 +279,11 @@ def rows_to_markdown(rows, title="Domain Summary"):
     out.append("|" + "|".join("---" for _ in _COLS) + "|")
     for r in rows:
         out.append("| " + " | ".join(esc(r.get(k, "—")) for k, _ in _COLS) + " |")
-    out += ["", "_WHOIS via WhoisXML; status/IP from live DNS + pivot capture; "
-            "ASN via ip-api; attribution from operators.jsonl. '—' = not available._", ""]
+    out += ["", "_WHOIS via WhoisXML; status from wp_liveness (the page CONTENT plus DNS, not "
+            "the HTTP status code alone) and IP from live DNS + pivot capture; ASN via ip-api; "
+            "attribution from operators.jsonl. `⟲` = the name is still controlled and can be "
+            "re-pointed to live content later — keep it on the re-check list; `?` = the verdict "
+            "rests on a single signal. '—' = not available._", ""]
     return "\n".join(out)
 
 

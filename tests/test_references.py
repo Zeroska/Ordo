@@ -144,6 +144,8 @@ def check():
     import render_report                                                           # noqa: E401
     import victim_profile                                                          # noqa: E401
     import audit                                                                   # noqa: E401
+    import wp_liveness                                                             # noqa: E401
+    import tools                                                                   # noqa: E401  (harness/tools.py — the context governor)
 
     consumers = [
         ("wp_pivots._GENERIC_SUBLABELS", wp_pivots._GENERIC_SUBLABELS,
@@ -407,6 +409,33 @@ def check():
          render_report._I18N_FALLBACK["estimative_terms"]),
         ("render_report.SECTION_NAMES", render_report.SECTION_NAMES,
          render_report._I18N_FALLBACK["section_names"]),
+        # Liveness. On the fallback the classifier still refuses to call a 404 dead and still
+        # refuses to treat a bot wall as a verdict — those two rules are CODE, not data. What it
+        # loses is TEMPLATE RECOGNITION: five parking strings instead of thirty-three, three
+        # server-default strings instead of nineteen. Every template it no longer recognises
+        # comes back `live`, which is the direction that hurts — the collector then fingerprints
+        # a parking page's favicon and analytics and the KB grows a cluster of unrelated domains
+        # that all happen to be parked at the same registrar.
+        ("wp_liveness.PARKING_MARKERS", wp_liveness.PARKING_MARKERS,
+         wp_liveness._LIVE_FALLBACK["parking_markers"]),
+        ("wp_liveness.PARKING_NS", wp_liveness.PARKING_NS,
+         wp_liveness._LIVE_FALLBACK["parking_nameservers"]),
+        ("wp_liveness.SOFT_404_MARKERS", wp_liveness.SOFT_404_MARKERS,
+         wp_liveness._LIVE_FALLBACK["soft_404_markers"]),
+        ("wp_liveness.SUSPENDED_MARKERS", wp_liveness.SUSPENDED_MARKERS,
+         wp_liveness._LIVE_FALLBACK["suspended_markers"]),
+        ("wp_liveness.DEFAULT_PAGE_MARKERS", wp_liveness.DEFAULT_PAGE_MARKERS,
+         wp_liveness._LIVE_FALLBACK["default_page_markers"]),
+        ("wp_liveness.BLOCKED_MARKERS", wp_liveness.BLOCKED_MARKERS,
+         wp_liveness._LIVE_FALLBACK["blocked_markers"]),
+        # The state vocabulary itself — `reuse_watch` per state is what puts a parked or
+        # suspended name back on the re-check list instead of in the discard pile.
+        ("wp_liveness.STATES", wp_liveness.STATES, wp_liveness._LIVE_FALLBACK["states"]),
+        # Context budget. On the fallback the governor still bounds every tool result and still
+        # announces every cut; it just stops knowing WHICH tools deserve the larger allowance, so
+        # a collector's evidence gets cut to the same size as a one-line status tool's output.
+        ("tools.LARGE_RESULT_TOOLS", tools.LARGE_RESULT_TOOLS,
+         tools._CTX_FALLBACK["large_result_tools"]),
     ]
     for name, loaded, fallback in consumers:
         ok(len(loaded) > len(fallback),

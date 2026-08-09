@@ -90,7 +90,23 @@ _DEFAULT_PRICE = {k: tuple(v) for k, v in _OB_REF["openai_compatible_models"].it
 
 STRUCT_RETRIES = int(os.environ.get("HARNESS_STRUCT_RETRIES", "3"))
 HTTP_TIMEOUT = int(os.environ.get("HARNESS_HTTP_TIMEOUT", "180"))
-TOOL_RESULT_CAP = int(os.environ.get("HARNESS_TOOL_RESULT_CAP", "20000"))  # chars fed back per tool
+
+# CONTEXT BUDGET — harness/references/context_budget.json → transcript_budget.
+# Unlike the Anthropic SDK, this shim owns its own message history: it appends one assistant
+# message plus one tool message per call, every turn, forever. Without a ceiling a long collect
+# grows the request until the provider rejects it — which surfaces as an opaque API error rather
+# than "you ran out of room". `_trim_history` below is that ceiling.
+_CTX_FALLBACK = {"transcript_budget": {"max_total_chars": 360000,
+                                       "max_tool_result_chars": 24000,
+                                       "keep_recent_rounds": 6}}
+_CTX_REF = _ob_load_ref(os.path.join(_OB_HERE, "references", "context_budget.json"), _CTX_FALLBACK)
+_TB = dict(_CTX_REF["transcript_budget"])
+
+TOOL_RESULT_CAP = int(os.environ.get("HARNESS_TOOL_RESULT_CAP")
+                      or _TB.get("max_tool_result_chars", 24000))   # chars fed back per tool
+TRANSCRIPT_CAP = int(os.environ.get("HARNESS_TRANSCRIPT_CHARS")
+                     or _TB.get("max_total_chars", 360000))         # chars of whole history
+KEEP_RECENT_ROUNDS = int(_TB.get("keep_recent_rounds", 6))
 
 
 def _env_json(name: str) -> dict:
@@ -320,6 +336,84 @@ def _missing_required(schema: dict, obj: Optional[dict]) -> list:
 
 
 # ------------------------------------------------------------------ the loop
+def _cap_tool_output(text: str, fname: str) -> str:
+    """One tool result, capped at insertion time — LOUDLY.
+
+    The previous `out[:TOOL_RESULT_CAP]` was a silent slice, which is the dangerous kind: a
+    quietly shortened result is indistinguishable from a tool that found less, and the model
+    then reports the missing part as 'nothing found'. Head and tail are both kept because our
+    JSON leads with `meta` and list output carries its summary at the end."""
+    if len(text) <= TOOL_RESULT_CAP:
+        return text
+    head = int(TOOL_RESULT_CAP * 0.7)
+    tail = TOOL_RESULT_CAP - head
+    return (text[:head]
+            + f"\n\n… ⚠️ {fname} OUTPUT TRUNCATED TO FIT THE CONTEXT BUDGET — {len(text):,} chars "
+              f"→ {TOOL_RESULT_CAP:,}; {len(text) - TOOL_RESULT_CAP:,} omitted from the middle. "
+              f"A context cut, NOT evidence of absence — re-run narrowed to see the rest.\n… \n\n"
+            + text[-tail:])
+
+
+def _msg_chars(m: dict) -> int:
+    n = len(str(m.get("content") or ""))
+    for tc in (m.get("tool_calls") or []):
+        n += len(json.dumps(tc))
+    return n
+
+
+def _trim_history(messages: list) -> list:
+    """Keep the request under TRANSCRIPT_CAP by eliding the OLDEST tool-call rounds.
+
+    Three invariants, each protecting against a distinct way a trimmed agent goes wrong:
+
+      1. The SYSTEM prompt and the ORIGINAL task message are never dropped. Losing the task is
+         how a trimmed agent starts confidently answering a different question.
+      2. Whole ROUNDS are dropped, never individual messages. An assistant message carrying
+         `tool_calls` must be followed by a `tool` message for every one of its ids — orphan
+         either half and the provider rejects the request outright, so a naive
+         "drop the oldest message" trim turns a context problem into a hard API failure.
+      3. The most recent `KEEP_RECENT_ROUNDS` are never elided, so the model keeps its immediate
+         working state no matter how tight the budget gets.
+
+    What was dropped is announced in-band, because the facts from those rounds are on disk in
+    the case store — the model needs to know to re-read them rather than assume they never
+    happened."""
+    total = sum(_msg_chars(m) for m in messages)
+    if total <= TRANSCRIPT_CAP:
+        return messages
+
+    head, i = [], 0
+    while i < len(messages) and messages[i].get("role") == "system":
+        head.append(messages[i]); i += 1
+    if i < len(messages) and messages[i].get("role") == "user":     # the original task
+        head.append(messages[i]); i += 1
+
+    rounds, cur = [], []
+    for m in messages[i:]:
+        if m.get("role") == "assistant" and cur:
+            rounds.append(cur); cur = []
+        cur.append(m)
+    if cur:
+        rounds.append(cur)
+
+    dropped = 0
+    while (sum(_msg_chars(m) for m in head)
+           + sum(_msg_chars(m) for r in rounds for m in r)) > TRANSCRIPT_CAP \
+            and len(rounds) > KEEP_RECENT_ROUNDS:
+        dropped += len(rounds.pop(0))
+    if not dropped:
+        return messages
+
+    note = {"role": "user", "content":
+            f"[harness context budget] {dropped} earlier message(s) covering the oldest tool-call "
+            f"rounds were elided to stay within this model's context window. They HAPPENED — "
+            f"their findings are on disk in the case store (cases/<case>/raw, the KB). If you "
+            f"need one, re-read it with a tool rather than assuming it was never collected."}
+    print(f"[openai_backend] context budget: elided {dropped} old message(s) "
+          f"(> {TRANSCRIPT_CAP:,} chars)", file=sys.stderr)
+    return head + [note] + [m for r in rounds for m in r]
+
+
 async def query(*, prompt: str, options: ClaudeAgentOptions):
     """Async generator mirroring claude_agent_sdk.query: yields AssistantMessage per tool-using turn
     (so orchestrator's live worklog prints each call) and one final ResultMessage. Runs a standard
@@ -357,6 +451,7 @@ async def query(*, prompt: str, options: ClaudeAgentOptions):
     backend_error: Optional[str] = None
 
     for _turn in range(max(1, options.max_turns)):
+        messages = _trim_history(messages)      # context ceiling — see _trim_history's invariants
         payload: dict = {"model": model, "messages": messages}
         if specs:
             payload["tools"] = specs
@@ -410,7 +505,7 @@ async def query(*, prompt: str, options: ClaudeAgentOptions):
                     except Exception as e:  # noqa: BLE001 — surface faults to the model, keep looping
                         out = f"{fname} raised: {e!r}"
             messages.append({"role": "tool", "tool_call_id": tc.get("id", ""),
-                             "content": out[:TOOL_RESULT_CAP]})
+                             "content": _cap_tool_output(out, fname)})
         if done:
             hit_max = False
             break
@@ -421,9 +516,10 @@ async def query(*, prompt: str, options: ClaudeAgentOptions):
         tries = 0
         while not ok and tries < STRUCT_RETRIES:
             tries += 1
-            forced = messages + [{"role": "user",
-                                  "content": "Call the emit_result tool now with the complete final "
-                                             "result matching the required schema."}]
+            forced = _trim_history(messages) + [
+                {"role": "user",
+                 "content": "Call the emit_result tool now with the complete final "
+                            "result matching the required schema."}]
             payload = {"model": model, "messages": forced, "tools": [emit_spec],
                        "tool_choice": {"type": "function", "function": {"name": EMIT_NAME}}}
             try:
