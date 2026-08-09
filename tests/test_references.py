@@ -137,6 +137,7 @@ def check():
     import bp_anyrun                                                               # noqa: E401
     import whois_enrich, evidence_report                                           # noqa: E401
     import ingest_webpivot, hypothesize, ingest_report, noise_filters              # noqa: E401
+    import wp_common, wp_net, wp_extract, export_graph, calibration                # noqa: E401
     import risk_signals                                                            # noqa: E401
     import analyze_artifact                                                        # noqa: E401
     import case_timeline                                                           # noqa: E401
@@ -253,6 +254,12 @@ def check():
          whois_enrich._WHOIS_FALLBACK["proxy_email_domains"]),
         ("evidence_report._NOISE_EMAIL_SUBSTR", evidence_report._NOISE_EMAIL_SUBSTR,
          evidence_report._RN_FALLBACK["noise_email_substrings"]),
+        # Base-rate control on the estimative scale. On the fallback the renderer knows three
+        # ceilings instead of eight, so a saturated crt.sh / passive-DNS / reverse-WHOIS result
+        # silently goes back to reading as CORROBORATION and bumps the artifact one notch UP —
+        # which is how a hosting provider's parking favicon became a report's headline indicator.
+        ("evidence_report._SAT_CEILINGS", evidence_report._SAT_CEILINGS,
+         evidence_report._RT_FALLBACK["saturation_ceilings"]),
         ("ingest_webpivot._ROLE_NAME_PLACEHOLDERS", ingest_webpivot._ROLE_NAME_PLACEHOLDERS,
          ingest_webpivot._RN_FALLBACK["role_name_placeholders"]),
         ("ingest_webpivot._ORG_SUFFIX", ingest_webpivot._ORG_SUFFIX,
@@ -263,6 +270,46 @@ def check():
          ingest_report._IR_FALLBACK["report_noise_domains"]),
         ("noise_filters.MANAGED_DNS_SUFFIXES", noise_filters.MANAGED_DNS_SUFFIXES,
          noise_filters._FALLBACK["managed_dns_suffixes"]),
+        # Social platform registry + its base rates. On the fallback WebPivot knows 5 platforms
+        # instead of 22 (so Telegram/Zalo/WhatsApp contact pivots silently vanish) and 2 builder
+        # boilerplate handles instead of 12 (so every Wix site shares "the operator's" socials).
+        ("wp_extract.SOCIAL_HOSTS", wp_extract.SOCIAL_HOSTS,
+         wp_extract._SP_FALLBACK["social_hosts"]),
+        ("wp_extract.BOILERPLATE_SOCIAL_HANDLES", wp_extract.BOILERPLATE_SOCIAL_HANDLES,
+         wp_extract._SP_FALLBACK["boilerplate_social_handles"]),
+        # Fetch profile. On the fallback the crawler rotates ONE user-agent (defeating rotation
+        # entirely) and knows 3 Cloudflare markers instead of 14 — so challenge interstitials get
+        # collected AS the site and their favicon/DOM hash clusters every challenged domain.
+        ("wp_common.UA_POOL", wp_common.UA_POOL, wp_common._FP_FALLBACK["ua_pool"]),
+        ("wp_net._CF_BODY_MARKERS", wp_net._CF_BODY_MARKERS,
+         wp_common._FP_FALLBACK["cloudflare_body_markers"]),
+        # Public-suffix table. On the fallback bbc.co.uk collapses to co.uk and every unrelated
+        # domain under a country's commercial suffix merges into one "apex".
+        ("wp_common._MULTI_TLDS", wp_common._MULTI_TLDS,
+         wp_common._GLC_FALLBACK["multi_part_tlds"]),
+        # Evidence weights — the scoring behind an attribution call. The fallback is deliberately
+        # conservative (fewer attribution-grade and fewer corroborating relations), so a broken
+        # file makes the scorer claim LESS rather than more.
+        ("hypothesize.ATTRIBUTION", hypothesize.ATTRIBUTION,
+         hypothesize._EW_FALLBACK["attribution_rels"]),
+        ("hypothesize.CORROBORATING", hypothesize.CORROBORATING,
+         hypothesize._EW_FALLBACK["corroborating_rels"]),
+        ("export_graph.RELNAME", export_graph.RELNAME,
+         export_graph._EW_FALLBACK["relation_labels"]),
+        # Calibration. On the fallback three estimative labels lose their probability, so a past
+        # judgement written with one silently drops out of Brier scoring.
+        ("calibration.CONF_PROB", calibration.CONF_PROB,
+         calibration._EW_FALLBACK["confidence_probabilities"]),
+        # HTML-comment base rates. On the fallback the ingest knows ~13 boilerplate markers
+        # instead of ~35, so the Google Analytics / Open Graph / site-builder slot comments that
+        # ship identically on millions of pages start seeding `same_comment` edges and fuse
+        # unrelated domains into one "shared builder" cluster.
+        ("noise_filters.COMMENT_BOILERPLATE", noise_filters.COMMENT_BOILERPLATE,
+         noise_filters._FALLBACK["comment_boilerplate"]),
+        # Role/registrar mailboxes. On the fallback the list halves and registrar complaint and
+        # takedown addresses start seeding `registered_by` registrant clusters.
+        ("noise_filters.ROLE_EMAIL_LOCALPARTS", noise_filters.ROLE_EMAIL_LOCALPARTS,
+         noise_filters._FALLBACK["role_email_localparts"]),
         ("noise_filters.SHARED_INFRA_APEXES", noise_filters.SHARED_INFRA_APEXES,
          noise_filters._FALLBACK["shared_infra_apexes"]),
         ("analyze_artifact._FAKE_TLD", analyze_artifact._FAKE_TLD,
@@ -378,6 +425,76 @@ def check():
     for token in MUST_KNOW:
         ok(token in wp_blob, f"WebPivot registrant_noise knows {token!r}")
         ok(token in kb_blob, f"tools/kb registrant_noise knows {token!r}")
+
+    # --- 4b. THE MIRROR MANIFEST: every declared duplicate holds identical values -------------
+    # The token check above only proves a handful of well-known providers are present on both
+    # sides. It cannot see a value added to one copy and not the other, and that is the drift
+    # that actually happens — the platform-default favicon lists diverged so each side filtered
+    # a different builder's icon and let the other's through, silently, with nothing logged.
+    # tests/reference_mirrors.json names every group duplicated across skills (matched by
+    # file+group, since a mirror may be named differently on each side: social_asset_extensions
+    # vs social_handle_noise). Repair with `python3 tools/kb/sync_mirrors.py --union --write`.
+    mirrors_path = os.path.join(ROOT, "tests", "reference_mirrors.json")
+    ok(os.path.exists(mirrors_path), "the mirror manifest exists")
+    if os.path.exists(mirrors_path):
+        manifest = json.load(open(mirrors_path, encoding="utf-8"))
+        ok(isinstance(manifest.get("_comment"), str) and len(manifest["_comment"]) > 40,
+           "reference_mirrors.json explains why mirrors exist")
+        ok(bool(manifest.get("mirrors")), "reference_mirrors.json declares at least one mirror")
+
+        def _payload(node):
+            if "values" in node:
+                return sorted(map(str, node["values"]))
+            if "entries" in node:
+                return sorted(f"{k}={v}" for k, v in node["entries"].items())
+            return sorted(f"{k}={v}" for k, v in node.items() if not k.startswith("_"))
+
+        for entry in manifest.get("mirrors", []):
+            concept = entry.get("concept", "?")
+            ok(isinstance(entry.get("why"), str) and len(entry["why"]) > 30,
+               f"mirror {concept!r} documents WHY it is duplicated")
+            can = entry["canonical"]
+            can_doc = json.load(open(os.path.join(ROOT, can["file"]), encoding="utf-8"))
+            have_can = can["group"] in can_doc
+            ok(have_can, f"mirror {concept!r}: canonical group present in {can['file']}")
+            if not have_can:
+                continue
+            want = _payload(can_doc[can["group"]])
+            for m in entry["mirrors"]:
+                m_doc = json.load(open(os.path.join(ROOT, m["file"]), encoding="utf-8"))
+                have_m = m["group"] in m_doc
+                ok(have_m, f"mirror {concept!r}: group present in {m['file']}")
+                if not have_m:
+                    continue
+                got = _payload(m_doc[m["group"]])
+                extra_can = [v for v in want if v not in got][:4]
+                extra_mir = [v for v in got if v not in want][:4]
+                detail = ""
+                if extra_can:
+                    detail += f" only-canonical={extra_can}"
+                if extra_mir:
+                    detail += f" only-mirror={extra_mir}"
+                ok(want == got,
+                   f"mirror {concept!r} identical: {can['file']}:{can['group']} == "
+                   f"{m['file']}:{m['group']}{detail}")
+
+        # Any group duplicated across skills but NOT declared is drift waiting to happen.
+        declared = set()
+        for entry in manifest.get("mirrors", []):
+            declared.add((entry["canonical"]["file"], entry["canonical"]["group"]))
+            for m in entry["mirrors"]:
+                declared.add((m["file"], m["group"]))
+        # only the two files that genuinely share a purpose across the collector/ingest split
+        pair = [("WebPivot/references/registrant_noise.json",
+                 "tools/kb/references/registrant_noise.json")]
+        for a, b in pair:
+            da = json.load(open(os.path.join(ROOT, a), encoding="utf-8"))
+            db = json.load(open(os.path.join(ROOT, b), encoding="utf-8"))
+            shared = {k for k in da if not k.startswith("_")} & {k for k in db if not k.startswith("_")}
+            for g in sorted(shared):
+                ok((a, g) in declared or (b, g) in declared,
+                   f"group {g!r} shared by both registrant_noise copies is declared in the "
+                   f"mirror manifest")
 
     # --- 5. a broken data file degrades loudly, never silently --------------------------------
     import wp_refs                                                                # noqa: E401

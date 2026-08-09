@@ -100,8 +100,15 @@ def check():
        "no SPF/DMARC record → None")
 
     # --- build_ip_result end-to-end (network fully mocked): origin vs noise ---
+    # EVERY network call build_ip_result can make must be stubbed, including the METERED ones.
+    # `censys_configured`/`censys_host` were missing here after the Censys layer was folded into
+    # IPPivot, so each gate run quietly spent 2 real Censys credits against a documentation IP —
+    # ~36 over a day of iterating, which is a third of the 100-credit MONTHLY per-account quota,
+    # and it silently disarmed Censys for real casework. A regression gate must never spend
+    # metered credits: when a tool grows a new provider, add its entry to this list.
     saved = {n: getattr(ip, n) for n in ("ipinfo_lookup", "classify_ip", "asn_registry_load",
-             "asn_registry_upsert", "fofa_ip", "shodan_host", "reverse_dns", "mail_intel")}
+             "asn_registry_upsert", "fofa_ip", "shodan_host", "reverse_dns", "mail_intel",
+             "censys_configured", "censys_host")}
     try:
         ip.ipinfo_lookup = lambda x, **k: {"ip": x, "asn": "AS4242", "org_name": "AcmeHost",
             "hostname": "mail.op.example", "abuse": {"email": "abuse@acme.example"}, "is_hosting": False}
@@ -109,6 +116,8 @@ def check():
         ip.fofa_ip = lambda x, full=False: {"ports": ["80", "443"], "services": ["http/nginx"],
                                             "co_domains": ["site-a.example"]}
         ip.shodan_host = lambda x: None
+        ip.censys_configured = lambda: False      # metered: never reached from the gate
+        ip.censys_host = lambda x, **k: {"skipped": "stubbed in test"}
         ip.reverse_dns = lambda x, **k: "mail.op.example"
         ip.mail_intel = lambda d: {"mx": ["mail.op.example"], "mail_domains": ["op.example"],
                                    "managed": False, "spf": None, "dmarc": None}

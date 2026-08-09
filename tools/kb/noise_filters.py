@@ -43,7 +43,17 @@ _REF_PATH = kb_refs.ref_path(__file__, "noise_filters.json")
 _FALLBACK = {
     "managed_dns_suffixes": ["ns.cloudflare.com", "cloudflare.com", "domaincontrol.com",
                              "registrar-servers.com", "awsdns", "dns-parking.com"],
-    "parking_favicon_mmh3": [643372374, 0],
+    "parking_favicon_mmh3": [643372374, 0, -1896664326],
+    "platform_default_favicon_mmh3": [-908198569],
+    "noise_tracker_ids": ["UA-26575989-44"],
+    "social_handle_noise": [".png", ".jpg", ".svg", ".css", ".js"],
+    "bulk_registrant_max_domains": {"max_domains": 200},
+    "reverse_search_edge_cap": {"max_hits": 500},
+    "comment_boilerplate": ["litespeed", "wordpress", "google tag manager", "gtag",
+                            "google analytics", "open graph", "start of head", "end of head",
+                            "start of body", "end of body", "cache", "begin", "end"],
+    "comment_min_length": {"chars": 24},
+    "dom_skeleton_min_tags": {"tags": 12},
     "parking_host_substrings": ["sedoparking.com", "sedo.com", "parkingcrew", "bodis.com"],
     "role_email_localparts": ["abuse", "hostmaster", "postmaster"],
     "registrar_email_domains": ["cloudflare.com", "namecheap.com", "godaddy.com",
@@ -70,8 +80,36 @@ _REF = _load_ref()
 # A `uses_nameserver` edge to one of these must NOT create a same-operator cluster.
 MANAGED_DNS_SUFFIXES = tuple(_REF["managed_dns_suffixes"])
 
-# Favicon mmh3 (Shodan/FOFA) hashes of parking / for-sale / marketplace pages.
-PARKING_FAVICON_MMH3 = {int(x) for x in _REF["parking_favicon_mmh3"]}
+# Favicon mmh3 (Shodan/FOFA) hashes of parking / for-sale / marketplace pages, unioned with the
+# DEFAULT icons of hosted platforms/funnel builders. Distinct groups in the JSON because they mean
+# different things; one predicate here because the treatment is identical — never a clustering hub.
+PARKING_FAVICON_MMH3 = ({int(x) for x in _REF["parking_favicon_mmh3"]} |
+                        {int(x) for x in _REF["platform_default_favicon_mmh3"]})
+
+# Base-rate control on cluster building: a reverse search returning at least this many hits
+# describes shared infrastructure, so its hits must not become domain->indicator edges.
+REVERSE_SEARCH_EDGE_CAP = int(_REF["reverse_search_edge_cap"]["max_hits"])
+
+# Above this many domains, a registrant CONTACT is a shared registration service, not an owner.
+# Tighter than the artifact cap above: a contact is a much weaker hub than a technical artifact.
+BULK_REGISTRANT_MAX_DOMAINS = int(_REF["bulk_registrant_max_domains"]["max_domains"])
+
+# HTML-comment boilerplate (substring match) + the length floor below which a comment is a
+# section marker, not a fingerprint.
+COMMENT_BOILERPLATE = tuple(_REF["comment_boilerplate"])
+COMMENT_MIN_LENGTH = int(_REF["comment_min_length"]["chars"])
+
+# Minimum tag count before a DOM tag-skeleton hash is distinctive enough to cluster on.
+DOM_SKELETON_MIN_TAGS = int(_REF["dom_skeleton_min_tags"]["tags"])
+
+# Scraped social "handles" that are really static assets or templating placeholders.
+SOCIAL_HANDLE_NOISE = tuple(_REF["social_handle_noise"])
+# {u} ${name} %s %(x)s <user> :user — every templating dialect a bundle might ship.
+_PLACEHOLDER_RE = re.compile(r"\{[^/}]*\}|\$\{[^}]*\}|%[sd]\b|%\([^)]*\)|<[^/>]+>|^:\w+$")
+
+# Analytics/tag IDs belonging to a hosting PLATFORM's own parking/default pages, not to the
+# site owner. Clustering on one links every tenant of that provider.
+NOISE_TRACKER_IDS = {str(x).strip().upper() for x in _REF["noise_tracker_ids"]}
 
 # Host substrings that mark parking / sinkhole / marketplace infra (not operator infra).
 PARKING_HOST_SUBSTRINGS = tuple(_REF["parking_host_substrings"])
@@ -141,6 +179,14 @@ def is_parking_favicon(mmh3_hash) -> bool:
         return False
 
 
+def is_noise_tracker(tracker_id) -> bool:
+    """True for an analytics/tag ID owned by a hosting platform's own parking/default pages.
+    Exact match — a tenant's real ID must never be caught by a prefix rule."""
+    if tracker_id is None:
+        return False
+    return str(tracker_id).strip().upper() in NOISE_TRACKER_IDS
+
+
 def is_parking_host(host: str) -> bool:
     h = _host(host)
     return any(s in h for s in PARKING_HOST_SUBSTRINGS)
@@ -161,9 +207,55 @@ def is_noise_email(email: str) -> bool:
     local, _, dom = e.partition("@")
     if local in ROLE_EMAIL_LOCALPARTS or local.startswith("abuse"):
         return True
+    # abuse.<registrar>.tld — the role is in the DOMAIN, not the local-part, so `takedown@` or
+    # `noreply@` on such a host is still registrar boilerplate rather than a registrant.
+    if dom.split(".")[0] == "abuse":
+        return True
     if any(dom == d or dom.endswith("." + d) for d in REGISTRAR_EMAIL_DOMAINS):
         return True
     return any(tok in dom for tok in PRIVACY_EMAIL_TOKENS)
+
+
+def is_saturated_reverse(total) -> bool:
+    """True if a reverse-search result set is too large to build same-owner edges from.
+
+    An artifact carried by this many hosts is shared infrastructure by definition; fanning its
+    hits out into edges is what makes a hosted platform's default favicon the biggest cluster in
+    the KB. Catches the long tail no per-value denylist can enumerate.
+    """
+    try:
+        return total is not None and int(total) >= REVERSE_SEARCH_EDGE_CAP
+    except (TypeError, ValueError):
+        return False
+
+
+def is_noise_social_handle(handle: str) -> bool:
+    """True if a scraped social 'handle' is a static asset or an unsubstituted template
+    placeholder rather than somebody's account."""
+    h = (handle or "").strip().strip("/").lower()
+    if not h:
+        return True
+    if h.endswith(SOCIAL_HANDLE_NOISE):
+        return True
+    return bool(_PLACEHOLDER_RE.search(h))
+
+
+def is_bulk_registrant(count) -> bool:
+    """True if this many domains under one registrant contact makes it a shared registration
+    service (reseller / IT agency / corporate-services firm / resale portfolio) rather than an
+    owner. Read by BOTH ingest paths so they cannot disagree about where the line sits."""
+    try:
+        return count is not None and int(count) > BULK_REGISTRANT_MAX_DOMAINS
+    except (TypeError, ValueError):
+        return False
+
+
+def is_boilerplate_comment(comment: str) -> bool:
+    """True if an HTML comment is builder/plugin boilerplate rather than an operator tell."""
+    cl = " ".join((comment or "").split()).lower()
+    if len(cl) < COMMENT_MIN_LENGTH:
+        return True
+    return any(b in cl for b in COMMENT_BOILERPLATE)
 
 
 # Registrant PHONE noise. A privacy/proxy provider publishes ONE phone across every domain it

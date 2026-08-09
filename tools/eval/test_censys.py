@@ -146,10 +146,19 @@ def check():
        "budget_status reports a coherent monthly balance")
     ok(b["max_credits_per_run"] < b["monthly_credits"],
        "the per-run cap is smaller than the month — one run cannot spend the whole quota")
-    ok(cen._budget_block(1, "cert lookup") is None,
-       "a 1-credit lookup inside budget is allowed")
-    ok(isinstance(cen._budget_block(b["max_credits_per_run"] + 1, "huge bulk lookup"), str),
-       "a spend over the per-run cap is BLOCKED with an analyst-readable reason")
+    # These two assert the guard's SHAPE, so they must not depend on how much of the real month's
+    # quota happens to be spent — otherwise the gate turns red for every contributor once the
+    # account's 100 credits run out, which says nothing about the code. Pin the ledger the same
+    # way the exhausted-month case below does.
+    _saved_run, _saved_month = cen._RUN_SPENT, cen._MONTH_SPENT
+    try:
+        cen._RUN_SPENT = cen._MONTH_SPENT = 0
+        ok(cen._budget_block(1, "cert lookup") is None,
+           "a 1-credit lookup inside budget is allowed")
+        ok(isinstance(cen._budget_block(b["max_credits_per_run"] + 1, "huge bulk lookup"), str),
+           "a spend over the per-run cap is BLOCKED with an analyst-readable reason")
+    finally:
+        cen._RUN_SPENT, cen._MONTH_SPENT = _saved_run, _saved_month
 
     saved_run = cen._RUN_SPENT
     saved_month = cen._MONTH_SPENT

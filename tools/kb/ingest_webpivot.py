@@ -29,7 +29,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import kb_refs  # noqa: E402 — reference DATA lives in references/*.json (RULE 3)
 from knowledge_base import KB  # noqa: E402
 from noise_filters import (is_managed_dns, is_parking_favicon, is_noise_email,  # noqa: E402
-                           is_noise_indicator)
+                           is_noise_indicator, is_noise_tracker, is_saturated_reverse,
+                           is_noise_social_handle, is_bulk_registrant,
+                           is_boilerplate_comment, DOM_SKELETON_MIN_TAGS)
 
 # reuse the collector's checksum validator so bad wallets can't enter via a stale raw file either
 try:
@@ -554,6 +556,13 @@ def ingest_file(kb, path):
     for label, vals in (art.get("trackers") or {}).items():
         rel, conf = REL.get(label, ("uses_tracker", "medium"))
         for v in vals:
+            if is_noise_tracker(v):
+                # the hosting platform's own ID on its parking/default page — record it as a fact
+                # about this domain, but never as a clustering hub (mirrors parking_favicon)
+                kb.add_fact("domain", host, "platform_tracker", str(v),
+                            "webpivot", COLLECTOR, observed, "low", ev)
+                n += 1
+                continue
             kb.add_edge("domain", host, rel, "indicator", f"{label}:{v}",
                         "webpivot", COLLECTOR, observed, conf, ev)
             kb.add_fact("indicator", f"{label}:{v}", "kind", label, "webpivot", COLLECTOR, observed, conf, ev)
@@ -572,13 +581,11 @@ def ingest_file(kb, path):
                     f"dom_skeleton:{art['dom_skeleton_sha1'][:16]}",
                     "webpivot", COLLECTOR, observed, "medium", ev)
         n += 1
-    # distinctive HTML comments (shared builder tell — boilerplate filtered)
-    _BOILER = ("litespeed", "wordpress", "wp rocket", "yoast", "google tag manager",
-               "wayback", "archived", "page optimized", "quic.cloud", "elementor",
-               "cache", "w3tc", "autoptimize", "begin", "end", "if lt ie", "supported by")
+    # distinctive HTML comments (shared builder tell — boilerplate filtered).
+    # DATA: references/noise_filters.json -> comment_boilerplate / comment_min_length
     for c in art.get("html_comments") or []:
         cl = " ".join((c or "").split()).lower()
-        if len(cl) < 14 or any(b in cl for b in _BOILER):
+        if is_boilerplate_comment(cl):
             continue
         ch = hashlib.sha1(cl.encode("utf-8", "ignore")).hexdigest()[:16]
         kb.add_edge("domain", host, "same_comment", "indicator", f"comment:{ch}",
@@ -606,7 +613,10 @@ def ingest_file(kb, path):
     # --- socials ---
     for net, handles in (art.get("socials") or {}).items():
         for h in handles:
-            ind = f"social:{net}:{h.rstrip('/').split('/')[-1]}"
+            leaf = h.rstrip("/").split("/")[-1]
+            if is_noise_social_handle(leaf):
+                continue        # a share icon or a bundle's `{u}` placeholder is nobody's account
+            ind = f"social:{net}:{leaf}"
             kb.add_edge("domain", host, "uses_contact", "indicator", ind, "webpivot", COLLECTOR, observed, "medium", ev)
             n += 1
 
@@ -886,16 +896,34 @@ def ingest_file(kb, path):
         lr = piv.get("live_results") or {}
         kind = piv.get("kind", "")
         # map the pivot back to the indicator id used above
+        # The noise checks must be repeated HERE, not only at the seed's own artifact above: this
+        # loop turns a reverse-search result set into one edge per hit, so a platform artifact
+        # (a parking favicon, a host's own analytics ID) lands thousands of unrelated domains on a
+        # single indicator and makes it the largest cluster in the KB.
         ind = None
         if kind == "favicon_hash":
+            if is_parking_favicon(piv["value"]):
+                continue
             ind = f"favicon:{piv['value']}"
         elif kind.startswith("tracker:"):
+            if is_noise_tracker(piv["value"]):
+                continue
             ind = f"{kind.split(':',1)[1]}:{piv['value']}"
         elif kind.startswith("verification:"):
             ind = f"verification:{kind.split(':',1)[1]}:{piv['value']}"
         # FOFA / urlscan hits
         for engine, block in (("fofa", lr.get("fofa")), ("urlscan", lr.get("urlscan"))):
             if not block or block.get("error") or not ind:
+                continue
+            # BASE RATE: an artifact this widely carried is shared infrastructure, and fanning its
+            # hits out into edges is what makes a hosted platform's default favicon the largest
+            # "cluster" in the KB. The seed's own artifact is still recorded above; only the
+            # reverse-search fan-out is suppressed. Catches values no denylist has enumerated.
+            if is_saturated_reverse(block.get("total")):
+                kb.add_fact("domain", host, "saturated_indicator",
+                            f"{ind} ({engine}: {block.get('total')} hits)",
+                            engine, f"webpivot/{engine}", observed, "low", ev)
+                n += 1
                 continue
             hits = [r.get("domain") or r.get("host") for r in block.get("results", [])] \
                 if engine == "fofa" else block.get("domains", [])
@@ -909,9 +937,24 @@ def ingest_file(kb, path):
                             observed, "medium", ev)
                 n += 1
         # reverse-WHOIS hits (share a registrant)
-        if kind == "whois:registrant_email":
+        # The collector already refuses to emit a privacy-proxied registrant, but this ingest is
+        # also fed by older raw files and by other collectors, and one registrar role mailbox
+        # reversed here writes a `registered_by` edge per hit — hundreds of unrelated domains on
+        # a shared abuse address. Re-check here, and apply the same base-rate cap as above.
+        if kind == "whois:registrant_email" and not is_noise_email(piv.get("value") or ""):
             for stk in ("reverse_whois_current", "reverse_whois_historic"):
                 blk = lr.get(stk) or {}
+                # A registrant CONTACT gets the tighter bulk-registrant bound, not the artifact
+                # cap: it is a much weaker hub, and this is the same number ingest_reverse_whois
+                # enforces — they used to disagree (200 vs 500) and a reseller fell between them.
+                _cnt = blk.get("count") or blk.get("total")
+                if is_bulk_registrant(_cnt):
+                    kb.add_fact("domain", host, "bulk_registrant",
+                                f"registrant {piv.get('value')} ({stk}: {_cnt} domains) "
+                                f"— shared registration service, not an owner",
+                                "whoisxml", "webpivot/whois_enrich", observed, "low", ev)
+                    n += 1
+                    continue
                 for hd in blk.get("domains", []) or []:
                     if hd and hd != host and not _is_ip_host(hd):
                         kb.add_edge("domain", hd, "registered_by", "email", piv["value"].lower(),

@@ -764,6 +764,32 @@ async def reference_check(args: dict[str, Any]) -> dict[str, Any]:
 
 
 @tool(
+    "reference_mirrors",
+    "Check (or repair) the reference DENYLISTS that are duplicated across skills. Each skill is "
+    "imported standalone and cannot read another's references/, so a denylist both the collector "
+    "and the ingest need is physically copied — and when the copies drift the failure is SILENT: "
+    "one side filters a platform's default favicon, the other does not, and a thousand-edge false "
+    "cluster reaches the knowledge base with nothing logged. Returns which mirrored groups are "
+    "identical and which have drifted, with the differing values. mode='check' (default) is "
+    "read-only; mode='repair' merges every copy (union — the safe direction, since a value was "
+    "put there by an analyst who had a reason) and writes it back to all sides. The mirror list "
+    "is declared in tests/reference_mirrors.json.",
+    {},   # optional: mode ('check' | 'repair')
+    annotations=READONLY,
+)
+async def reference_mirrors(args: dict[str, Any]) -> dict[str, Any]:
+    mode = str(args.get("mode", "check")).lower()
+    if mode not in ("check", "repair"):
+        return _err("mode must be 'check' or 'repair'.")
+    cmd = [PY, os.path.join("tools", "kb", "sync_mirrors.py")]
+    if mode == "repair":
+        cmd += ["--union", "--write"]
+    r = _run(cmd)
+    return {"content": [{"type": "text", "text": (r.stdout or r.stderr or "").rstrip()}],
+            "is_error": False}
+
+
+@tool(
     "reference_add",
     "Remember a fingerprint in the reference so it improves every future case. Use verdict="
     "'benign' when a hash/keyword turned out to be a common logo / CDN / CSS-framework / template "
@@ -1481,7 +1507,7 @@ COLLECT_SERVER = create_sdk_mcp_server(
                       url_paths, capture_evidence, serp_ads, kb_ingest])
 ANALYZE_SERVER = create_sdk_mcp_server(
     "analyze", tools=[kb_cluster, kb_entity, kb_query_shared, risk_signals,
-                      reverse_whois, cert_overlap, reference_check, reference_add,
+                      reverse_whois, cert_overlap, reference_check, reference_add, reference_mirrors,
                       which_cases, domain_verdict, api_usage, tool_calls,
                       case_clusters, case_frontier, case_loop, case_reopen,
                       render_diagram, case_timeline, render_report, victim_profile])
@@ -1500,6 +1526,7 @@ ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__kb_query_shared", "mcp__analyze__risk_signals",
                  "mcp__analyze__reverse_whois", "mcp__analyze__cert_overlap",
                  "mcp__analyze__reference_check", "mcp__analyze__reference_add",
+                 "mcp__analyze__reference_mirrors",
                  "mcp__analyze__which_cases", "mcp__analyze__domain_verdict",
                  "mcp__analyze__api_usage", "mcp__analyze__tool_calls",
                  "mcp__analyze__case_clusters", "mcp__analyze__case_frontier",

@@ -30,17 +30,31 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import kb_refs  # noqa: E402 — reference DATA lives in references/*.json (RULE 3)
 from knowledge_base import KB  # noqa: E402
 
-# artifact tier by relationship (mirrors IntelAnalysis §1 triage ladder)
-ATTRIBUTION = {"registered_by", "uses_verification", "uses_analytics", "uses_saas",
-               "uses_pixel", "uses_wallet"}   # a reused crypto wallet = the same payee
-# identity artifacts an operator legitimately reuses across MANY of their own domains
-# vs. third-party SERVICE tokens that a shared SEO/marketing agency spreads across UNRELATED
-# clients — the latter over-merge, so they get a much stricter fan-out cap (agency-suspect).
-_IDENTITY_RELS = {"registered_by", "uses_wallet"}
-_SERVICE_RELS = {"uses_verification", "uses_analytics", "uses_saas", "uses_pixel"}
-CORROBORATING = {"uses_contact", "same_template", "same_inline_css", "same_comment",
-                 "uses_theme", "uses_favicon", "uses_tracker", "shows_email"}
-NOISE = {"uses_nameserver"}
+# ---------------------------------------------------------------- evidence weights (RULE 3)
+# DATA: references/evidence_weights.json — the scoring weights behind an attribution call, so an
+# analyst can promote or demote a relation without editing Python. See that file's _comment for
+# why attribution/corroborating deliberately diverge from the graph projection's own tiers.
+# Minimal safety net. Trimmed on purpose and in the CONSERVATIVE direction: on a broken data
+# file fewer relations count as attribution-grade and fewer count as corroborating, so the
+# scorer makes FEWER claims rather than more. `noise_rels` stays complete — shrinking that one
+# would start clustering on managed nameservers, which is the failure that must never happen.
+_EW_FALLBACK = {
+    "attribution_rels": ["registered_by", "uses_verification"],
+    "identity_rels": ["registered_by"],
+    "service_rels": ["uses_analytics"],
+    "corroborating_rels": ["same_template", "uses_favicon"],
+    "noise_rels": ["uses_nameserver"],
+}
+_EW = kb_refs.load_ref(kb_refs.ref_path(__file__, "evidence_weights.json"), _EW_FALLBACK)
+
+ATTRIBUTION = set(_EW["attribution_rels"])
+# identity artifacts an operator legitimately reuses across MANY of their own domains vs.
+# third-party SERVICE tokens a shared SEO/marketing agency spreads across UNRELATED clients —
+# the latter over-merge, so they get a much stricter fan-out cap (agency-suspect).
+_IDENTITY_RELS = set(_EW["identity_rels"])
+_SERVICE_RELS = set(_EW["service_rels"])
+CORROBORATING = set(_EW["corroborating_rels"])
+NOISE = set(_EW["noise_rels"])
 
 # ---------------------------------------------------------------- reference data (RULE 3)
 # privacy-proxy / registrar-role / protected-whois emails — shared by thousands of UNRELATED

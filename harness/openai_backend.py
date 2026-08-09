@@ -64,11 +64,29 @@ def _api_key() -> str:
             or os.environ.get("MOONSHOT_API_KEY") or "")
 
 
-# Harness tier -> concrete model. Default keeps every tier on a tool-capable DeepSeek model;
-# override per deployment with HARNESS_MODEL_MAP.
-_DEFAULT_MODEL_MAP = {"haiku": "deepseek-chat", "sonnet": "deepseek-chat", "opus": "deepseek-chat"}
-# USD per 1M tokens (input, output). DeepSeek standard-price approximations; override for accuracy.
-_DEFAULT_PRICE = {"deepseek-chat": (0.27, 1.10), "deepseek-reasoner": (0.55, 2.19)}
+# DATA: harness/references/model_pricing.json — tier->model map and per-model prices, so a
+# deployment retunes them without a code change (env vars still override per run).
+_OB_HERE = os.path.dirname(os.path.abspath(__file__))
+_OB_WP = os.path.join(os.path.dirname(_OB_HERE), "WebPivot", "tools")
+if _OB_WP not in sys.path:
+    sys.path.append(_OB_WP)
+try:
+    from wp_refs import load_ref as _ob_load_ref
+except Exception:                                             # noqa: BLE001 — degrade, never block
+    def _ob_load_ref(path, fallback):
+        print("[openai_backend] WARNING: wp_refs unavailable; model_pricing.json not read.",
+              file=sys.stderr)
+        return dict(fallback)
+_OB_FALLBACK = {
+    "openai_compatible_models": {"deepseek-chat": [0.27, 1.10]},
+    "harness_tier_model_map": {"opus": "deepseek-chat"},
+}
+_OB_REF = _ob_load_ref(os.path.join(_OB_HERE, "references", "model_pricing.json"), _OB_FALLBACK)
+
+# Harness tier -> concrete model; override per deployment with HARNESS_MODEL_MAP.
+_DEFAULT_MODEL_MAP = dict(_OB_REF["harness_tier_model_map"])
+# USD per 1M tokens (input, output); override with HARNESS_MODEL_PRICE for accuracy.
+_DEFAULT_PRICE = {k: tuple(v) for k, v in _OB_REF["openai_compatible_models"].items()}
 
 STRUCT_RETRIES = int(os.environ.get("HARNESS_STRUCT_RETRIES", "3"))
 HTTP_TIMEOUT = int(os.environ.get("HARNESS_HTTP_TIMEOUT", "180"))

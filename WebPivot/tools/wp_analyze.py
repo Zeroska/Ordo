@@ -757,9 +757,17 @@ def whois_enrich_result(result: dict, do_reverse: bool = False,
                     piv.setdefault("live_results", {})[f"reverse_whois_{st}"] = r
         result["pivots"].append(piv)
 
+    # A phone or address sitting in a PRIVACY-PROXIED record belongs to the proxy, whatever the
+    # digits: Domains By Proxy publishes one switchboard and one Tempe address across every domain
+    # it fronts, and neither string carries a privacy marker of its own to catch. So judge the
+    # RECORD, not the value — this covers proxies no denylist has enumerated.
+    _proxied = any(whois_enrich.is_privacy(v) for v in
+                   (w.get("registrant_email"), w.get("registrant_org"), w.get("registrant_name"))
+                   if v)
+
     # registrant phone → reverse-WHOIS-by-phone pivot (current + historical numbers)
     for ph in _whois_registrant_vals(w, hist, "phone"):
-        if whois_enrich.is_privacy(ph):
+        if _proxied or whois_enrich.is_privacy(ph):
             continue  # registrar/privacy-proxy phone (e.g. Dynadot's) — not the owner
         result["pivots"].append({
             "kind": "whois:registrant_phone", "value": ph, "confidence": "medium",
@@ -773,7 +781,7 @@ def whois_enrich_result(result: dict, do_reverse: bool = False,
 
     # registrant address → reverse-WHOIS-by-address pivot (a distinctive address ties siblings)
     for ad in _whois_registrant_vals(w, hist, "address"):
-        if whois_enrich.is_privacy(ad):
+        if _proxied or whois_enrich.is_privacy(ad):
             continue
         result["pivots"].append({
             "kind": "whois:registrant_address", "value": ad, "confidence": "medium",

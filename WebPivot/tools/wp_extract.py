@@ -30,6 +30,34 @@ import urllib.error
 from wp_common import *  # noqa
 from wp_hash import *  # noqa
 from wp_net import *  # noqa
+from wp_refs import ref_path, load_ref  # noqa: E402 — reference DATA in references/*.json
+
+# DATA: references/generic_labels.json — base-rate floors for the structural fingerprints.
+# Below these a fingerprint is universal boilerplate and identifies nobody, so emitting it
+# fuses every page that shares the boilerplate into one false "same template" cluster.
+_GL_FALLBACK = {
+    "subdomain_labels": ["www", "api", "cdn", "mail"],
+    "resource_basename_segments": ["jquery", "bootstrap"],
+    "dom_skeleton_min_tags": {"tags": 12},
+    "social_asset_extensions": [".png", ".jpg", ".svg", ".css", ".js"],
+    "platform_default_favicon_mmh3": [342030173],
+}
+_GL_REF = load_ref(ref_path(__file__, "generic_labels.json"), _GL_FALLBACK)
+DOM_SKELETON_MIN_TAGS = int(_GL_REF["dom_skeleton_min_tags"]["tags"])
+SOCIAL_ASSET_EXTENSIONS = tuple(_GL_REF["social_asset_extensions"])
+
+# DATA: references/social_platforms.json — the platform registry and its base-rate controls.
+_SP_FALLBACK = {
+    "social_hosts": {"twitter.com": "twitter", "t.me": "telegram", "facebook.com": "facebook",
+                     "instagram.com": "instagram", "github.com": "github"},
+    "boilerplate_social_handles": ["facebook.com/wix", "twitter.com/wix"],
+    "telegram_boilerplate": ["share", "telegram", "iv", "s"],
+}
+_SP_REF = load_ref(ref_path(__file__, "social_platforms.json"), _SP_FALLBACK)
+
+# DATA: references/third_party_noise.json — platform system mailboxes.
+_TPN_FALLBACK = {"boilerplate_email_hosts": ["wixpress.com", "sentry.io"]}
+_TPN_REF = load_ref(ref_path(__file__, "third_party_noise.json"), _TPN_FALLBACK)
 
 QR_DECODE_IMAGES = False
 
@@ -66,37 +94,28 @@ CRYPTO_PATTERNS = [
     ("ltc",   r"\b(ltc1[a-z0-9]{25,90}|[LM3][a-km-zA-HJ-NP-Z1-9]{26,33})\b"),
 ]
 
-SOCIAL_HOSTS = {
-    "twitter.com": "twitter", "x.com": "twitter", "t.me": "telegram",
-    "telegram.me": "telegram", "telegram.dog": "telegram",
-    "facebook.com": "facebook", "instagram.com": "instagram",
-    "linkedin.com": "linkedin", "youtube.com": "youtube", "youtu.be": "youtube",
-    "tiktok.com": "tiktok", "github.com": "github", "discord.gg": "discord",
-    "discord.com": "discord", "vk.com": "vk", "wa.me": "whatsapp",
-    "api.whatsapp.com": "whatsapp", "medium.com": "medium", "reddit.com": "reddit",
-    "m.me": "messenger", "zalo.me": "zalo", "zaloapp.com": "zalo",
-}
+# DATA: references/social_platforms.json -> social_hosts
+SOCIAL_HOSTS = dict(_SP_REF["social_hosts"])
 
 # Platform boilerplate — default artifacts shipped by hosted site builders (Wix, Squarespace,
 # Shopify, Webflow). NOT operator-specific: a favicon or social handle every Wix site carries
 # pivots to nothing, so these are filtered out before pivots are built (they created false
 # same-operator links on masterdarrenfx.com this session).
 
-BOILERPLATE_FAVICON_MMH3 = {
-    342030173,   # Wix default favicon
-}
+# DATA: references/generic_labels.json -> platform_default_favicon_mmh3
+BOILERPLATE_FAVICON_MMH3 = {int(x) for x in _GL_REF["platform_default_favicon_mmh3"]}
 
-BOILERPLATE_SOCIAL_HANDLES = {
-    "facebook.com/wix", "twitter.com/wix", "instagram.com/wix", "youtube.com/wix",
-    "facebook.com/squarespace", "twitter.com/squarespace", "instagram.com/squarespace",
-    "facebook.com/shopify", "twitter.com/shopify", "instagram.com/shopify",
-    "facebook.com/webflow", "twitter.com/webflow",
-}
+# Unsubstituted template placeholders in a scraped URL path: {u} {handle} ${name} %s %(x)s
+# <user> :user — every templating dialect a bundle might ship. Matching one means the string is
+# the pattern, not a value, so it is nobody's handle.
+TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{[^/}]*\}|\$\{[^}]*\}|%[sd]\b|%\([^)]*\)|<[^/>]+>|(?:^|/):\w+$")
+
+# DATA: references/social_platforms.json -> boilerplate_social_handles
+BOILERPLATE_SOCIAL_HANDLES = set(_SP_REF["boilerplate_social_handles"])
 # Email / Sentry-DSN host suffixes that are platform system addresses, never the site owner's.
 
-BOILERPLATE_EMAIL_HOSTS = (
-    "wixpress.com", "sentry.io", "squarespace.com", "shopify.com", "webflow.com",
-)
+# DATA: references/third_party_noise.json -> boilerplate_email_hosts
+BOILERPLATE_EMAIL_HOSTS = tuple(_TPN_REF["boilerplate_email_hosts"])
 
 # Site-ownership verification tokens — strongly owner-tied, excellent pivots.
 
@@ -131,14 +150,14 @@ LD_JSON_RE = re.compile(
     r"""<script\b[^>]*\btype=["']application/ld\+json["'][^>]*>(.*?)</script\s*>""", re.I | re.S)
 LD_PHONE_RE = re.compile(r'"(?:telephone|faxNumber)"\s*:\s*"([^"]{6,32})"', re.I)
 
-
 TEL_HREF_RE = re.compile(r"""<a\b[^>]*\bhref=["']tel:([^"']+)["']""", re.I)
 # Telegram deep/web links — channel, group-invite, or user. tg:// handled separately.
 
 TG_LINK_RE = re.compile(r"""(?i)^(?:https?:)?//(?:t\.me|telegram\.me|telegram\.dog)/(.+)$""")
 # Non-operator Telegram paths (share widget, Telegram's own account, in-app viewer).
 
-TG_BOILERPLATE = {"share", "telegram", "iv", "s"}
+# DATA: references/social_platforms.json -> telegram_boilerplate
+TG_BOILERPLATE = set(_SP_REF["telegram_boilerplate"])
 
 FOOTER_RE = re.compile(r"<footer\b[^>]*>(.*?)</footer>", re.I | re.S)
 
@@ -616,6 +635,15 @@ def extract_socials(hosts_hrefs):
         handle = f"{host}{pr.path.rstrip('/')}".lower()
         if handle in BOILERPLATE_SOCIAL_HANDLES:
             continue
+        # drop UNSUBSTITUTED TEMPLATE PLACEHOLDERS — a bundle ships `github.com/{u}` or
+        # `twitter.com/%s` as the pattern it will fill at runtime. Scraped literally it becomes a
+        # "handle" that every site built from that library appears to share.
+        if TEMPLATE_PLACEHOLDER_RE.search(pr.path or ""):
+            continue
+        # drop STATIC ASSETS on a social host (github's octocat.png, a share icon) — the host
+        # matches the platform list but the link declares no account.
+        if (pr.path or "").lower().rstrip("/").endswith(SOCIAL_ASSET_EXTENSIONS):
+            continue
         for shost, name in SOCIAL_HOSTS.items():
             if host == shost or host.endswith("." + shost):
                 out.setdefault(name, []).append(href)
@@ -741,8 +769,15 @@ def extract_footer(html: str):
     return out
 
 def dom_skeleton_hash(html: str):
-    """Structure-only fingerprint: hash of the ordered tag skeleton (template reuse)."""
+    """Structure-only fingerprint: hash of the ordered tag skeleton (template reuse).
+
+    Returns None when the page has too few tags to be distinctive. Without that floor an empty,
+    blocked, JSON or plain-text response yields sha1("") — and every such failed collection in the
+    knowledge base collapses onto that one value as if the pages shared a template.
+    """
     tags = TAG_RE.findall(html)
+    if len(tags) < DOM_SKELETON_MIN_TAGS:
+        return None
     skeleton = ">".join(t.lower() for t in tags)
     return hashlib.sha1(skeleton.encode("utf-8", "ignore")).hexdigest()
 

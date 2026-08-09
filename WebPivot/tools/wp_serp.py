@@ -441,9 +441,21 @@ def _call(engine_key: str, params: dict, action: str, cost: int = None, timeout:
         _record(action, 0, shown, ok=False)
         return None, {"error": str(e)}
     if isinstance(data, dict) and data.get("error"):
-        # A no-results answer. SerpApi does not charge for it; recording it at zero keeps the ledger
-        # honest while still leaving a trace that the archive WAS asked.
-        _record(action, 0, shown, results=0, ok=False)
+        # A no-results answer — and SerpApi DOES bill it. This was previously recorded at zero on
+        # the assumption that an empty result is free; measured against the live account endpoint
+        # it is not: one such query moved this_month_usage 11 -> 12 and plan_searches_left
+        # 239 -> 238. Recording it at zero made the ledger under-report, which matters because
+        # month_spent() sums exactly this field to enforce the monthly cap — so the guard believed
+        # it had headroom the account did not have. A search that reached the API and came back 200
+        # is a spent search whatever the payload says. Compare `ledger_spent_this_month` with
+        # `account_spent_this_month` in `wp_serp.py budget` to confirm the two agree.
+        # (An HTTP error above is different and stays at zero: SerpApi does not bill those.)
+        # ok=True is deliberate and is what makes the cost stick: api_usage.record() zeroes the
+        # credits of any call flagged ok=False, and `ok` means "the CALL succeeded", not "results
+        # were found". This one returned HTTP 200 and was billed; `results=0` is what records that
+        # the archive held nothing, and the caller still gets {"empty": ...} to tell a real negative
+        # apart from a query that never ran.
+        _record(action, cost, shown, results=0, ok=True, is_detail=is_detail)
         return None, {"empty": str(data["error"])}
     _record(action, cost, shown, results=_count_results(data), is_detail=is_detail)
     return data, None

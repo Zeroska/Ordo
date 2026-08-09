@@ -182,9 +182,14 @@ _LABELS_FALLBACK = {
                          "shop", "blog", "test", "dev", "m", "web"],
     "resource_basename_segments": ["jquery", "bootstrap", "vendor", "main", "index", "app",
                                    "bundle", "min", "js", "css"],
+    "noise_tracker_ids": [],
 }
 _LABELS_REF = load_ref(ref_path(__file__, "generic_labels.json"), _LABELS_FALLBACK)
 _GENERIC_SUBLABELS = frozenset(_LABELS_REF["subdomain_labels"])
+# Analytics/tag ids owned by a hosting platform or a site-builder TEMPLATE, not by the site owner.
+# Filtered HERE as well as at ingest so a keyless/offline run's --leads output does not present a
+# platform container as a high-confidence same-owner pivot for an analyst to chase by hand.
+_NOISE_TRACKER_IDS = {str(x).strip().upper() for x in _LABELS_REF["noise_tracker_ids"]}
 
 
 def _distinctive_subdomain(host: str):
@@ -329,6 +334,12 @@ def build_pivots(art: dict, base_host: str):
 
     for label, vals in art.get("trackers", {}).items():
         for v in vals:
+            if str(v).strip().upper() in _NOISE_TRACKER_IDS:
+                add(f"platform_tracker:{label}", v, "low", [],
+                    "Platform/template analytics container carried by every tenant or every site "
+                    "built from this template — NOT the site owner's account. Recorded as context; "
+                    "never cluster on it.")
+                continue
             add(f"tracker:{label}", v, "high", [
                 {"service": "PublicWWW", "query": f'"{v}"'},
                 {"service": "FOFA", "query": _fofa_body(v)},

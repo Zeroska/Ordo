@@ -85,31 +85,36 @@
   "privacy_markers": {
     "_comment": "Substrings marking a registrant name/org as privacy-proxied or redacted. Consumed by ingest_webpivot when deciding whether a registrant is linkable.",
     "values": [
-      "privacy",
-      "redacted",
-      "whoisguard",
+      "contact privacy",
       "data protected",
-      "withheld",
-      "not disclosed",
       "domains by proxy",
       "domainsbyproxy",
-      "registration private",
-      "private by design",
+      "gdpr masked",
       "identity protect",
-      "contact privacy",
-      "perfect privacy"
+      "not disclosed",
+      "perfect privacy",
+      "privacy",
+      "private by design",
+      "redacted",
+      "registration private",
+      "statutory masking",
+      "whoisguard",
+      "withheld"
     ]
   },
   "proxy_email_domains": {
     "_comment": "Email domains run by a privacy proxy or registrar. Matched against the part after '@'.",
     "values": [
-      "porkbun.com",
+      "1and1.com",
+      "contactprivacy.com",
+      "domainsbyproxy.com",
       "godaddy.com",
       "namecheap.com",
-      "domainsbyproxy.com",
-      "withheldforprivacy.com",
+      "porkbun.com",
+      "privacyguardian.org",
       "privacyprotect.org",
-      "contactprivacy.com"
+      "whoisprivacyprotect.com",
+      "withheldforprivacy.com"
     ]
   },
   "proxy_email_tokens": {

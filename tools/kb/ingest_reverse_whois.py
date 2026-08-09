@@ -26,7 +26,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "..", "..", "WebPivot", "tools"))
 from knowledge_base import KB  # noqa: E402
-from noise_filters import is_noise_phone, is_noise_email  # noqa: E402
+from noise_filters import (is_noise_phone, is_noise_email,  # noqa: E402
+                           BULK_REGISTRANT_MAX_DOMAINS)
 import whois_enrich  # noqa: E402
 
 
@@ -38,7 +39,7 @@ def main():
     ap.add_argument("--phone", help="reverse-WHOIS by registrant phone (bulk = registrar noise)")
     ap.add_argument("--person", help="person label to attach to the email (optional)")
     ap.add_argument("--search-type", choices=["current", "historic"], default="historic")
-    ap.add_argument("--max-domains", type=int, default=200,
+    ap.add_argument("--max-domains", type=int, default=BULK_REGISTRANT_MAX_DOMAINS,
                     help="above this, treat the term as a shared registrar/reseller (noise) and DO NOT link")
     args = ap.parse_args()
     if not (args.email or args.name or args.phone):

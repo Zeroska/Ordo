@@ -173,6 +173,25 @@ def main():
         print("no cases found under tools/eval/cases/", file=sys.stderr)
         return 1
 
+    # ---- METERED-SPEND GUARD -------------------------------------------------------------
+    # A regression gate must cost nothing to run. It stopped being true silently: the Censys
+    # layer was folded into IPPivot, test_ippivot's mock list was not updated with it, and every
+    # gate run then spent 2 real credits against a documentation IP. Over a day of iterating that
+    # burned a third of the 100-credit MONTHLY per-account quota and disarmed Censys for actual
+    # casework — with nothing in the output to say so. Every metered call is recorded in
+    # MEMORY/api_usage.jsonl by api_usage.record(), so the ledger's own length is the check: if it
+    # grows across a gate run, something reached a paid API and the run is reported FAILED.
+    _ledger = os.path.join(REPO, "MEMORY", "api_usage.jsonl")
+
+    def _ledger_len():
+        try:
+            with open(_ledger, encoding="utf-8") as fh:
+                return sum(1 for line in fh if line.strip())
+        except OSError:
+            return 0
+
+    _spend_before = _ledger_len()
+
     report, failed_cases = [], 0
     for name, inp, expected in cases:
         entry = {"case": name, "description": expected.get("description", ""),
@@ -269,6 +288,30 @@ def main():
             unit_total += 1
             unit_failed += 1
             print(f"\n\033[31m✗\033[0m [UNIT] {desc} — harness error: {e}")
+
+    # ---- METERED-SPEND GUARD: report and fail if the gate touched a paid API ----------------
+    _spent = _ledger_len() - _spend_before
+    unit_total += 1
+    if _spent > 0:
+        unit_failed += 1
+        detail = ""
+        try:
+            with open(_ledger, encoding="utf-8") as fh:
+                rows = [json.loads(x) for x in fh if x.strip()][-_spent:]
+            by = {}
+            for r in rows:
+                k = f"{r.get('provider')}:{r.get('action')}"
+                by[k] = by.get(k, 0) + int(r.get("credits") or 1)
+            detail = "  ".join(f"{k}={v}" for k, v in sorted(by.items()))
+        except Exception:                                        # noqa: BLE001 — reporting only
+            pass
+        print(f"\n\033[31m✗\033[0m [UNIT] metered-spend guard — the gate spent {_spent} "
+              f"metered call(s) on a PAID API: {detail}")
+        print("      A regression gate must be free to run. Stub the new provider in the unit "
+              "module that reached it (see test_ippivot's `saved`/mock block for the pattern).")
+    else:
+        print("\n\033[32m✔\033[0m [UNIT] metered-spend guard — the gate reached no paid API "
+              "(MEMORY/api_usage.jsonl unchanged)")
 
     npass = len(cases) - failed_cases
     total_failed = failed_cases + unit_failed
