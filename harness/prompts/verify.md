@@ -1,3 +1,4 @@
+{{scope}}
 ADVERSARIAL VERIFICATION. You just proposed the same-operator cluster(s) for case `{{case}}` (domains: {{seed_csv}}). Now switch sides and try HARD to REFUTE your own attribution. A link that survives a genuine attempt to break it is defensible; one you never attacked is not. Use ONLY the provided tools; reason only — do NOT emit the final JSON yet.
 
 For EACH same-operator link you drew (each shared artifact tying two domains together), attack it:

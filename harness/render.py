@@ -35,6 +35,26 @@ _ATTR = {
     "inconclusive": "grey58",
 }
 _CONF = {"high": "green", "moderate": "yellow", "low": "red"}
+# premise verdict -> colour. `contradicted` is deliberately the loudest: an intake claim the
+# evidence broke is the most valuable thing a run can return, and it must not read as a footnote.
+_PREMISE = {
+    "supported": "green",
+    "partially_supported": "yellow",
+    "not_supported": "grey58",
+    "contradicted": "red",
+    "inconclusive": "grey58",
+}
+
+
+def _premise_line(a: Assessment) -> str:
+    """`Stated premise … Collection verdict …` — the intake's required output line, or '' when
+    the schema predates it."""
+    verdict = getattr(a, "premise_verdict", "") or ""
+    claim = (getattr(a, "premise", "") or "").strip()
+    if not verdict and not claim:
+        return ""
+    return f"Stated premise: {claim or '(none stated — run assumed a class)'}  ·  " \
+           f"Collection verdict: {verdict.replace('_', ' ') or 'inconclusive'}"
 
 
 def render_terminal(a: Assessment, table_md: str = "") -> None:
@@ -55,7 +75,15 @@ def render_terminal(a: Assessment, table_md: str = "") -> None:
     badge.append("    ")
     badge.append(f" CONFIDENCE · {a.confidence.upper()} ",
                  style=f"reverse bold {_CONF.get(a.confidence, 'white')}")
+    pv = getattr(a, "premise_verdict", "")
+    if pv:
+        badge.append("    ")
+        badge.append(f" PREMISE · {pv.replace('_', ' ').upper()} ",
+                     style=f"reverse bold {_PREMISE.get(pv, 'white')}")
     c.print(badge, "\n")
+    line = _premise_line(a)
+    if line:
+        c.print(Text(line, style="italic"), "\n")
 
     if table_md:                                   # the standard Domain Summary table
         from rich.markdown import Markdown
@@ -93,7 +121,12 @@ def render_markdown(a: Assessment, table_md: str = "") -> str:
     out: list[str] = ["# Assessment", ""]
     out += [f"**BLUF —** {a.bluf}", ""]
     out += [f"- **Attribution:** `{a.attribution_level}`",
-            f"- **Confidence:** `{a.confidence}`", ""]
+            f"- **Confidence:** `{a.confidence}`"]
+    pv = getattr(a, "premise_verdict", "")
+    if pv:
+        out.append(f"- **Premise verdict:** `{pv}`"
+                   + (f" — stated: {a.premise}" if getattr(a, "premise", "") else ""))
+    out.append("")
     if table_md:
         out += [table_md.strip(), ""]
     if a.cluster:

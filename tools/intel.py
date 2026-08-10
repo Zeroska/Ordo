@@ -458,6 +458,22 @@ def _is_loop_authored_md(path):
     return cs.may_overwrite_assessment(path, cs.EVIDENCE_REPORT_MD)
 
 
+def _scope_premise(case):
+    """The claim this case was opened on, from the harness intake record — '' when none was set.
+
+    Read-only and best-effort on purpose: the loop must run identically on a machine where the
+    harness is absent, so a missing module or an unscoped case costs the line, not the round."""
+    try:
+        sys.path.insert(0, os.path.join(ROOT, "harness"))
+        import case_scope
+        s = case_scope.resolve(case, persist=False)
+        if case_scope.said(s, "claim") and s.get("claim"):
+            return f"{s['claim']} (stated; basis: {s.get('basis') or 'unstated'})"
+        return f"assumed target_class `{s.get('target_class')}` — no claim was stated"
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _render_assessment(case_dir, case, raw_files, fr, verdict, a, clusters=None):
     """Write the human ICD-203 assessment.md, and a machine-readable assessment.json that conforms to
     the SAME schema the SDK/IntelAnalysis path uses (bluf, cluster, attribution_level, confidence,
@@ -553,6 +569,12 @@ def _render_assessment(case_dir, case, raw_files, fr, verdict, a, clusters=None)
                     for h in collected],
         "attribution_level": "inconclusive",   # the mechanical loop never attributes — IntelAnalysis does
         "confidence": "low",
+        # Same reason, for the intake premise: this loop collects and converges, it does not weigh
+        # a claim. It records WHAT was asserted so the analyst sees it, and leaves the verdict at
+        # `inconclusive` — the honest value for "not tested here". Anything else would let a
+        # mechanical round appear to have confirmed the requester's belief.
+        "premise": _scope_premise(case),
+        "premise_verdict": "inconclusive",
         "evidence": [f"convergence: {verdict['verdict']} ({verdict.get('rounds', 0)} round(s))",
                      f"{len(cluster)} shared cluster seed(s) recorded in shared.txt "
                      f"(scoped to this case's hosts)",

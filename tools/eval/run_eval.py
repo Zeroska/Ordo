@@ -264,6 +264,9 @@ def main():
                                "normalisation, cross-host patterns, manifest hashing + tamper "
                                "detection"),
         ("test_references", "reference DATA layer — files documented, consumers not on fallback, no drift"),
+        ("test_case_scope", "case intake — no-touch class derives the gate denial, passive_first "
+                            "does not, victim ownership reaches the judge, a defaulted value is "
+                            "never rendered as an answer, and nothing ever blocks"),
         ("test_tool_gate", "tool-call gate — hostile egress blocked above the tools, submission "
                            "needs approval, credit budget, ledger, all 3 front-ends, hand-back"),
         ("test_timeline", "temporal layer — format parsing / overlap vs shared value / expiry cohort / online citations"),

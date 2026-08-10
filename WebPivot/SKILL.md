@@ -412,6 +412,14 @@ start. Nothing given, or the caller is `intel.py` / the orchestrator / MCP / a b
 ask) → proceed as **`unknown`**: passive-first, liveness + archive timeline first (they usually
 resolve the class), and **state that assumption in the deliverable**.
 
+**Record the answers so the automated path gets them too.** Once you have them, write them to the
+case with the **`case_scope`** MCP tool (`case_scope(case=…, target_class=…, purpose=…, claim=…,
+basis=…, brand=…, how=…, window=…, falsifier=…)`). It persists to `cases/<case>/scope.json`, and
+every harness phase — collect, correlate, verify, assess — renders that record into its prompt on
+this round and every resume. A no-touch class set there becomes a **hard gate denial** of outbound
+collection, not a suggestion. Read it back with `case_scope(case=…)`; `python3
+harness/case_scope.py questions` prints the same question set the harness expects.
+
 **Two classes change behaviour the most:**
 
 - **`threat_actor_infra` → never fetch from analyst egress.** A direct request tells the operator

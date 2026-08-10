@@ -1099,6 +1099,50 @@ async def doc_metadata(args: dict[str, Any]) -> dict[str, Any]:
 
 
 @tool(
+    "case_scope",
+    "The case INTAKE record — what this target IS, and what claim the run is testing. READ it "
+    "before collecting and WRITE it as soon as the analyst tells you any of it; every harness "
+    "phase renders it into its prompt, so this is how context reaches the automated path that "
+    "otherwise has nobody to ask. Call with only `case` to READ (also prints the questions to "
+    "ask when nothing is set yet); pass any of target_class / purpose / claim / basis / brand / "
+    "how / window / falsifier to SET it (persisted to cases/<case>/scope.json, so later rounds, "
+    "a --continue resume and the other front-end inherit it). `target_class` is one of "
+    "confirmed_scam · suspected_scam · threat_actor_infra · victim_host · benign_check · unknown "
+    "and it decides three things: the FETCH POSTURE (threat_actor_infra means the tool gate "
+    "DENIES outbound collection from this address — passive sources only), the OWNERSHIP rule "
+    "(on victim_host the page's WHOIS/favicon/cert/analytics are the VICTIM's and clustering on "
+    "them fuses unrelated victims into a fake operator estate), and the DISCONFIRMING checks the "
+    "run must report on. `claim` is recorded as an ASSERTION WITH A SOURCE, never as a collected "
+    "fact — the assessment answers it with a premise_verdict. Setting nothing is allowed: an "
+    "unscoped case resolves to `unknown` under the conservative posture and the deliverable must "
+    "say so. Use `no_direct_contact=true` when the analyst forbids touching the target at all, "
+    "`no_spend=true` when metered credits are not authorised.",
+    {"case": str},   # optional: target_class, purpose, claim, basis, brand, how, window,
+                     # falsifier, no_direct_contact (bool), no_spend (bool)
+    annotations=ToolAnnotations(readOnlyHint=False),   # writes cases/<case>/scope.json
+)
+async def case_scope(args: dict[str, Any]) -> dict[str, Any]:
+    case = str(args.get("case") or "").strip()
+    if not case:
+        return _err("case_scope needs `case`: the case id whose scope you want to read or set.")
+    setters = {"target_class": "--target-class", "purpose": "--purpose", "claim": "--claim",
+               "basis": "--basis", "brand": "--brand", "how": "--how",
+               "window": "--window", "falsifier": "--falsifier"}
+    cmd = [PY, os.path.join("harness", "case_scope.py"),
+           "set" if any(args.get(k) for k in setters) or args.get("no_direct_contact")
+           or args.get("no_spend") else "show", case]
+    for key, flag in setters.items():
+        if args.get(key):
+            cmd += [flag, str(args[key])]
+    for key, flag in (("no_direct_contact", "--no-direct-contact"), ("no_spend", "--no-spend")):
+        if args.get(key):
+            cmd.append(flag)
+    r = _run(cmd)
+    return {"content": [{"type": "text", "text": r.stdout or r.stderr or "no output"}],
+            "is_error": r.returncode != 0}
+
+
+@tool(
     "tool_calls",
     "Read back the TOOL-CALL LEDGER — what a run actually DID, the action counterpart to "
     "api_usage (which reports what it SPENT). Every tool call on every front-end is written to "
@@ -1718,7 +1762,7 @@ COLLECT_SERVER = create_sdk_mcp_server(
 ANALYZE_SERVER = create_sdk_mcp_server(
     "analyze", tools=[kb_cluster, kb_entity, kb_query_shared, risk_signals,
                       reverse_whois, cert_overlap, reference_check, reference_add, reference_mirrors,
-                      which_cases, domain_verdict, api_usage, tool_calls,
+                      which_cases, domain_verdict, api_usage, tool_calls, case_scope,
                       case_clusters, case_frontier, case_loop, case_reopen,
                       render_diagram, case_timeline, render_report, victim_profile])
 
@@ -1739,6 +1783,7 @@ ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__reference_mirrors",
                  "mcp__analyze__which_cases", "mcp__analyze__domain_verdict",
                  "mcp__analyze__api_usage", "mcp__analyze__tool_calls",
+                 "mcp__analyze__case_scope",
                  "mcp__analyze__case_clusters", "mcp__analyze__case_frontier",
                  "mcp__analyze__case_loop",
                  "mcp__analyze__case_reopen",

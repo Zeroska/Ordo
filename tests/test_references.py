@@ -144,6 +144,7 @@ def check():
     import render_report                                                           # noqa: E401
     import victim_profile                                                          # noqa: E401
     import audit                                                                   # noqa: E401
+    import case_scope                                                              # noqa: E401
     import wp_liveness                                                             # noqa: E401
     import tools                                                                   # noqa: E401  (harness/tools.py — the context governor)
 
@@ -363,6 +364,17 @@ def check():
         # unclassified: the calls are still logged, they are just no longer gated or counted
         # against the credit budget. A gate that silently stops covering `censys` is worse than
         # one that is absent, because the run still prints a governance banner.
+        # The case intake. On the fallback three target classes survive instead of six, so a run
+        # scoped `confirmed_scam` or `benign_check` silently resolves to `unknown` and loses the
+        # class's own disconfirming list — the checks that catch a confidently-stated class being
+        # wrong. The scope switches empty out too, so an ad funnel stops turning on the cloaking
+        # probe and the collection quietly describes the decoy page.
+        ("case_scope.CLASSES", case_scope.CLASSES,
+         case_scope._INTAKE_FALLBACK["target_classes"]),
+        ("case_scope.QUESTIONS", case_scope.QUESTIONS,
+         case_scope._INTAKE_FALLBACK["intake_questions"]),
+        ("case_scope.SWITCHES", case_scope.SWITCHES,
+         case_scope._INTAKE_FALLBACK["scope_switches"]),
         ("audit.OUTBOUND_TOOLS", audit.OUTBOUND_TOOLS,
          audit._POLICY_FALLBACK["outbound_tools"]),
         ("audit.METERED_TOOLS", audit.METERED_TOOLS,

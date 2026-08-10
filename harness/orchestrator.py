@@ -31,6 +31,7 @@ from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import audit  # noqa: E402  — the tool-call gate + ledger, shared by all three front-ends
+import case_scope  # noqa: E402  — the case INTAKE record (target class, posture, premise)
 import render  # noqa: E402
 import tools as T  # noqa: E402
 from schemas import Assessment  # noqa: E402
@@ -161,6 +162,22 @@ def _prompt(name: str, **kw: object) -> str:
     return body
 
 
+# --------------------------------------------------------------------------- case scope (intake)
+# Resolved ONCE per case and cached, then read by every phase. A module-level cache is safe here
+# where the per-phase `hostile` closure was not: the scope is constant for the whole run, while
+# `hostile` had to be bound per phase. Any entry point works — a `--continue` resume or the other
+# front-end picks the same record back up off `cases/<case>/scope.json`.
+_SCOPE_CACHE: dict[str, dict] = {}
+
+
+def _scope(case: str) -> dict:
+    """This case's intake record. Never raises and never returns None: an unscoped case resolves
+    to the conservative `unknown` class, which the rendered block discloses."""
+    if case not in _SCOPE_CACHE:
+        _SCOPE_CACHE[case] = case_scope.resolve(case, persist=False)
+    return _SCOPE_CACHE[case]
+
+
 def _domain_table(case: str) -> str:
     """Render the standard analyst Domain Summary table for the case's collected domains."""
     raw = os.path.join(ROOT, "cases", case, "raw")
@@ -282,6 +299,7 @@ async def collect_fanout(seeds: list[str], case: str, *, hostile: bool = False,
             r = await _phase(
                 _prompt(
                     "collect_one",
+                    scope=case_scope.collect_directives(_scope(case)),
                     case=case,
                     prior=_prior_knowledge([seed]),
                     seed_lines=f"- {seed}",
@@ -323,6 +341,7 @@ async def investigate(seeds: list[str], case: str, hostile: bool = False,
         p1 = await _phase(
             _prompt(
                 "collect",
+                scope=case_scope.collect_directives(_scope(case)),
                 case=case,
                 prior=prior,
                 seed_lines=seed_lines,
@@ -358,7 +377,8 @@ async def _judge(domains: list[str], case: str) -> tuple[Assessment | None, dict
     seed_csv = ", ".join(domains)
     # PHASE 2 — CORRELATE  (IntelAnalysis brain, judge model). Fresh session, reads the KB.
     p2 = await _phase(
-        _prompt("correlate", case=case, seed_csv=seed_csv),
+        _prompt("correlate", scope=case_scope.judgment_directives(_scope(case)),
+                case=case, seed_csv=seed_csv),
         label="correlate",
         system=_skill("IntelAnalysis"),
         tools=T.ANALYZE_TOOLS,
@@ -377,7 +397,8 @@ async def _judge(domains: list[str], case: str) -> tuple[Assessment | None, dict
     # then resumes THIS session, so the structured output reflects only the surviving links.
     if VERIFY_ON:
         pv = await _phase(
-            _prompt("verify", case=case, seed_csv=seed_csv),
+            _prompt("verify", scope=case_scope.judgment_directives(_scope(case)),
+                    case=case, seed_csv=seed_csv),
             label="verify", system=_skill("IntelAnalysis"), tools=T.ANALYZE_TOOLS,
             servers={"analyze": T.ANALYZE_SERVER}, resume=session,
             model=VERIFY.model, effort=VERIFY.effort, case=case)
@@ -386,7 +407,7 @@ async def _judge(domains: list[str], case: str) -> tuple[Assessment | None, dict
             session = pv.session_id      # ASSESS resumes the adversarial session, not raw correlate
 
     # PHASE 3 — ASSESS  (resume the (verified) judgment session; schema-forced structured assessment)
-    assess_prompt = _prompt("assess")
+    assess_prompt = _prompt("assess", scope=case_scope.judgment_directives(_scope(case)))
     assess_kw = dict(system=_skill("IntelAnalysis"), tools=T.ANALYZE_TOOLS,
                      servers={"analyze": T.ANALYZE_SERVER}, resume=session,
                      output_schema=Assessment, case=case)
@@ -748,6 +769,38 @@ def _pop_val(argv: list[str], name: str, default: str) -> str:
     return default
 
 
+def _scope_from_argv(argv: list[str], case: str) -> dict:
+    """Pull the intake flags off argv (mutating it) and resolve+persist this case's scope.
+
+    Flags are optional by design — `policy.blocking` is false, so a run with none of them still
+    starts, under `unknown` and saying so. What they buy is a posture the gate can enforce, an
+    ownership rule the collectors obey, and a premise the assessment has to answer."""
+    given: dict = {}
+    for flag, field in (("--target-class", "target_class"), ("--purpose", "purpose"),
+                        ("--claim", "claim"), ("--basis", "basis"), ("--brand", "brand"),
+                        ("--how", "how_encountered"), ("--window", "time_window"),
+                        ("--falsifier", "falsifier")):
+        if flag in argv and argv.index(flag) == len(argv) - 1:
+            _log(f"[scope] WARNING: {flag} given with no value — ignored.")
+            argv.remove(flag)
+            continue
+        val = _pop_val(argv, flag, "")
+        if val:
+            given[field] = val
+    for flag, field in (("--no-direct-contact", "no_direct_contact"), ("--no-spend", "no_spend")):
+        if flag in argv:
+            argv.remove(flag)
+            given[field] = True
+    path = _pop_val(argv, "--scope", "")
+    if path:
+        try:
+            with open(path, encoding="utf-8") as f:
+                given = {**json.load(f), **given}    # explicit flags still win over the file
+        except Exception as e:  # noqa: BLE001 — a bad scope file must not kill the run
+            _log(f"[scope] WARNING: --scope {path} unreadable ({e}); continuing without it.")
+    return case_scope.resolve(case, **given)
+
+
 def _main() -> None:
     argv = sys.argv[1:]
     hostile = "--hostile" in argv
@@ -769,8 +822,28 @@ def _main() -> None:
         sys.exit("usage: orchestrator.py <CASE-ID> [--hostile] [--no-verify] "
                  "[--fanout [--collect-conc N]] "
                  "[--continue [--depth N] [--stale N] [--max-new N]] "
-                 "[--parallel [--collect-conc N] [--judge-conc N]] <seed-url> ...")
-    case, seeds = argv[0], argv[1:]
+                 "[--parallel [--collect-conc N] [--judge-conc N]] "
+                 "[--target-class C] [--purpose P] [--claim TEXT] [--basis TEXT] [--brand NAME] "
+                 "[--how TEXT] [--window TEXT] [--falsifier TEXT] [--no-direct-contact] "
+                 "[--no-spend] [--scope FILE] <seed-url> ...\n"
+                 "  intake flags are optional: an unscoped run proceeds as `unknown` and says so "
+                 "(python3 harness/case_scope.py questions).")
+    # INTAKE — resolved before anything is collected, and BEFORE the seed list is split off, since
+    # the flags sit among the trailing arguments. It sets the posture (and, for a class that
+    # forbids touching the target, the egress denial the tool gate enforces), the ownership rule
+    # the collectors cluster by, and the premise the assessment must answer.
+    case = argv[0]
+    scope = _scope_from_argv(argv, case)
+    seeds = argv[1:]
+    if not seeds:
+        sys.exit(f"no seeds left after the intake flags — `{case}`'s scope was saved, but there is "
+                 f"nothing to collect. Re-run with the seed URLs appended.")
+    _SCOPE_CACHE[case] = scope
+    _log(case_scope.banner(scope))
+    hostile = case_scope.is_hostile(scope, explicit=hostile)
+    if hostile and case_scope.posture(scope).get("fetch_posture") == case_scope.NO_TOUCH:
+        _log(f"  posture `{case_scope.NO_TOUCH}` → outbound collection is DENIED by the gate; "
+             f"passive sources and stored captures only.")
     # Auto-parallel for large seed sets (a single collect session would blow context/turns).
     auto_at = int(os.environ.get("HARNESS_PARALLEL_AT", "12"))
     if not parallel and len(seeds) >= auto_at:

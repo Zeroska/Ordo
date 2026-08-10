@@ -44,6 +44,44 @@ Three phases; each is one `query()` call, wired so consistency comes from the sc
 - Each run prints its **cost breakdown** (SDK `total_cost_usd`, per phase + total) to stderr,
   so stdout stays clean JSON. Use it to measure real cost-per-case on your first runs.
 
+## Scope the case before you collect (`case_scope.py`)
+
+WebPivot's §0 intake is a conversation, and the harness has nobody to talk to. `intel.py open`,
+the SDK driver, the MCP server and every batch run start from a bare seed list — so the scoping a
+Claude Code session gets by *asking* was simply absent from the path that does the volume.
+`case_scope.py` is where the answers live instead: given once, persisted to
+`cases/<case>/scope.json`, and rendered into **every** phase prompt (`{{scope}}`) on every later
+round and resume.
+
+```bash
+python3 harness/orchestrator.py CASE-0001 \
+    --target-class victim_host --purpose attribution \
+    --claim "compromised CMS serving a phishing kit" --basis "victim complaint" \
+    --brand "Example Brand" --how ad --window 2026-03 \
+    --falsifier "the whole site is the operator's, not an injected path" \
+    https://host-a.example
+python3 harness/case_scope.py questions        # what to ask when an analyst IS in the loop
+python3 harness/case_scope.py show CASE-0001   # what a phase is actually being told
+```
+
+It changes three things that were previously guesses:
+
+| | |
+|---|---|
+| **Posture — and it is ENFORCED** | `target_class` resolves to a `fetch_posture`. `threat_actor_infra` (`never_direct_from_analyst_egress`) and `--no-direct-contact` both derive `hostile=True`, which the `audit.py` PreToolUse gate turns into a **hard denial** of outbound collection. A posture that only lives in a prompt is one the model can talk itself out of. `passive_first` deliberately does **not** derive it — passive-first is an *ordering* instruction, and conflating it with a prohibition would turn every unscoped run into a no-fetch run. |
+| **Ownership — what may be clustered** | On `victim_host` the page's WHOIS, favicon, certificate and analytics belong to the **victim**; clustering on them fuses unrelated victims into one imaginary operator estate. The class's `clustering_rule` goes into the collect **and** the judgment prompts — the collector labelling it correctly is no use if the correlator still clusters on it. |
+| **The claim, as a hypothesis** | The requester's assertion is recorded with its **source** and put in front of correlate/verify/assess with its falsifier — never written to the KB as a fact. The structured `Assessment` now carries `premise` + `premise_verdict` (`supported` / `partially_supported` / `not_supported` / `contradicted` / `inconclusive`), so the claim gets **answered** instead of becoming the frame the whole assessment was written inside. |
+
+**It never blocks.** No flags, a corrupt `scope.json`, an unwritable case dir or a typo'd class →
+the run continues under `unknown` (the conservative class) and every prompt tells the model to
+disclose that it is assuming. `premise_verdict` defaults to `inconclusive`, so an omission can
+never read as a claim confirmed. Interactively, the `case_scope` MCP tool reads and writes the
+same record — that is how an analyst's answers reach the automated path.
+
+Vocabulary (classes, postures, questions, verdicts, prohibitions, switches) is tunable data in
+`WebPivot/references/intake.json`, one owner shared with the skill so the two front-ends cannot
+drift. Gate: `tests/test_case_scope.py`.
+
 ## Swappable reasoning backend (`HARNESS_BACKEND`)
 The orchestrator is written against the Anthropic Agent SDK, but the reasoning model is **not**
 hard-wired to Anthropic. `harness/sdk_compat.py` reads `HARNESS_BACKEND` and transparently swaps in
@@ -86,6 +124,8 @@ Two quality levers on top of the base loop:
 - `agents.py` — *optional* subagent definitions for parallel fan-out (ParallelBatch).
 - `audit.py` — the **tool-call gate + ledger**, shared by all three front-ends (see
   *The guardrail seam*); its policy DATA is `references/tool_policy.json`.
+- `case_scope.py` — the **case intake record** (see *Scope the case before you collect*); its
+  vocabulary DATA is `WebPivot/references/intake.json`, shared with the WebPivot §0 intake.
 
 ## Run
 ```bash
