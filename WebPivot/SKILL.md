@@ -386,10 +386,65 @@ python3 "$WP/tools/pivot_extract.py" <url> --intelx           # run it inside a 
   no IntelX section has **not** established that the operator is absent from any leak, paste or
   darknet listing. Say that before presenting the result; `meta.capability` carries the sentence.
 
+## §0 Intake — scope before you collect, and TEST the claim (run this first)
+
+A target rarely arrives alone; it arrives with a belief attached — *"this scam site"*, *"their
+C2"*, *"the domain impersonating us"*. **Establish the scope before the first request, and treat
+the belief as a hypothesis this run tests, never as a premise it inherits.** Full runbook:
+**`Workflows/Intake.md`**; the classes, questions, posture and verdict vocabulary are tunable data
+in **`references/intake.json`**.
+
+**Ask** (one grouped prompt, ≤4 at a time — not an interrogation). The two that carry the scoping
+are **target class** and **purpose**:
+
+| Ask | It changes |
+|---|---|
+| **What do you believe this is?** — confirmed scam · suspected scam · threat-actor infra · victim host · legitimacy check · unknown | fetch posture, opsec, which layers run, **whose artifacts these are** |
+| **What is that based on?** — complaint · takedown/seizure · vendor report · an ad you were served · a log · a hunch | whether the class is asserted or hypothesised, and what its verdict is judged against |
+| **What is the run for?** — triage · cluster expansion · attribution · takedown package · own-exposure check | depth; whether capture/ingest/assessment are mandatory; which skill runs next |
+| **Brand or entity involved — and which side is this host?** | seeds `--hunt-impersonation`; forces the **direction** check |
+| **How did it reach you?** — ad · message · file download · redirect chain · another case | turns on `--serp` + `--cloak-probe`, or hands the file to **BinaryPivot** |
+| **A date that matters? Constraints?** — may we touch it · may we spend credits · case id | archive anchor; passive-only vs direct fetch; `--free-only`; where it persists |
+| **What would tell you this is *not* what you think?** | the disconfirming checks this run must report on, and the stop condition |
+
+**Never blocks.** Context already given → don't re-ask, echo the inferred scope in one line and
+start. Nothing given, or the caller is `intel.py` / the orchestrator / MCP / a batch (nobody to
+ask) → proceed as **`unknown`**: passive-first, liveness + archive timeline first (they usually
+resolve the class), and **state that assumption in the deliverable**.
+
+**Two classes change behaviour the most:**
+
+- **`threat_actor_infra` → never fetch from analyst egress.** A direct request tells the operator
+  they are being examined and from where; target-side allowlists mean one probe can burn the
+  collection. Third-party scanners and stored captures only.
+- **`victim_host` → the ownership boundary.** On a compromised host the WHOIS, favicon, certificate
+  and analytics are the **victim's**. Only the injected kit path, its assets and its endpoints are
+  the operator's. Cluster on the rest and unrelated victims fuse into one imaginary estate.
+
+**Test the claim** — run these however confident the requester was, and especially when very:
+liveness *by reading the page* (parking / suspended / default / soft-404 all return 200) · archive
+timeline anchored on the incident date · impersonation **direction** (is the seed the imposter, or
+the brand's real site?) · base-rate every artifact before it becomes an edge · decide whose asset
+each artifact is.
+
+**Answer it explicitly**, one line near the top of the deliverable:
+
+> Stated premise: `<class>` (source: `<basis>`). Collection verdict: **supported · partially
+> supported · not supported · contradicted · inconclusive** — `<one line of why>`.
+
+`not supported` = found nothing either way — and on a keyless/free-only/passive/blocked run that is
+a fact about the **collection**, so pair it with the capability disclosure. `inconclusive` = the
+target was never observed; the claim was not tested. **`contradicted` is the most valuable result
+an intake produces — lead with it.** Never raise confidence because the requester was certain,
+never skip a disconfirming check because the class was stated as confirmed, and never write the
+stated class into the KB or an assessment as a collected finding. If the collection establishes a
+different class than the one stated, **stop, say so, restate the posture**, and continue under it.
+
 ## Workflow Routing
 
 | Request | Workflow |
 |---|---|
+| **A target arrives (with or without context) — scope it and test the claim** | **`Workflows/Intake.md`** (run first) |
 | Analyze one page, get all pivots | `Workflows/AnalyzePage.md` |
 | I have an artifact (favicon/tracker/wallet), where does it pivot? | `Workflows/PivotFromArtifact.md` |
 | Cluster many pages into campaigns / find sibling sites | `Workflows/CampaignClustering.md` |
@@ -412,6 +467,7 @@ python3 "$WP/tools/pivot_extract.py" <url> --intelx           # run it inside a 
 
 ## Method (default flow)
 
+0. **Intake — scope it and test the claim (§0 above, `Workflows/Intake.md`).** Establish target class + purpose before the first request; they decide the fetch posture, which layers run, and **whose artifacts the page's are**. Never blocks: no context → `unknown`, passive-first, and say so. The requester's stated class sets the posture, never the finding.
 1. **Acquire** — fetch (or `--render` for SPAs; or feed saved HTML / a urlscan DOM). Prefer passive capture for hostile targets.
 1b. **Always check the web archive** — on *every* target, even one that loads live. Pull the Wayback CDX timeline (`http://web.archive.org/cdx/search/cdx?url=<host>*&output=json&collapse=digest`) and read the status codes: a parked/dead site today may have hosted a live scam funnel in an earlier snapshot (mine that archived DOM for real artifacts), and a `created` WHOIS date inside the capture history means a prior owner. Never conclude "parked / nothing to pivot on" from the live page alone. Then run `wayback_ga.py` for the full analytics history. See `Workflows/AnalyzePage.md` step 2c.
 2. **Extract** — run `pivot_extract.py`; get structured artifacts + ranked pivots.
@@ -483,6 +539,7 @@ and which direction is the safe one to be wrong in; every group has its own `_co
 
 | File | Edit it when |
 |---|---|
+| `references/intake.json` | The scoping step (§0) asks a question that changes nothing — delete it, an intake nobody answers is worse than none — or a **target class needs a different posture** (`fetch_posture`, `run`, `clustering_rule`), a new disconfirming check should be mandatory (`claim_verification.mandatory_checks`), or an answer should switch a layer on (`scope_switches`). `policy` holds the never-block rules |
 | `references/registrant_noise.json` | a WHOIS privacy proxy / registrar role mailbox got treated as a registrant, or a reverse-WHOIS burned credits on boilerplate |
 | `references/third_party_noise.json` | an analytics/CDN endpoint scraped from a JS bundle was reported as the operator's backend, or a managed MX/NS showed up as operator infra |
 | `references/generic_labels.json` | a generic subdomain (`api.`, `cdn.`) or a library filename (`jquery.min.js`) created a false same-operator link |
