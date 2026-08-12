@@ -168,7 +168,7 @@ def _prior_overlap(hosts, min_shared=1):
 
 
 def _extract_one(host, case_dir, timeout, whois_reverse, fofa_full=False, render=False,
-                 free_only=False):
+                 free_only=False, serp=False, serp_region=None, no_pssl=False):
     """Extract one host into raw/<host>.json. Returns (host, ok, note)."""
     out_file = os.path.join(case_dir, "raw", f"{host}.json")
     cmd = [sys.executable, os.path.join(WP, "pivot_extract.py"),
@@ -181,6 +181,19 @@ def _extract_one(host, case_dir, timeout, whois_reverse, fofa_full=False, render
         cmd.append("--fofa-full")   # FOFA reverses over all historical data (full=true)
     if render:
         cmd.append("--render")      # post-JS DOM — unlocks SaaS/analytics tokens
+    # The ADVERTISING layer is opt-in per RUN, not per host, because it is the one layer here that
+    # spends a SerpApi search on every host it touches: on by default it would quietly multiply a
+    # batch's cost by the host count. `--serp` on `intel.py open` turns it on for the whole batch;
+    # without it the pipeline could never reach the Ads Transparency archive at all, which is the
+    # gap this flag closes. The cloaking probe inside wp_serp stays free and automatic.
+    if serp:
+        cmd.append("--serp")
+        if serp_region:
+            cmd += ["--serp-region", str(serp_region)]
+    # Passive SSL is FREE (same CIRCL account as passive DNS) and therefore ON by default here —
+    # only an explicit opt-out is passed through.
+    if no_pssl:
+        cmd.append("--no-pssl")
 
     def attempt():
         r = _run(cmd, capture_output=True, text=True)
@@ -241,7 +254,9 @@ def cmd_open(a):
     ok, failed = [], []
     with cf.ThreadPoolExecutor(max_workers=max(1, a.jobs)) as ex:
         futs = {ex.submit(_extract_one, h, case_dir, a.timeout, a.whois_reverse,
-                          a.fofa_full, a.render_extract): h
+                          a.fofa_full, a.render_extract, False,
+                          getattr(a, "serp", False), getattr(a, "serp_region", None),
+                          getattr(a, "no_pssl", False)): h
                 for h in hosts}
         for fut in cf.as_completed(futs):
             host, good, note = fut.result()
@@ -795,6 +810,19 @@ def main():
     o.add_argument("--render-extract", action="store_true",
                    help="render post-JS DOM per page (unlocks SaaS/analytics tokens; needs playwright)")
     o.add_argument("--render", action="store_true")
+    o.add_argument("--serp", action="store_true",
+                   help="run the ADVERTISING layer on every host: Google Ads Transparency — the "
+                        "VERIFIED paying advertiser account and the legal name its ads are funded "
+                        "by, which survives WHOIS privacy and domain rotation. METERED (one "
+                        "SerpApi search per host), which is why it is opt-in per run rather than "
+                        "on by default. The free cloaking probe runs regardless.")
+    o.add_argument("--serp-region", default=None, metavar="CODE",
+                   help="market to query the Ads Transparency archive for (e.g. VN, US); "
+                        "default is anywhere.")
+    o.add_argument("--no-pssl", action="store_true",
+                   help="skip CIRCL passive SSL (historical certificate->IP, i.e. origin recovery "
+                        "from behind a CDN). It is free and on by default — this is for a minimal "
+                        "footprint or a rate-limit.")
     o.add_argument("--no-graph", action="store_true")
     o.add_argument("--operator", default=None)
     o.add_argument("--operator-links", default=None)

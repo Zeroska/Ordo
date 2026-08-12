@@ -264,12 +264,23 @@ def main():
                                "normalisation, cross-host patterns, manifest hashing + tamper "
                                "detection"),
         ("test_references", "reference DATA layer — files documented, consumers not on fallback, no drift"),
+        ("test_dashboard", "debug dashboard — exact vs estimated numbers kept apart, one API "
+                            "response billed once however many records it spans, a bounded scan "
+                            "reports itself bounded, an unpriced model surfaces instead of "
+                            "reading as free, an absent ledger is absence of record, the trace "
+                            "pairs each tool result to its call and never cuts one silently, "
+                            "and the server refuses a non-loopback bind"),
         ("test_case_scope", "case intake — no-touch class derives the gate denial, passive_first "
                             "does not, victim ownership reaches the judge, a defaulted value is "
                             "never rendered as an answer, and nothing ever blocks"),
         ("test_tool_gate", "tool-call gate — hostile egress blocked above the tools, submission "
                            "needs approval, credit budget, ledger, all 3 front-ends, hand-back"),
         ("test_timeline", "temporal layer — format parsing / overlap vs shared value / expiry cohort / online citations"),
+        ("test_pssl", "passive SSL — the historical cert->IP direction that recovers an origin from behind a CDN, with the base-rate rail that keeps a shared CDN certificate (915 addresses in live measurement) out of the clustering, and an empty corpus answer reported as absence of RECORD"),
+        ("test_misconfig", "misconfig triage — an RFC1918/loopback/link-local address leaking into a "
+                           "public FOFA banner is flagged (a dual-homed operator box), an anon-FTP "
+                           "service is a lead but the row's own public IP never is, and the tool "
+                           "flags only — it never auto-connects"),
         ("test_serp", "advertising layer — ad-parameter base rates (a click id is never a pivot), "
                       "the agency threshold, and the cloaking probe's falsification control "
                       "(an unstable page is never reported as evasion)"),

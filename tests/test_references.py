@@ -146,9 +146,17 @@ def check():
     import audit                                                                   # noqa: E401
     import case_scope                                                              # noqa: E401
     import wp_liveness                                                             # noqa: E401
+    import wp_pssl                                                                 # noqa: E401
     import tools                                                                   # noqa: E401  (harness/tools.py — the context governor)
 
     consumers = [
+        # Passive SSL: this policy is the rail that stops a CDN certificate (served by hundreds of
+        # unrelated addresses) from becoming a same-operator edge. On the stub it still "works" and
+        # still returns results — it just stops refusing, which is the failure that manufactures an
+        # estate out of a CDN's customer list.
+        ("wp_pssl.POLICY", wp_pssl.POLICY,
+         wp_pssl._PSSL_FALLBACK["clustering_policy"]),
+        ("wp_pssl.ENDPOINTS", wp_pssl.ENDPOINTS, wp_pssl._PSSL_FALLBACK["endpoints"]),
         ("wp_pivots._GENERIC_SUBLABELS", wp_pivots._GENERIC_SUBLABELS,
          wp_pivots._LABELS_FALLBACK["subdomain_labels"]),
         ("wp_pivots.AFFILIATE_PARAMS", wp_pivots.AFFILIATE_PARAMS,
@@ -164,6 +172,16 @@ def check():
         ("wp_recon.SPF_ESP", wp_recon.SPF_ESP, wp_recon._MAIL_FALLBACK["spf_esp_hosts"]),
         ("wp_recon.DMARC_VENDORS", wp_recon.DMARC_VENDORS,
          wp_recon._MAIL_FALLBACK["dmarc_report_vendors"]),
+        # Misconfig triage. On the fallback the FTP scan knows four anon-login banners instead of ten
+        # (so an anon-accepting box whose banner it hasn't heard of stops being flagged as a triage
+        # lead) and leak_classes drops link_local/cgnat — silently narrowing which reserved addresses
+        # count as an internal-topology leak. Both fail toward MISSING a lead, never a false one.
+        ("wp_recon.ANON_FTP_MARKERS", wp_recon.ANON_FTP_MARKERS,
+         wp_recon._MISCONFIG_FALLBACK["anon_ftp_markers"]),
+        ("wp_recon.FTP_PROTOCOL_MARKERS", wp_recon.FTP_PROTOCOL_MARKERS,
+         wp_recon._MISCONFIG_FALLBACK["ftp_protocol_markers"]),
+        ("wp_recon.LEAK_CLASSES", wp_recon.LEAK_CLASSES,
+         wp_recon._MISCONFIG_FALLBACK["leak_classes"]),
         ("wp_ippivot._MANAGED_MX", wp_ippivot._MANAGED_MX,
          wp_ippivot._MX_FALLBACK["managed_mx_suffixes"]),
         # Censys renamed every field when it replaced Legacy Search with CenQL, so these templates

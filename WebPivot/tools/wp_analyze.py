@@ -38,6 +38,9 @@ import wp_extract  # for the QR_DECODE_IMAGES toggle main() sets
 import wp_assets   # asset layer: JS bundles, source maps, well-known files, API endpoints
 import wp_docmeta  # document/image metadata layer: hosted PDFs + images → /Info, XMP, EXIF
 from wp_censys import censys_configured, censys_webproperty, censys_certificate
+import wp_pssl     # CIRCL passive SSL: the historical cert->IP direction (origin recovery)
+# NOTE: wp_ippivot is imported LAZILY at its call site, not here — it imports
+# classify_ip back out of this module, so a top-level import is circular.
 try:
     import whois_enrich  # WhoisXML registration pivots (optional, same tools/ dir)
     HAVE_WHOIS = True
@@ -560,11 +563,23 @@ def enrich_live(result: dict, fofa_full: bool = False, free_only: bool = False) 
     # gated exactly like FOFA. Only the two LOOKUP endpoints are used here — they work on the free
     # plan, unlike /search/query, which needs Starter.
     have_censys = censys_configured() and not free_only
+    # Passive SSL rides the SAME CIRCL credential pair as passive DNS. The two are the historical
+    # name->IP and cert->IP halves of one question, so a run that has pDNS should always have
+    # pSSL as well — before this layer existed the cert->IP direction was simply never asked.
+    have_pssl = wp_pssl.pssl_configured() and wp_pssl.ENABLED and not free_only
+    # IPinfo answers "where is this address and whose is it" — country, ASN/org, abuse contact,
+    # hosting/proxy/VPN flags. It runs keyless too (rate-limited), so the gate is --free-only
+    # rather than the token: without a token it still returns country + org for the live IP.
+    have_ipinfo = not free_only
     sources = ["crtsh", "passivedns", "urlscan"]  # keyless domain enrichment
     if have_fofa:
         sources.append("fofa-full" if fofa_full else "fofa")
     if have_pdns:
         sources.append("pdns")
+    if have_pssl:
+        sources.append("pssl")
+    if have_ipinfo:
+        sources.append("ipinfo")
     if have_censys:
         sources.append("censys")
     result.setdefault("meta", {})["enriched_with"] = sources
@@ -601,6 +616,15 @@ def enrich_live(result: dict, fofa_full: bool = False, free_only: bool = False) 
                 # tenants. Only an origin-candidate IP is worth a FOFA reverse.
                 classified = [classify_ip(ip) for ip in live_ips]
                 lr["dns"]["ip_classification"] = classified
+                # IPinfo on the DOMAIN path. It was previously reachable only when a bare IP was
+                # the input (IPPivot), so analysing a domain never produced a country, an ASN, an
+                # abuse contact or a hosting/VPN flag for the address it actually resolves to —
+                # the assessment fell back to keyless ip-api for an ASN string and nothing else.
+                # Memoised per process (the same CDN pair recurs on every host in a case), and
+                # skipped under --free-only like every other metered call.
+                if have_ipinfo:
+                    from wp_ippivot import ipinfo_lookup   # lazy: circular at module level
+                    lr["ipinfo"] = {ip: ipinfo_lookup(ip) for ip in live_ips}
                 origin_ips = [c["ip"] for c in classified if c.get("cdn") is False]
                 cdn_ips = [c for c in classified if c.get("cdn") is True]
                 if cdn_ips:
@@ -620,8 +644,30 @@ def enrich_live(result: dict, fofa_full: bool = False, free_only: bool = False) 
                     # PDNS reverse on the SAME origin candidate — co-hosted domains from
                     # passive DNS independently corroborate the FOFA IP-reverse.
                     lr["pdns_ip_reverse"] = pdns_search(fofa_ip)
+                if have_pssl:
+                    # PASSIVE SSL — the cert->IP direction, which is the one that recovers an
+                    # ORIGIN from behind a CDN: the operator served this same leaf certificate
+                    # on their own box before (or while) fronting it. Any address here that is
+                    # not in the live answer is an origin candidate. The live sha1 comes from
+                    # the certificate this run already read off the 443 handshake, so this adds
+                    # NO extra connection to the target.
+                    _leaf = ((result.get("artifacts") or {}).get("tls_cert") or {})
+                    _sha1 = _leaf.get("fingerprint_sha1") or ""
+                    lr["pssl"] = wp_pssl.origin_candidates(
+                        val, sha1=_sha1, known_ips=live_ips)
                 passive_ips = set((lr.get("passivedns") or {}).get("ips", []) or [])
                 passive_ips |= set((lr.get("pdns") or {}).get("ips", []) or [])   # historical PDNS IPs
+                # An origin candidate corroborated by BOTH passive halves (a name seen there, and
+                # the certificate seen there) is the strongest lead this pair produces.
+                _pssl_ips = set((lr.get("pssl") or {}).get("origin_candidates", []) or [])
+                if _pssl_ips:
+                    both = sorted(_pssl_ips & passive_ips)
+                    if both:
+                        lr["origin_corroborated"] = {
+                            "ips": both,
+                            "note": "seen by BOTH passive DNS (a name resolved there) and passive "
+                                    "SSL (this leaf certificate was served there) — the strongest "
+                                    "origin lead the passive pair produces; verify directly."}
                 stale = sorted(passive_ips - set(live_ips))
                 if stale:
                     lr["dns"]["stale_passive_ips"] = stale

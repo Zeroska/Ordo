@@ -83,11 +83,35 @@ def _resolve(domain):
 
 
 def _asn_for_ip(ip, cache, timeout=8):
-    """Keyless ASN/org lookup via ip-api.com. Cached per IP. '—' on failure."""
+    """ASN / org / country for an address. IPinfo first, keyless ip-api as the fallback.
+
+    IPinfo is preferred whenever it is reachable because it carries what ip-api does not: the
+    abuse contact, and the hosting/proxy/VPN privacy flags. Those change how a row READS — an
+    address flagged `vpn` is not the same finding as a datacentre one — so the flags are appended
+    to the cell rather than dropped. ip-api stays as the keyless fallback so a machine with no
+    IPinfo token still fills the column instead of printing '—' across the whole table."""
     if not ip:
         return "—"
     if ip in cache:
         return cache[ip]
+    try:
+        import sys as _sys
+        _wp = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "WebPivot", "tools")
+        if _wp not in _sys.path:
+            _sys.path.append(_wp)
+        from wp_ippivot import ipinfo_lookup
+        d = ipinfo_lookup(ip, timeout=timeout)
+        if not d.get("error") and (d.get("asn") or d.get("org_name") or d.get("country")):
+            who = " ".join(x for x in (d.get("asn"), d.get("org_name")) if x)
+            cc = d.get("country") or ""
+            cell = (f"{who} ({cc})" if who and cc else who or cc)
+            if d.get("privacy_flags"):
+                cell += " · " + "/".join(d["privacy_flags"])
+            cache[ip] = cell or "—"
+            return cache[ip]
+    except Exception:                       # noqa: BLE001 — fall through to the keyless path
+        pass
     try:
         url = "http://ip-api.com/json/" + urllib.parse.quote(ip) + "?fields=as,org,countryCode"
         with urllib.request.urlopen(url, timeout=timeout) as r:
@@ -280,7 +304,9 @@ def rows_to_markdown(rows, title="Domain Summary"):
     for r in rows:
         out.append("| " + " | ".join(esc(r.get(k, "—")) for k, _ in _COLS) + " |")
     out += ["", "_WHOIS via WhoisXML; status from wp_liveness (the page CONTENT plus DNS, not "
-            "the HTTP status code alone) and IP from live DNS + pivot capture; ASN via ip-api; "
+            "the HTTP status code alone) and IP from live DNS + pivot capture; ASN/country via "
+            "IPinfo (keyless ip-api as fallback) — a `hosting`/`proxy`/`vpn`/`tor` suffix is "
+            "IPinfo's privacy flag for that address; "
             "attribution from operators.jsonl. `⟲` = the name is still controlled and can be "
             "re-pointed to live content later — keep it on the re-check list; `?` = the verdict "
             "rests on a single signal. '—' = not available._", ""]

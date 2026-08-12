@@ -11,8 +11,8 @@ import sys
 import json
 import tempfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))), "WebPivot", "tools"))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(ROOT, "WebPivot", "tools"))
 import wp_ippivot as ip  # noqa: E402
 import wp_recon as rec  # noqa: E402
 
@@ -142,6 +142,50 @@ def check():
     finally:
         for n, fn in saved.items():
             setattr(ip, n, fn)
+
+    # --- IPinfo reaches the DOMAIN path, is memoised, and keeps the flags apart -------------
+    # IPinfo used to be reachable ONLY when a bare IP was the input, so analysing a domain never
+    # produced a country, an ASN, an abuse contact or a hosting/VPN flag for the address it
+    # resolves to — the assessment fell back to a keyless ip-api ASN string. These guard the wiring
+    # that closed that, and the two properties that make it safe to run at case scale.
+    saved_cache = dict(ip._IPINFO_CACHE)
+    saved_urlopen = ip.urllib.request.urlopen
+    try:
+        ip._IPINFO_CACHE.clear()
+        # Stub the NETWORK, not the function: the memo lives inside ipinfo_lookup, so replacing
+        # the function would have tested the stub instead of the cache.
+        def _boom(*a, **k):
+            raise AssertionError("network was called for an address already in the memo")
+        ip.urllib.request.urlopen = _boom
+        ip._IPINFO_CACHE["203.0.113.5"] = {"ip": "203.0.113.5", "asn": "AS151858",
+                                           "org_name": "ExampleHost", "country": "VN",
+                                           "privacy_flags": ["hosting"]}
+        got = ip.ipinfo_lookup("203.0.113.5")
+        ok(got.get("asn") == "AS151858",
+           "a repeated address is served from the per-process memo without a second HTTP call — "
+           "a case re-resolves the same CDN pair on every host and IPinfo bills per lookup")
+        line = ip.ip_summary("203.0.113.5")
+        ok("AS151858" in line and "VN" in line,
+           "ip_summary renders one line carrying ASN and country")
+        ok("hosting" in line, "the privacy flag reaches the summary line")
+    finally:
+        ip.urllib.request.urlopen = saved_urlopen
+        ip._IPINFO_CACHE.clear()
+        ip._IPINFO_CACHE.update(saved_cache)
+
+    src = open(os.path.join(ROOT, "WebPivot", "tools", "wp_analyze.py"), encoding="utf-8").read()
+    ok("have_ipinfo" in src and "from wp_ippivot import ipinfo_lookup" in src,
+       "the DOMAIN enrichment path calls IPinfo (it previously never did)")
+    ok(src.index("have_ipinfo = not free_only") > 0,
+       "IPinfo is skipped under --free-only like every other metered call")
+    ok("lazy: circular at module level" in src,
+       "the import is deferred on purpose — wp_ippivot imports classify_ip back out of wp_analyze")
+    dt = open(os.path.join(ROOT, "tools", "domain_table.py"), encoding="utf-8").read()
+    ok("from wp_ippivot import ipinfo_lookup" in dt and "ip-api" in dt,
+       "the assessment table prefers IPinfo and keeps keyless ip-api as the fallback")
+    reg = open(os.path.join(ROOT, "harness", "tools.py"), encoding="utf-8").read()
+    ok('"ip_info"' in reg and "mcp__collect__ip_info" in reg,
+       "ip_info is registered on the typed tool surface (contributor RULE 2)")
 
     return passed, failed, out
 

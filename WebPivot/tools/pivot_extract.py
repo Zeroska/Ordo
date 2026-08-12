@@ -86,6 +86,7 @@ import wp_assets   # noqa  (asset layer: JS bundles / source maps / well-known f
 from wp_assets import *  # noqa
 import wp_docmeta  # noqa  (document/image metadata layer: hosted PDFs + images → /Info, XMP, EXIF)
 import wp_censys   # noqa  (Censys Platform: lookups + CenQL builder; --no-censys flips ENABLED)
+import wp_pssl     # noqa  (CIRCL passive SSL: historical cert->IP, i.e. origin behind a CDN)
 import wp_intelx   # noqa  (Intelligence X: leak/paste/darknet selector search; --intelx runs it live)
 import wp_capabilities  # noqa  (which keys are present -> what this run could and could not query)
 import wp_paths    # noqa  (URL PATH as a campaign identifier — kit directory, template, patterns)
@@ -243,6 +244,12 @@ def main():
                          "not roll over), so this is the switch for conserving them. The Censys "
                          "CenQL queries are still emitted on every pivot — they are built offline "
                          "and cost nothing.")
+    ap.add_argument("--no-pssl", action="store_true",
+                    help="do NOT query CIRCL passive SSL even when the CIRCL credentials "
+                         "(PDNS_USERNAME/PDNS_PASSWORD) are set. Passive SSL is the historical "
+                         "certificate->IP direction — the one that recovers an ORIGIN from behind "
+                         "a CDN — and rides the same free account as passive DNS, so this switch "
+                         "is for a minimal footprint or a rate-limit, not for cost.")
     ap.add_argument("--intelx", action="store_true",
                     help="RUN Intelligence X live on this result's selectors — emails, phones, "
                          "wallets, the host itself — searching leaks, stealer logs, pastes, "
@@ -405,6 +412,7 @@ def main():
         args.render = True   # a screenshot requires the rendered (Playwright) page
     wp_extract.QR_DECODE_IMAGES = bool(args.decode_qr)
     wp_censys.ENABLED = not args.no_censys   # offline CenQL builder is unaffected — it costs nothing
+    wp_pssl.ENABLED = not args.no_pssl       # passive SSL: historical cert->IP (origin recovery)
     # Asset layer (JS bundles / source maps / well-known files) — on by default, per-half opt-out.
     wp_assets.COLLECT_ASSETS = not args.no_assets
     wp_assets.COLLECT_WELL_KNOWN = not args.no_well_known
@@ -695,6 +703,25 @@ def main():
         if _ppiv:
             result["pivots"].extend(_ppiv)
             sort_pivots(result["pivots"])
+
+    # --- PASSIVE SSL: promote the enrichment result to real pivots -------------------------------
+    # The enrichment step stores its passive-SSL answer inside the domain pivot's `live_results`,
+    # which is where passive DNS has always sat — visible in the JSON, invisible to the KB and to
+    # the assessment. Promoting it to pivots is what makes an origin candidate reach the case
+    # instead of only the file. Policy (CDN certs, over-prevalent certs) was already applied in
+    # wp_pssl, so a non-clusterable cert arrives here as `pssl:information`, never as an edge.
+    _pssl_piv = []
+    for _p in result.get("pivots", []):
+        _res = (_p.get("live_results") or {}).get("pssl")
+        if _res and not _res.get("skipped"):
+            _pssl_piv += wp_pssl.pssl_pivots(result["meta"].get("host") or "", _res)
+    if _pssl_piv:
+        _seen_ps = {(p.get("kind"), str(p.get("value"))) for p in result["pivots"]}
+        for _p in _pssl_piv:
+            if (_p["kind"], str(_p["value"])) not in _seen_ps:
+                _seen_ps.add((_p["kind"], str(_p["value"])))
+                result["pivots"].append(_p)
+        sort_pivots(result["pivots"])
 
     # --- the ADVERTISING half of the URL, and the cloaking verdict -------------------------------
     # Free and offline. `extract_url_codes` below already turns utm_*/affiliate values into

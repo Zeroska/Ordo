@@ -321,7 +321,11 @@ def _ok(text: str, *, tool: str | None = None, where: str = "") -> dict[str, Any
     "with docmeta_max=<N>) OR a "
     "bare IP (IPPivot: passive IP recon — IPinfo ASN/abuse, FOFA ip= ports/services/co-hosted "
     "domains, Shodan host, dig MX/NS/TXT/PTR; a shared CDN/hosting IP is marked information not a "
-    "same-operator pivot, and its ASN is banked to references/asn_registry.json). If ALREADY "
+    "same-operator pivot, and its ASN is banked to references/asn_registry.json. It also flags "
+    "MISCONFIG TRIAGE leads read passively from the FOFA banner — an internal/RFC1918/loopback "
+    "address leaking into the public result (a dual-homed operator box exposing its internal "
+    "topology) or an ANONYMOUS-FTP service — as an ip:misconfig pivot; these are FLAGS only, the "
+    "tool never auto-connects). If ALREADY "
     "investigated (a pivot JSON exists in any case), it returns the cached data instead of "
     "re-collecting — pass force=true to refresh. For HOSTILE targets a direct live fetch is "
     "refused — pass proxy='<cidr>' to rotate egress, or passive=true with url set to an "
@@ -1519,6 +1523,90 @@ async def url_paths(args: dict[str, Any]) -> dict[str, Any]:
 
 
 @tool(
+    "ip_info",
+    "WHERE IS THIS ADDRESS AND WHOSE IS IT — country, city, ASN + org, reverse hostname, the "
+    "network's ABUSE CONTACT, and IPinfo's privacy flags (hosting / proxy / vpn / tor / relay) for "
+    "one IP. Use it on any address a case surfaces: the host's live A record, an origin candidate "
+    "recovered from passive DNS or passive SSL, a mail sender from SPF, a stealer-log victim "
+    "address. Three things it decides that nothing else here does cleanly. (1) WHETHER THE ADDRESS "
+    "IS A PIVOT AT ALL — a shared CDN/cloud edge is other people's tenants, so reversing it "
+    "returns noise, while a small hosting ASN is a real co-tenancy lead. (2) JURISDICTION — the "
+    "country and the abuse contact are who a takedown or an LEA referral actually goes to, and "
+    "they are properties of the ADDRESS, never of the domain's WHOIS (which on a privacy-masked "
+    "registration says nothing). (3) WHAT KIND of address it is: `hosting` on a scam site's server "
+    "is ordinary and means nothing, but `vpn`/`proxy`/`tor` on an address an operator connected "
+    "FROM is a different statement entirely — the flags are returned individually, not collapsed "
+    "into one boolean, so that distinction survives. Runs KEYLESS (rate-limited, still gives "
+    "country + org); IPINFO_TOKEN adds the structured ASN block, the abuse contact and the privacy "
+    "flags. Memoised per process, so re-asking about the same address inside one case is free. "
+    "For the full passive recon of an address (FOFA/Shodan co-tenancy, PTR, MX) pass the bare IP "
+    "to pivot_extract instead — that runs IPPivot, of which this is the identity half.",
+    {"ip": str},
+    annotations=READONLY,
+)
+async def ip_info(args: dict[str, Any]) -> dict[str, Any]:
+    ip = str(args.get("ip") or "").strip()
+    code = (
+        "import json,sys;sys.path.insert(0,'WebPivot/tools');"
+        "from wp_ippivot import ipinfo_lookup, ip_summary;"
+        f"d=ipinfo_lookup({ip!r});d.pop('raw',None);"
+        f"d['summary']=ip_summary({ip!r});print(json.dumps(d,indent=2,ensure_ascii=False))"
+    )
+    r = _run([PY, "-c", code], timeout=60)
+    return _ok((r.stdout or "") + ("\n" + r.stderr if r.stderr else ""))
+
+
+@tool(
+    "passive_ssl",
+    "PASSIVE SSL (CIRCL) — the HISTORICAL certificate view, and the only pivot here that runs "
+    "cert -> IP. Every other TLS source reads the certificate a host presents NOW (the live "
+    "handshake) or the names a CA logged at issuance (crt.sh, Censys); this one answers which IP "
+    "ADDRESSES have actually been observed serving a given leaf certificate, over time. That is "
+    "how you RECOVER AN ORIGIN FROM BEHIND A CDN: an operator who later fronted a host with "
+    "Cloudflare usually served the same certificate on their own box first, and a passive sensor "
+    "recorded it there. It is the partner of passive DNS — pDNS gives historical name->IP, pSSL "
+    "gives historical cert->IP, and an address returned by BOTH is the strongest origin lead the "
+    "pair produces. Modes: **origin** (default, `target`=a hostname) — take the host's leaf "
+    "certificate and return every address that served it, with the host's current (CDN) addresses "
+    "removed, so what is left are ORIGIN CANDIDATES to verify directly with the Host header. "
+    "**cert** (`target`=a certificate SHA-1 — this API is sha1-keyed, unlike Censys which is "
+    "sha256) — every IP observed serving that leaf. **ip** (`target`=an address) — every "
+    "certificate seen on it. THE BASE RATE IS THE WHOLE DIFFICULTY: a shared CDN or default-"
+    "hosting certificate is served by THOUSANDS of unrelated addresses (a Cloudflare edge cert "
+    "measured in testing came back on 915), so clustering on one would fabricate an estate out of "
+    "a CDN's customer list. The result therefore carries `clusterable`, already decided against "
+    "references/pssl.json — trust it, and never build a same-operator edge on a cert marked "
+    "false. COVERAGE IS EUROPE-WEIGHTED AND PARTIAL: an empty answer for a Vietnamese, Chinese or "
+    "small-ISP address is routine and means the corpus never saw it — report it as ABSENCE OF "
+    "RECORD, never as 'this address served no certificate'. Uses the same free CIRCL account as "
+    "passive DNS (PDNS_USERNAME/PDNS_PASSWORD); rate-limited rather than credit-metered.",
+    {"target": str},  # mode:'origin'|'cert'|'ip'|'budget', sha1:str, known_ips:str -> args.get()
+    annotations=READONLY,
+)
+async def passive_ssl(args: dict[str, Any]) -> dict[str, Any]:
+    script = os.path.join("WebPivot", "tools", "wp_pssl.py")
+    mode = str(args.get("mode") or "origin").lower()
+    target = str(args.get("target") or "").strip()
+    if mode == "budget":
+        cmd = [PY, script, "budget"]
+    elif mode == "cert":
+        cmd = [PY, script, "cert", target]
+        if args.get("subject"):
+            cmd += ["--subject", str(args["subject"])]
+    elif mode == "ip":
+        cmd = [PY, script, "ip", target]
+    else:
+        cmd = [PY, script, "origin", target]
+        if args.get("sha1"):
+            cmd += ["--sha1", str(args["sha1"])]
+        for ip in str(args.get("known_ips") or "").split(","):
+            if ip.strip():
+                cmd += ["--known-ip", ip.strip()]
+    r = _run(cmd, timeout=180)
+    return _ok((r.stdout or "") + ("\n" + r.stderr if r.stderr else ""))
+
+
+@tool(
     "serp_ads",
     "THE ADVERTISING LAYER — who PAID to send traffic to this domain, and whether the page shows "
     "those visitors something different from what it shows you. Use it whenever a target buys "
@@ -1758,7 +1846,9 @@ COLLECT_SERVER = create_sdk_mcp_server(
     "collect", tools=[pivot_extract, doc_metadata, analyze_artifact, fallback_probe,
                       impersonation_hunt, search_pivot, censys, intelx_search,
                       anyrun_lookup, anyrun_submit, capability_check,
-                      url_paths, capture_evidence, serp_ads, domain_liveness, kb_ingest])
+                      url_paths, capture_evidence, serp_ads, passive_ssl, ip_info,
+                      domain_liveness,
+                      kb_ingest])
 ANALYZE_SERVER = create_sdk_mcp_server(
     "analyze", tools=[kb_cluster, kb_entity, kb_query_shared, risk_signals,
                       reverse_whois, cert_overlap, reference_check, reference_add, reference_mirrors,
@@ -1774,7 +1864,9 @@ COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__doc_metadata",
                  "mcp__collect__anyrun_lookup", "mcp__collect__anyrun_submit",
                  "mcp__collect__capability_check",
                  "mcp__collect__url_paths", "mcp__collect__capture_evidence",
-                 "mcp__collect__serp_ads", "mcp__collect__domain_liveness",
+                 "mcp__collect__serp_ads", "mcp__collect__passive_ssl",
+                 "mcp__collect__ip_info",
+                 "mcp__collect__domain_liveness",
                  "mcp__collect__kb_ingest"]
 ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__kb_query_shared", "mcp__analyze__risk_signals",

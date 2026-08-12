@@ -82,6 +82,69 @@ Vocabulary (classes, postures, questions, verdicts, prohibitions, switches) is t
 `WebPivot/references/intake.json`, one owner shared with the skill so the two front-ends cannot
 drift. Gate: `tests/test_case_scope.py`.
 
+## Debug dashboard — where the tokens went, and what looks wrong (`dashboard/`)
+
+```bash
+python3 harness/dashboard/serve.py            # → http://127.0.0.1:7788
+python3 harness/dashboard/serve.py --sessions 200 --no-browser
+python3 harness/dashboard/collect.py findings  # same data, as JSON, no server
+```
+
+Python stdlib only — no framework, no npm, no build step. It **reads** five append-only sources
+that already exist and joins them; it instruments nothing, writes nothing, and makes no outbound
+request.
+
+| Source | What it contributes |
+|---|---|
+| `~/.claude/projects/<this repo>/*.jsonl` | Claude Code sessions — exact per-turn tokens (input / output / cache read / cache write, 1h vs 5m), model, effort, tool calls, `stop_reason`, subagent turns |
+| `MEMORY/` + `cases/*/tool_calls.jsonl` | the gate ledger — every call, allowed or **DENIED**, with the reason |
+| `MEMORY/api_usage.jsonl` | third-party credits by provider / case / day |
+| `cases/*/run_cost.jsonl` | the SDK's own per-phase Anthropic cost |
+| `SKILL.md` / `prompts/*.md` / `CLAUDE.md` | the context floor each phase carries before turn 1 |
+
+**Six panels.** *Overview* leads with a findings list, so you learn something is wrong without
+knowing which tab to open. *Trace* **replays one session** — the prompt that went in, the pinned
+context it carried, every tool call with its **arguments** and the **raw result** that came back,
+the reply that came out, and what each turn cost, in order; a run-flow ribbon puts the whole
+session on one line and jumps to any step. It is the panel for *why* an answer was wrong rather
+than *how much* it cost. *Tokens & cache* gives per-session and per-turn input/cache-read/
+cache-write splits, peak context, and cost. *Prompt surface* shows what occupies the window
+before anyone types — the harness pins whole `SKILL.md` bodies as phase system prompts, so a
+paragraph added to a skill is paid for on **every phase of every case** from then on.
+*Tool calls* is the gate ledger with denials and repeated-identical-call detection. *Cost &
+credits* puts the Anthropic estimate next to third-party credits — different ledgers, different
+currencies, never summed.
+
+**Two kinds of number, never mixed.** Anything from a transcript's `usage` is **exact**. Anything
+measured off a file on disk is an **estimate** from chars-per-token and renders differently
+(`≈`, distinct colour). Dollar figures are estimates at pay-as-you-go list prices — on a Pro/Max
+plan your real cost is the flat subscription. `tools/cost_report.py` owns the price table and the
+per-iteration cache-tier accounting; the dashboard imports it rather than restating a price.
+
+**Honest about its own limits.** A bounded scan says it is bounded (a truncated total presented as
+a total is a wrong number, not a partial one). An absent ledger reports *absence of record*, never
+"nothing happened". An unpriced model becomes a finding, because its tokens make every total an
+under-estimate. In the trace, a blob shortened for display states exactly how many characters it
+dropped and offers to re-read the whole value — a silently shortened tool result reads as a tool
+that found little.
+
+**One API response can span several transcript records** — Claude Code writes the thinking block
+and each `tool_use` as its own record and repeats the *same* `usage` object on every one. Billing
+per record therefore multiplies a tool-heavy turn's tokens and cost (2× is routine) while each row
+still looks plausible, so every reader here bills once per `requestId`. Note `tools/cost_report.py`
+does **not** do this yet: its per-session totals are inflated by the same factor.
+
+**Loopback only.** The pages render case names, target domains, operator artifacts and full prompt
+text, with no authentication. A non-loopback bind is refused and the refusal names the right
+answer — `ssh -N -L 7788:127.0.0.1:7788 <host>`. Flip `server.allow_nonlocal_bind` in
+`references/dashboard.json` only if you accept that anyone who can route to the port can read the
+case data.
+
+Thresholds, the findings rules and their explanations, the scan bounds and the prompt-surface
+list are tunable data in `harness/references/dashboard.json` — raise a threshold when a check
+cries wolf, but don't delete the check, or the failure it watches for goes back to being
+invisible. Gate: `tests/test_dashboard.py`.
+
 ## Swappable reasoning backend (`HARNESS_BACKEND`)
 The orchestrator is written against the Anthropic Agent SDK, but the reasoning model is **not**
 hard-wired to Anthropic. `harness/sdk_compat.py` reads `HARNESS_BACKEND` and transparently swaps in
@@ -124,6 +187,8 @@ Two quality levers on top of the base loop:
 - `agents.py` — *optional* subagent definitions for parallel fan-out (ParallelBatch).
 - `audit.py` — the **tool-call gate + ledger**, shared by all three front-ends (see
   *The guardrail seam*); its policy DATA is `references/tool_policy.json`.
+- `dashboard/` — the **local debug dashboard** (`serve.py` + `collect.py` + `static/`); see
+  *Debug dashboard*. Its tunable rules are `references/dashboard.json`.
 - `case_scope.py` — the **case intake record** (see *Scope the case before you collect*); its
   vocabulary DATA is `WebPivot/references/intake.json`, shared with the WebPivot §0 intake.
 
