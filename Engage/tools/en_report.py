@@ -59,10 +59,10 @@ def build(case: str) -> str:
 
     L = ["# Panel Engagement — Controlled Account and Evidence", ""]
     L.append("Evidence in this section was obtained by **authorised controlled engagement**: a "
-             "synthetic research account was created on the operator's own panel and used to read "
-             "the authenticated members area. No real identity was used; the account is a research "
-             "persona held in the case file and burned at case close. Findings are the operator's "
-             "own configuration, read from the panel's public and authenticated API responses.")
+             "research account was registered on the operator's own panel — using no real "
+             "identity — and used to read the authenticated members area. All findings below are "
+             "the operator's own configuration, read from the panel's public and authenticated "
+             "responses.")
     L.append("")
 
     # --- auth surface --------------------------------------------------------------------------
@@ -141,25 +141,25 @@ def build(case: str) -> str:
         L += ["## Operational security tell", "", f"- {pm['anti_forensics']}", ""]
 
     # --- evidence table ------------------------------------------------------------------------
+    # DISTRIBUTED report: cite the verifiable SOURCE (the endpoint / method), never an internal
+    # case-store path. Disk provenance is collection detail that stays case-side (evidence
+    # standard: a reader must be able to re-check from the source, not a path on our machine).
     L += ["## Engagement evidence table", ""]
-    L.append("| When (UTC) | Fact | Source | On disk |")
-    L.append("|---|---|---|---|")
+    L.append("| When (UTC) | Fact | Source |")
+    L.append("|---|---|---|")
     for r in log:
         ts = r.get("ts", "")
         ev = r.get("event", "")
         if ev == "engagement_complete":
-            L.append(f"| {ts} | Account created on operator panel | `POST /api/auth/register` (201) "
-                     f"| `engage/session_*/` |")
+            L.append(f"| {ts} | Account created on operator panel | `POST /api/auth/register` (201) |")
         elif ev == "payment_walk":
             ms = "; ".join(r.get("methods", []))
-            L.append(f"| {ts} | Payment methods: {ms} | authenticated deposit walk "
-                     f"| `engage/payment_methods.json` |")
+            L.append(f"| {ts} | Payment methods: {ms} | authenticated deposit flow |")
         elif ev == "cluster_expansion":
-            L.append(f"| {ts} | Estate + contacts enumerated | `/api/public/ecosystem-sites` "
-                     f"| `engage/cluster_expansion.json` |")
+            L.append(f"| {ts} | Estate + contacts enumerated | `/api/public/ecosystem-sites` |")
     L.append("")
-    L.append("_All panel captures (screenshots, authenticated DOM, API logs) are retained under "
-             f"`cases/{case}/engage/` (case-private, not distributed with the report)._")
+    L.append("_Underlying panel captures (screenshots, rendered pages, response logs) are retained "
+             "on file and available to authorised recipients on request._")
     L.append("")
     return "\n".join(L)
 
