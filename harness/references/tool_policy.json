@@ -11,7 +11,9 @@
       "fallback_probe",
       "anyrun_submit",
       "censys",
-      "serp_ads"
+      "serp_ads",
+      "detect_login",
+      "engage_account"
     ]
   },
 
@@ -46,9 +48,10 @@
   },
 
   "approval_required_tools": {
-    "_comment": "Tools that are outbound AND attributable AND irreversible, and therefore need a human 'yes' that a prompt cannot supply. Each maps to the environment variable that must be set to 1 for the call to be permitted; without it the call is DENIED before it reaches the tool. anyrun_submit detonates a sample or URL in a sandbox: a URL detonation tells the operator they are being analysed, the task may be PUBLIC on a free plan, and nothing can be recalled once sent. The tool has its own internal confirmation gate — this entry is the second lock, so an agent loop cannot reach the first one unattended.",
+    "_comment": "Tools that are outbound AND attributable AND irreversible, and therefore need a human 'yes' that a prompt cannot supply. Each maps to the environment variable that must be set to 1 for the call to be permitted; without it the call is DENIED before it reaches the tool. anyrun_submit detonates a sample or URL in a sandbox: a URL detonation tells the operator they are being analysed, the task may be PUBLIC on a free plan, and nothing can be recalled once sent. engage_account CREATES AN ACCOUNT on the operator's own backend and logs in: the operator sees a new member at a known time from your egress, and you cannot un-register. Each of these tools also has its OWN internal confirmation gate (a confirm flag in the signature) — this entry is the second lock, so an agent loop cannot reach the first one unattended.",
     "entries": {
-      "anyrun_submit": "HARNESS_ALLOW_SUBMIT"
+      "anyrun_submit": "HARNESS_ALLOW_SUBMIT",
+      "engage_account": "INTEL_ENGAGE_CONFIRM"
     }
   },
 

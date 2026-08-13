@@ -14,6 +14,36 @@
         "no_docmeta": {"type": "boolean", "description": "Skip the document/image metadata layer. It costs extra requests TO THE TARGET, so disable it when minimising footprint."},
         "docmeta_max": {"type": "integer", "description": "Cap how many hosted PDFs/images are downloaded for metadata extraction."}
       },
+      "detect_login": {
+        "proxy": {"type": "string", "description": "Route the page fetch through this proxy (research egress). Use on hostile targets."},
+        "no_crawl": {"type": "boolean", "description": "Do not follow the one hop to the linked register/login page."},
+        "case": {"type": "string", "description": "Also write the result to cases/<case>/engage/forms.json (the fill plan engage_account reads)."}
+      },
+      "make_persona": {
+        "case": {"type": "string", "description": "Persist the persona under cases/<case>/engage/ (recommended for evidence + traceability)."},
+        "email_domain": {"type": "string", "description": "A disposable inbox domain YOU control, so an email-verifying signup can be confirmed. Without it the email is a non-deliverable .invalid placeholder."},
+        "with_phone": {"type": "boolean", "description": "Include a reserved non-routable placeholder phone. A real SMS-OTP still needs an analyst-provisioned number."},
+        "seed": {"type": "string", "description": "Deterministic persona for a reproducible re-run with the SAME identity (do not touch the operator twice with two identities)."},
+        "country": {"type": "string", "description": "Country for the persona's address block (default US)."}
+      },
+      "engage_account": {
+        "persona": {"type": "string", "description": "Path to a make_persona JSON. MUST be synthetic (kind starts with 'synthetic') or the call is refused."},
+        "detection": {"type": "string", "description": "Path to a detect_login JSON — the registration fill plan and the login form."},
+        "case": {"type": "string", "description": "cases/<case>/engage/ for screenshots, the authenticated DOM and the audit ledger."},
+        "proxy": {"type": "string", "description": "Research egress (VPS/VPN). Without this, and without allow_direct_egress, engagement is REFUSED — a signup from your own IP is a self-identifying beacon."},
+        "allow_direct_egress": {"type": "boolean", "description": "Proceed from your own IP anyway. Only when the analyst accepts the attribution."},
+        "await_confirm": {"type": "boolean", "description": "Email-gated signup: after registering, fetch the confirm link from the persona's puppet inbox (en_inbox) and click it before login. Needs a persona minted --from-pool."},
+        "target_domain": {"type": "string", "description": "Domain to match the confirmation email against, so an unrelated message in the puppet inbox is not mistaken for it."},
+        "no_login": {"type": "boolean", "description": "Register only; do not log in or harvest."},
+        "confirm": {"type": "boolean", "description": "Explicit per-engagement approval. WITHOUT it the tool returns only the risk briefing and creates NO account. The run must ALSO have INTEL_ENGAGE_CONFIRM=1 (an agent cannot set that for itself)."}
+      },
+      "harvest_authenticated": {
+        "base_url": {"type": "string", "description": "Resolve relative form actions (the harvester upload path) against this URL."},
+        "case": {"type": "string", "description": "Append the harvest findings to cases/<case>/engage/interactions.jsonl."}
+      },
+      "engage_report": {
+        "append_to": {"type": "string", "description": "Append the rendered Panel Engagement section to this markdown file (e.g. cases/<case>/assessment.md); omit to return it as text."}
+      },
       "domain_liveness": {
         "case": {"type": "string", "description": "Classify from this case's ALREADY-COLLECTED pivot JSON instead of probing. Sends no packet to the target — use this on hostile infrastructure."},
         "offline": {"type": "boolean", "description": "Classify from any cached collection of this host, in any case, instead of probing live."},

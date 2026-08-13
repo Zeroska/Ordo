@@ -52,7 +52,8 @@ MUST_KNOW = ["domainsbyproxy", "withheldforprivacy", "privacyprotect", "namechea
 # WebPivot/tools both land on sys.path in the same process (ingest_webpivot inserts both), where
 # a shared `refs.py` would collide.
 LOADERS = ["WebPivot/tools/wp_refs.py", "tools/kb/kb_refs.py", "BinaryPivot/tools/bp_refs.py",
-           "IntelGraph/scripts/ig_refs.py", "IntelReport/scripts/ir_refs.py"]
+           "IntelGraph/scripts/ig_refs.py", "IntelReport/scripts/ir_refs.py",
+           "Engage/tools/en_refs.py"]
 
 
 def _loader_body(relpath):
@@ -439,6 +440,15 @@ def check():
          render_report._I18N_FALLBACK["estimative_terms"]),
         ("render_report.SECTION_NAMES", render_report.SECTION_NAMES,
          render_report._I18N_FALLBACK["section_names"]),
+        # Typography. On the stub the report still renders — it just renders in the WRONG
+        # fonts, which is the failure nobody notices until a 64-character hash is set in
+        # Latin Modern Mono in a narrow table cell and the reader misreads 0 for O.
+        ("render_report.MONO_PREF", render_report.MONO_PREF,
+         render_report._TYPO_FALLBACK["mono_families"]),
+        ("render_report.SERIF_PREF", render_report.SERIF_PREF,
+         render_report._TYPO_FALLBACK["serif_families"]),
+        ("render_report.SANS_PREF", render_report.SANS_PREF,
+         render_report._TYPO_FALLBACK["sans_families"]),
         # Liveness. On the fallback the classifier still refuses to call a 404 dead and still
         # refuses to treat a bot wall as a verdict — those two rules are CODE, not data. What it
         # loses is TEMPLATE RECOGNITION: five parking strings instead of thirty-three, three

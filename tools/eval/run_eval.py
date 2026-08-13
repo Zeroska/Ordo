@@ -293,6 +293,11 @@ def main():
         ("test_openai_backend", "open-weight backend (Kimi/DeepSeek/local) — the tool loop driven "
                                 "against a stubbed endpoint, optional params + enums reaching the "
                                 "schema, and a denied call returning as output not an exception"),
+        ("test_engage", "Engage skill — auth-surface detection classifies by FIELDS (confirm-"
+                        "password = register, invite code is a pivot not an OTP), and the "
+                        "engagement gate holds in code (no confirm -> preflight, non-synthetic "
+                        "persona / direct egress refused, CAPTCHA stops it); the mission harvest "
+                        "pulls wallets/bank/upload-path and drops a bare number with no bank context"),
     ]
     # tests/ modules follow the same check() contract; make them importable here too.
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HERE)), "tests"))

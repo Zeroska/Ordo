@@ -1821,6 +1821,182 @@ async def anyrun_submit(args: dict[str, Any]) -> dict[str, Any]:
     return _ok(body)
 
 
+# ---------------------------------------------------------------- Engage (auth surface + gated engagement)
+_ENGAGE = os.path.join("Engage", "tools")
+
+
+@tool(
+    "detect_login",
+    "DETECT a site's authentication surface — the login form, the password field and the "
+    "registration page — passively, needing no account. Reads the page and classifies every "
+    "<form> by the FIELDS it carries, not by a word in the URL: LOGIN (an identifier + a "
+    "password, no confirm-password), REGISTER (adds a confirm-password / invite code / terms / "
+    "extra identity fields), PASSWORD-RESET (an identifier, no password, under 'forgot/recover'). "
+    "Follows ONE hop to the linked register/login page so the signup form is found even when the "
+    "entry page shows only a login box, confirmed by that page's fields. Surfaces what engagement "
+    "would need before anyone touches the box: the form POST `action` (an auth_endpoint pivot, "
+    "often the backend/API the HTML never otherwise names), a CAPTCHA or OTP/verification step "
+    "that BLOCKS an automated signup, and a required invite/referral code (a closed-funnel tell "
+    "AND a clustering pivot). If the form is JS-rendered and absent from static HTML it says so "
+    "and points at a rendered fetch — 'no form in static HTML' is never reported as 'no login'. "
+    "GET-only; free/keyless. Pass url=<URL|host>; proxy=<research egress> optional.",
+    {"url": str},   # proxy:str, no_crawl:bool, case:str optional -> args.get()
+    annotations=READONLY,
+)
+async def detect_login(args: dict[str, Any]) -> dict[str, Any]:
+    target = str(args["url"])
+    cmd = [PY, os.path.join(_ENGAGE, "en_forms.py"), target]
+    if args.get("proxy"):
+        cmd += ["--proxy", str(args["proxy"])]
+    if args.get("no_crawl"):
+        cmd += ["--no-crawl"]
+    if args.get("case"):
+        out = os.path.join(ROOT, "cases", str(args["case"]), "engage", "forms.json")
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        cmd += ["-o", out, "--pretty"]
+    r = _run(cmd, timeout=120)
+    v = _load_json_str(r.stdout or "")
+    if v is None:
+        return _err(f"detect_login failed for {_host(target)}: {(r.stderr or '')[-400:]}")
+    return _ok(json.dumps(v, ensure_ascii=False, indent=2))
+
+
+@tool(
+    "make_persona",
+    "Mint a SYNTHETIC research persona for an authorized engagement — the identity a signup form "
+    "asks for, generated fresh and obviously non-real, never a real person's details. Email is a "
+    "non-deliverable .invalid placeholder unless email_domain names a disposable inbox YOU "
+    "control (so an email-verifying signup forces a conscious choice, not an invented live "
+    "address); phone is omitted unless with_phone, then a reserved non-routable number. Nothing "
+    "is registered or sent — this only produces the data. Persist under cases/<case>/engage/ with "
+    "case=<ID>. One persona per case; never reuse across cases (a reused research identity links "
+    "your own operations for the adversary).",
+    {},   # case:str, email_domain:str, with_phone:bool, seed:str, country:str optional -> args.get()
+    annotations=READONLY,
+)
+async def make_persona(args: dict[str, Any]) -> dict[str, Any]:
+    cmd = [PY, os.path.join(_ENGAGE, "en_persona.py"), "--pretty"]
+    for flag, key in (("--email-domain", "email_domain"), ("--country", "country"),
+                      ("--seed", "seed"), ("--case", "case")):
+        if args.get(key):
+            cmd += [flag, str(args[key])]
+    if args.get("with_phone"):
+        cmd += ["--with-phone"]
+    r = _run(cmd, timeout=60)
+    v = _load_json_str(r.stdout or "")
+    if v is None:
+        return _err(f"make_persona failed: {(r.stderr or '')[-300:]}")
+    return _ok(json.dumps(v, ensure_ascii=False, indent=2))
+
+
+@tool(
+    "engage_account",
+    "GATED — create an account on the target and log in to gather intel from the members area "
+    "(panel, deposit/withdraw flow, referral tree, support handles) the public page hides. This "
+    "is OUTBOUND, ATTRIBUTABLE and IRREVERSIBLE — a POST to the operator's own backend that tells "
+    "them a new member appeared, from your egress, with a fingerprint — so it is gated exactly "
+    "like a sandbox submission. WITHOUT confirm=true it returns only the preflight BRIEFING and "
+    "does nothing; the harness ALSO requires env INTEL_ENGAGE_CONFIRM=1 (approval_required), which "
+    "an agent loop cannot set for itself. It refuses a non-synthetic persona (use make_persona), "
+    "refuses direct egress unless allow_direct_egress=true, STOPS at any CAPTCHA/OTP blocker "
+    "(never solves or evades one), and drives a real browser via Playwright if present else "
+    "returns a fill-by-hand runbook. Most fraud funnels do NOT verify identity — a made-up "
+    "username+password registers and logs straight in; when a funnel gates on email confirmation, "
+    "mint the persona --from-pool (a real puppet inbox) and pass await_confirm=true so en_inbox "
+    "fetches the confirm link and the browser clicks it before login (hard KYC — government ID / "
+    "selfie — is a STOP the tool never fabricates). Once logged in it runs the MISSION harvest over "
+    "the members area: the operator's crypto WALLET and BANK/payee details, the SERVICE FLOW, and "
+    "the credential-harvester UPLOAD PATH. Persona, screenshots, authenticated DOM, harvest and one "
+    "audit line per engagement are written under cases/<case>/engage/. Try the no-account routes "
+    "first (detect_login; leaked panel credentials in the leak corpus; an archived authenticated "
+    "view) — a fresh signup is the most attributable option, not the first. Pass url; persona=<path "
+    "to a make_persona JSON>; detection=<path to a detect_login JSON, the fill plan>; case; "
+    "proxy=<research egress>; await_confirm for email-gated signups; confirm=true only after a "
+    "human said yes to THIS engagement.",
+    {"url": str},   # persona:str, detection:str, case:str, proxy:str, allow_direct_egress:bool, confirm:bool, no_login:bool
+    annotations=ToolAnnotations(readOnlyHint=False),
+)
+async def engage_account(args: dict[str, Any]) -> dict[str, Any]:
+    target = str(args["url"])
+    cmd = [PY, os.path.join(_ENGAGE, "en_engage.py"), target]
+    for flag, key in (("--persona", "persona"), ("--detection", "detection"),
+                      ("--case", "case"), ("--proxy", "proxy"), ("--target-domain", "target_domain")):
+        if args.get(key):
+            cmd += [flag, str(args[key])]
+    if args.get("allow_direct_egress"):
+        cmd += ["--allow-direct-egress"]
+    if args.get("await_confirm"):
+        cmd += ["--await-confirm"]
+    if args.get("no_login"):
+        cmd += ["--no-login"]
+    # confirm is honoured ONLY if the analyst also set the env second-lock; en_engage re-checks it.
+    if args.get("confirm") and os.environ.get("INTEL_ENGAGE_CONFIRM") == "1":
+        cmd += ["--confirm-engagement"]
+    r = _run(cmd, timeout=240)
+    v = _load_json_str(r.stdout or "")
+    if v is None:
+        return _err(f"engage_account failed for {_host(target)}: {(r.stderr or '')[-400:]}")
+    if isinstance(v, dict) and str(v.get("action", "")).startswith("CONFIRMATION REQUIRED"):
+        return _ok("NOTHING WAS SENT — no account created; confirmation required.\n"
+                   "Show the briefing below to the analyst, ask explicitly whether to create an "
+                   "account on the operator's box, and only then call engage_account with "
+                   "confirm=true (the run must also have INTEL_ENGAGE_CONFIRM=1).\n\n"
+                   + json.dumps(v, ensure_ascii=False, indent=2))
+    return _ok(json.dumps(v, ensure_ascii=False, indent=2))
+
+
+@tool(
+    "harvest_authenticated",
+    "The post-login MISSION extractor — read an AUTHENTICATED members-area page (the DOM "
+    "engage_account captured, or any saved authenticated HTML) for the operator's money and "
+    "mechanics that the public page hid: crypto WALLET addresses deposits go to (BTC / ETH-ERC20-"
+    "BEP20 / TRON-TRC20), BANK / payee details (IBAN, SWIFT/BIC, account numbers taken ONLY in "
+    "bank context), the SERVICE FLOW present (deposit → task/trade → withdraw-block → top-up; VIP "
+    "levels; referral tree), and the CREDENTIAL-HARVESTER UPLOAD PATH (a form whose action is a "
+    "collector, a file-upload endpoint, or a page collecting third-party card/CVV/seed-phrase/bank "
+    "logins — the operator's own routing, which clusters the kit). Extracts only; every wallet/"
+    "account is a lead fed back into WebPivot + IntelAnalysis and base-rate checked there — a "
+    "shared processor wallet is infrastructure, not the operator's. Pass html_path=<file>; "
+    "base_url optional; case to append to the evidence ledger.",
+    {"html_path": str},   # base_url:str, case:str optional -> args.get()
+    annotations=READONLY,
+)
+async def harvest_authenticated(args: dict[str, Any]) -> dict[str, Any]:
+    cmd = [PY, os.path.join(_ENGAGE, "en_harvest.py"), str(args["html_path"]), "--pretty"]
+    if args.get("base_url"):
+        cmd += ["--base-url", str(args["base_url"])]
+    if args.get("case"):
+        cmd += ["--case", str(args["case"])]
+    r = _run(cmd, timeout=90)
+    v = _load_json_str(r.stdout or "")
+    if v is None:
+        return _err(f"harvest_authenticated failed: {(r.stderr or '')[-300:]}")
+    return _ok(json.dumps(v, ensure_ascii=False, indent=2))
+
+
+@tool(
+    "engage_report",
+    "Render a case's ENGAGEMENT artifacts (under cases/<case>/engage/ — payment_methods, "
+    "cluster_expansion, detect_* and the interaction ledger) into a citable 'Panel Engagement — "
+    "Evidence' markdown section: the method/authorization note, the auth surface, the payment "
+    "methods (bank + crypto, with base-rate exclusions kept visible), the cluster expansion, and "
+    "an evidence table citing each fact to the API endpoint or capture it came from. Fold it into "
+    "the case assessment (append_to=<path>) and re-render with render_report. Reads only the "
+    "case folder — holds no case data itself. Pass case=<ID>; append_to optional.",
+    {"case": str},   # append_to:str optional -> args.get()
+    annotations=READONLY,
+)
+async def engage_report(args: dict[str, Any]) -> dict[str, Any]:
+    cmd = [PY, os.path.join(_ENGAGE, "en_report.py"), str(args["case"])]
+    if args.get("append_to"):
+        cmd += ["--append-to", str(args["append_to"])]
+    r = _run(cmd, timeout=60)
+    out = (r.stdout or "") + (("\n" + r.stderr) if args.get("append_to") else "")
+    if r.returncode != 0 and not out.strip():
+        return _err(f"engage_report failed: {(r.stderr or '')[-300:]}")
+    return _ok(out or "(engagement section written)")
+
+
 # ---------------------------------------------------------------- servers + names
 # Every @tool MUST appear in exactly one server below AND in that server's *_TOOLS allowlist.
 # The stdio front-end (mcp_server.py) auto-discovers @tools, so a tool missing here is visible in
@@ -1848,6 +2024,8 @@ COLLECT_SERVER = create_sdk_mcp_server(
                       anyrun_lookup, anyrun_submit, capability_check,
                       url_paths, capture_evidence, serp_ads, passive_ssl, ip_info,
                       domain_liveness,
+                      detect_login, make_persona, engage_account, harvest_authenticated,
+                      engage_report,
                       kb_ingest])
 ANALYZE_SERVER = create_sdk_mcp_server(
     "analyze", tools=[kb_cluster, kb_entity, kb_query_shared, risk_signals,
@@ -1867,6 +2045,9 @@ COLLECT_TOOLS = ["mcp__collect__pivot_extract", "mcp__collect__doc_metadata",
                  "mcp__collect__serp_ads", "mcp__collect__passive_ssl",
                  "mcp__collect__ip_info",
                  "mcp__collect__domain_liveness",
+                 "mcp__collect__detect_login", "mcp__collect__make_persona",
+                 "mcp__collect__engage_account", "mcp__collect__harvest_authenticated",
+                 "mcp__collect__engage_report",
                  "mcp__collect__kb_ingest"]
 ANALYZE_TOOLS = ["mcp__analyze__kb_cluster", "mcp__analyze__kb_entity",
                  "mcp__analyze__kb_query_shared", "mcp__analyze__risk_signals",
