@@ -11,6 +11,29 @@ description: The analyst / judgment layer for OSINT — correlation, attribution
 
 # IntelAnalysis — the analyst's brain
 
+## 🎯 The GOAL — answer *who*, at the strongest level the evidence actually supports
+
+**The purpose of the whole pipeline is to unmask the operator behind the infrastructure.**
+Clustering is not the product; it is the step that assembles enough of one estate for an identity
+to become visible. Every assessment must therefore answer, explicitly:
+
+1. **Is it one operator?** — the cluster and the attribution-grade artifacts binding it.
+2. **Who is that operator?** — the strongest honest rung on the ladder: a *named actor* → a
+   *persona* (registrant / advertiser legal entity / dev account) → an *unnamed but characterised*
+   operator (jurisdiction, language, hosting habits, working hours, kit provenance, payment rails).
+3. **What would name them?** — if the answer to (2) is short of a name, the identity gap is a
+   finding in its own right: state the single pivot most likely to close it and its cost.
+
+"Unattributed" is an acceptable answer; **silence is not**. An assessment that lists clusters and
+never states who — or why who is unknown — has not met the goal.
+
+🚫 **And the goal never buys a shortcut.** The pressure to produce a name is exactly what
+manufactures false attribution, so the rails in §2–§4 tighten rather than relax here: base-rate
+the artifact, keep same-kit / same-operator / same-actor apart, treat every registrant identity as
+a **persona** until an independent non-self-declared source corroborates it, and try to *break*
+the identity hypothesis before publishing it. A wrong name burns a real person and is worse than
+no name at all.
+
 This is the **reasoning layer**, not a collector. Collectors (WebPivot, future
 `osint-ip`/`osint-ioc`) gather attributed facts into `knowledge/`. IntelAnalysis reads
 that store and applies **investigative judgment**: which facts matter, what they prove,
@@ -66,7 +89,9 @@ they are not inside this skill folder, so `cd` to the project root first (`cd "$
 ```
 Triage facts → Time-order them (lifecycle, hosting windows, expiry) → Correlate into clusters
    → Attribute (same-kit vs same-operator vs same-actor) → Calibrate confidence
-   → Form & falsify hypotheses → Prioritise next pivots → Write the assessment
+   → NAME THE OPERATOR at the strongest honest rung (actor → persona → characterised-but-unnamed)
+   → Form & falsify hypotheses → Prioritise the pivots that would close the IDENTITY gap
+   → Write the assessment
    → Capture what it taught (register the operator + any new tell) so the next case starts ahead
 ```
 
@@ -813,8 +838,14 @@ the conflict in the assessment**; don't silently pick one. A conflict is often t
   contemporaneous and which are not (§1.5). Embed the `case_timeline.py` figure and attach its
   evidence ledger.
 - **Attribution** — same-kit / same-operator / same-actor, and the evidence for the level claimed.
+- **Operator — the section the case exists for.** Say who runs it at the strongest honest rung:
+  a named actor, a persona (registrant / advertiser legal entity / dev account — labelled as a
+  persona, with the nominee-or-synthetic caveat), or an unnamed operator *characterised* by
+  jurisdiction, language, hosting habits, working hours, kit provenance and payment rails. If no
+  rung is reachable, write **"unattributed"** and why — never omit the section. Then the
+  **identity gap**: the single pivot most likely to produce a name, and what it costs.
 - **Gaps & alternatives** — what you couldn't verify, and the competing explanation you ruled out.
-- **Next steps** — the prioritised open pivots.
+- **Next steps** — the prioritised open pivots, identity-closing ones first.
 
 ### Evidence citation standard (non-negotiable)
 

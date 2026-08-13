@@ -11,6 +11,29 @@ description: Run a whole OSINT case end-to-end — the Collect → Correlate →
 
 # IntelHarness — run a case end-to-end, inside Claude Code
 
+## 🎯 The GOAL of a case — an attributed OPERATOR, not a converged cluster
+
+A case is run to **unmask the operator behind the infrastructure**. Collect → Correlate → Assess
+is the machinery; the output that matters is *who runs this estate*, at the strongest rung the
+evidence supports (named actor → persona → characterised-but-unnamed), with its confidence, or an
+explicit **identity gap** plus the pivot that would close it.
+
+That changes two things in how you drive the phases:
+
+- **Collection is not finished when the seeds are collected.** It is finished when every host in
+  the cluster has been mined for *identity-bearing* artifacts — registrant (current + historical,
+  then reverse-WHOIS), owner-account tokens, advertiser/payer identity, document + source-map
+  metadata, contact rails, wallets, leak-corpus hits. Estate-expanding artifacts (favicon, TLS,
+  ASN, kit path) exist to hand you **more hosts to mine**, and expansion alone is not progress.
+- **Convergence is not the stop condition; an answer is.** `converged` / `cold` describe the free
+  search space, not the case. Before ending, state the operator (or "unattributed" and why) and
+  the next identity-closing pivot — a run that stops on "no new domains" while never asking who
+  has stopped early.
+
+🚫 The goal does not relax the rails: adversarial verification, base rates, same-kit vs
+same-operator, and persona-not-person still gate every identity claim. Unattributed is an
+acceptable outcome; an unearned name is not.
+
 This is the **Claude-Code-native front-end** to the OSINT harness: *you* (the agent) are the
 orchestrator, following the phases below and calling the repo's CLIs directly. Same tools, same
 KB, same evidence discipline as the Agent-SDK driver — but on the subscription, interactive, no

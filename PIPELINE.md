@@ -1,5 +1,11 @@
 # Pipeline — how to run an investigation end to end
 
+**The goal of a run is to unmask the operator behind the infrastructure** — a named actor, or the
+strongest honest substitute (a persona, or an unnamed-but-characterised operator), with its
+evidence and confidence. Collecting artifacts and converging a cluster are the *machinery*; a run
+that never answers *who* — or never states why who is unknown and what pivot would settle it —
+is unfinished. See `WebPivot/SKILL.md` §*The GOAL* and `IntelAnalysis/SKILL.md` §*The GOAL*.
+
 The bundle is a four-stage pipeline. You can drive it two ways: from the **CLI**
 (`tools/intel.py` — deterministic, scriptable) or from **inside Claude Code** (natural
 language — the skills do the steps for you).

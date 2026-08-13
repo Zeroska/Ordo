@@ -1,6 +1,6 @@
 ---
 name: WebPivot
-description: Website content & DOM analysis for OSINT and cybercrime investigation — extracts pivot artifacts (favicon hash, tracking/analytics IDs, crypto wallets, emails, phones, Telegram, Google Doc/Sheet/Form IDs, ETag, WHOIS registrant, third-party infra, DOM fingerprints) and emits ready-to-run queries (Shodan, FOFA, crt.sh, urlscan). USE WHEN analyze website/HTML/DOM, pivot artifact, favicon hash, tracking/analytics ID, GA GTM pixel, reverse analytics, telegram channel, google sheet/form, whois registrant, cluster sites, phishing kit, scam site, who owns this site, related domains, impersonation domain, typosquat, lookalike domain, TLD sweep, homoglyph, hunt lookalikes, search a selector in leaks, breach data, stealer/infostealer logs, darknet, IntelX, phonebook, find emails for a domain, has this email leaked, historical WHOIS, google ads, who advertises this domain, ads transparency, advertiser id, malvertising, cloaking, cloaked landing page, the site looks empty, utm, gclid, decoy page, SerpApi, SERP ads.
+description: Website content & DOM analysis for OSINT and cybercrime investigation, aimed at UNMASKING THE OPERATOR behind the infrastructure — extracts pivot artifacts (favicon hash, tracking/analytics IDs, crypto wallets, emails, phones, Telegram, Google Doc/Sheet/Form IDs, ETag, WHOIS registrant, third-party infra, DOM fingerprints) and emits ready-to-run queries (Shodan, FOFA, crt.sh, urlscan). USE WHEN unmask the operator, who is the threat actor behind this, identify the operator/owner, attribute this infrastructure, find the person behind the site, analyze website/HTML/DOM, pivot artifact, favicon hash, tracking/analytics ID, GA GTM pixel, reverse analytics, telegram channel, google sheet/form, whois registrant, cluster sites, phishing kit, scam site, who owns this site, related domains, impersonation domain, typosquat, lookalike domain, TLD sweep, homoglyph, hunt lookalikes, search a selector in leaks, breach data, stealer/infostealer logs, darknet, IntelX, phonebook, find emails for a domain, has this email leaked, historical WHOIS, google ads, who advertises this domain, ads transparency, advertiser id, malvertising, cloaking, cloaked landing page, the site looks empty, utm, gclid, decoy page, SerpApi, SERP ads.
 ---
 
 > **OPSEC — this skill is portable/shared. Never write case data into it.** No real operator
@@ -79,7 +79,57 @@ It writes `cases/<case>/raw/<host>.json` (one per host, overwrites on re-run), i
 `knowledge/`, and saves the cluster seeds to `cases/<case>/shared.txt`. The per-tool commands
 below are for single pages or when you need a step in isolation.
 
-Turn a single web page into a set of **pivot points** — the artifacts in its HTML/DOM that link it to other sites, infrastructure, and actors — and the exact queries to run them. Built for authorized OSINT and cybercrime (scam/phishing/fraud-infra) investigation.
+## 🎯 The GOAL — unmask the OPERATOR, not the infrastructure
+
+Mechanically, this skill turns a page into **pivot points** — the artifacts in its HTML/DOM/TLS/
+WHOIS that link it to other sites, infrastructure and actors — plus the exact queries to run them.
+But that is the *method*. **The objective of every run is the human behind the estate: who built
+it, who is paid by it, who is contactable through it, and under what identity they registered it.**
+
+A run that ends with a tidy list of hashes, tokens and sibling domains and says nothing about
+**who** has produced *collection*, not a *result*. The deliverable is an identity statement:
+a named or narrowed operator with its evidence and confidence — or an explicit **identity gap**
+naming the one pivot that would close it. Never a silent stop at "here are the artifacts".
+
+Read every capability below with one question in front of it: *does this artifact carry a person,
+or only a machine?* Two ranks, and never confuse them:
+
+- **Infrastructure-scoped** — favicon mmh3, JARM, TLS fingerprint, ASN/origin IP, kit path, DOM
+  skeleton, SPA route signature, JS bundle hash. These **expand the estate** (which hosts are the
+  same thing) and are how you find more surface to read. **They identify nobody.**
+- **Identity-bearing** — what a person had to *register, pay for, sign, be contacted on, or forget
+  to strip*. This is what the run is actually hunting:
+  - **registrant** name / email / phone / address — current **and** historical, then reverse-WHOIS
+    every one of them (and every transliteration of a name)
+  - **owner-account tokens nobody else can mint** — GA4/GTM/UA, GSC/Bing verification, ahrefs,
+    the `ads.txt` `pub-` AdSense account, Apple team id
+  - **the ad account** (`wp_serp`) — a Google-**verified, paying** advertiser id and the legal
+    entity it is *funded by*: an identity WHOIS privacy cannot mask and a re-skin cannot change
+  - **document / image metadata** (`wp_docmeta`) — `/Author`, XMP `DocumentID`, EXIF `Artist`/GPS
+    on the files the site *hosts*: exported once from the operator's own machine, never re-exported
+  - **source maps & build env** (asset layer) — `dev_username`, `dev_project`, `dev_path`,
+    `build_env:*`: the developer's home directory and project name, compiled in by accident
+  - **contact rails** — Telegram / Zalo / Messenger / WhatsApp handles, phones, support mailboxes,
+    chat-SaaS tenant ids: how the victim reaches the operator is how you reach them
+  - **money** — wallet addresses, payee accounts, affiliate/referral ids
+  - **leak corpus** (`wp_intelx`) — stealer logs, where the machine holding the panel credentials
+    is sometimes the operator's own box (`IntelAnalysis` §1.7)
+  - **the file the site serves** — hand off to `BinaryPivot` (APK signing cert, keystore CN,
+    Firebase tenant): the build identity survives every front-end re-skin
+
+Sequencing follows from that: run the estate-expanding pivots to obtain **more pages to read**,
+then mine every newly-found host for identity-bearing artifacts. Expansion is not the finish
+line — it is more surface on which the operator may have slipped.
+
+> 🚫 **The rails do not loosen because the goal is a name.** An identity claim carries the same
+> burden as any other finding: base-rate the artifact before believing it, keep **same-kit /
+> same-operator / same-actor** distinct, and treat a registrant identity as a **persona** — an
+> unverified assertion by whoever filled the form, routinely a nominee or a synthetic. What you
+> earn is *"registered under the persona X"*; *"X owns it"* requires an independent,
+> non-self-declared corroborator (`IntelAnalysis` §2). On a compromised host the WHOIS, favicon,
+> cert and analytics belong to the **victim** — only the injected kit is the operator's (§0
+> intake). And a keyless run's silence is a fact about the credentials, not about the operator.
+> A wrong name is worse than no name: it burns a real person.
 
 > ⚠️ **Authorization first.** Read `EthicalFramework.md` before targeting live infrastructure. Fetching a hostile site touches it directly — use non-attributable egress (research VPS / VPN) and prefer passive sources (urlscan, Wayback, crt.sh) over direct fetches when the target is adversarial.
 

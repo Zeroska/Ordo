@@ -19,6 +19,28 @@ push. It performs **static** extraction only (no detonation): download (or open 
 hash it, and pull the identifiers that cluster an operator's whole app portfolio even after they
 re-skin the front end.
 
+## 🎯 The GOAL — the same one as WebPivot: unmask the OPERATOR
+
+**The objective is the human behind the estate, not an IOC list.** The file is worth analysing
+because a *front end is rewritten in an afternoon while a build pipeline is not*: the app carries
+identity the website already rotated away from. Hunt these first, and treat everything else as
+estate-expansion:
+
+- **the signing certificate** — CN/O/OU/L and the cert SHA-256: a keystore the operator generated
+  once, kept, and re-signs every build with. The single best cross-app operator key here.
+- **build-machine leftovers** — debug/developer paths, account names, project names, internal
+  hostnames, `BuildConfig`/env constants baked in at compile time.
+- **tenant accounts nobody else can mint** — Firebase/appspot project, S3 bucket, push/analytics
+  and crash-reporting project ids, chat-SaaS tenant.
+- **contact + money rails** — Telegram/WhatsApp handles, support numbers, wallet addresses.
+- **the backend** — embedded API/C2 hosts: the constant the rotating fronts all point at, and the
+  bridge back into `WebPivot` (feed it straight into `pivot_extract`).
+
+A finished analysis says **who** (or names the identity gap and the pivot that closes it), not just
+what the app connects to. Same rails as everywhere else: a shared packer, framework, library or
+threat-family label is **same-kit**, never same-operator; a signing cert from a public/default
+keystore identifies nobody.
+
 > ⚠️ **Authorization + safety first.** Only pull artifacts from infrastructure you are authorized
 > to investigate, from **non-attributable egress** (research VPS/VPN). `analyze_artifact.py` never
 > executes the sample — it is static analysis, and nothing in the collector path detonates anything.
